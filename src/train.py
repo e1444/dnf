@@ -11,7 +11,7 @@ from src.models.dnf import DNFNetwork
 from src.utils.losses import deep_supervision_loss, total_loss_fn, compute_logits
 from src.utils.evaluation import evaluate
 
-def get_target_distributions(means_param, log_vars_param, num_classes, device):
+def get_target_distributions(means_param, log_vars_param, num_classes):
     """Creates a list of target distributions."""
     return [
         torch.distributions.MultivariateNormal(
@@ -116,7 +116,7 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            eval_target_dists = get_target_distributions(trainable_means, trainable_log_vars, cfg.training.num_classes, device)
+            eval_target_dists = get_target_distributions(trainable_means, trainable_log_vars, cfg.training.num_classes)
             test_loss, accuracy, nll = evaluate(model, test_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
