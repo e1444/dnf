@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - override /hydra/sweeper: optuna
+
+hydra:
+  sweeper:
+    _target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
+    direction: maximize
+    study_name: dnf_optimization
+    n_trials: 50
+    n_jobs: 1 # Set to 1 when using a launcher like slurm
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: 123
+      n_startup_trials: 10
+    params:
+      training.lr: tag(log, interval(1e-5, 1e-2))
+      training.gamma_alpha: interval(0.5, 1.0)
+      training.gamma_beta: interval(0.5, 1.0)
+      training.r_logdet: tag(log, interval(1e-4, 1e-1))
+      training.r_var: tag(log, interval(1e-4, 1e-1))

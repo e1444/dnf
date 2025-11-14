@@ -1,0 +1,13 @@
+torch
+torchvision
+numpy
+scikit-learn
+pandas
+hydra-core
+hydra-optuna-sweeper
+hydra-submitit-launcher
+wandb
+matplotlib
+seaborn
+tqdm
+Pillow

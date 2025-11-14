@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+ENV/
+venv/
+.venv/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Hydra outputs
+outputs/
+multirun/
+
+# WandB outputs
+wandb/
+
+# Logs
+logs/
+*.log
+
+# Checkpoints
+*.pth
+
+# Data
+/data/

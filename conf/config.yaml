@@ -1,0 +1,32 @@
+# Configuration file for Hydra
+defaults:
+  - _self_
+  - data: mnist
+  - model: dnf_cnn
+  - training: default
+
+project:
+  name: Discriminative Normalizing Flow
+  description: A project for training a DNF model on the MNIST dataset using Hydra for configuration management and Weights & Biases for experiment tracking.
+
+paths:
+  data: ./data
+  model: ./models
+  logs: ./logs
+  checkpoints: ./checkpoints
+
+hydra:
+  run:
+    dir: ${paths.logs}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ${paths.logs}/sweeps/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+
+wandb:
+  project: DNF
+  entity: e1444-university-of-toronto
+  name: "dnf-run-${now:%Y-%m-%d-%H-%M-%S}"
+
+logging:
+  level: INFO
+  format: "[%(asctime)s] %(levelname)s: %(message)s"

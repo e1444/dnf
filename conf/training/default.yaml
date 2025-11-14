@@ -1,0 +1,27 @@
+lr: 1e-3
+lr_means: 0
+lr_vars: 0
+weight_decay: 1e-4
+epochs: 50
+eval_interval: 1
+checkpoint_interval: 5
+
+# Loss and regularization weights
+lambda_: 0.1
+gamma_alpha: 0.5
+gamma_beta: 0.8
+aux_freq: 2
+r_logdet: 1e-2
+r_var: 1e-4
+
+# Scheduler settings
+scheduler:
+  _target_: torch.optim.lr_scheduler.StepLR
+  step_size: 25
+  gamma: 0.5
+
+# Initialization
+latent_separation: 2.0
+latent_noise: 0.1
+features: 784
+num_classes: 10

@@ -1,0 +1,14 @@
+dataset:
+  name: "MNIST"
+  path: "./data/mnist"
+  download: true
+  transform:
+    - type: "ToTensor"
+    - type: "Normalize"
+      mean: [0.5]
+      std: [0.5]
+  batch_size: 256
+  num_workers: 4
+  shuffle: true
+  train_split: 0.8
+  valid_split: 0.2
