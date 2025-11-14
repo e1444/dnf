@@ -1,78 +1,110 @@
-# dnf-hydra-wandb
+# Discriminative Normalizing Flow (DNF)
 
-This project implements a Deep Neural Flow (DNF) model using PyTorch, with a focus on the MNIST dataset. It incorporates Hydra for configuration management and Weights & Biases (wandb) for experiment tracking. The project is structured to facilitate easy experimentation and model evaluation.
+This project implements a **Discriminative Normalizing Flow (DNF)** model for image classification, built with PyTorch. The primary goal of this implementation is to explore the use of normalizing flows in a discriminative setting, specifically for the MNIST dataset. The project is structured for clarity, reproducibility, and ease of experimentation, leveraging Hydra for configuration management and Weights & Biases for comprehensive experiment tracking.
+
+## Key Features
+
+- **Discriminative Normalizing Flow**: Implements a DNF model, which combines the generative power of normalizing flows with a discriminative training objective.
+- **Deep Supervision**: Utilizes deep supervision to improve training stability and performance by applying auxiliary losses at intermediate layers of the network.
+- **Dynamic Target Distributions**: The target distributions for the latent space are treated as trainable parameters, allowing the model to learn an optimal latent representation.
+- **Hydra for Configuration**: All model, training, and data parameters are managed through YAML configuration files, enabling flexible and organized experimentation.
+- **Weights & Biases Integration**: Seamlessly logs training progress, evaluation metrics, and model checkpoints to Weights & Biases for easy monitoring and comparison of experiments.
 
 ## Project Structure
 
+The project is organized as follows:
+
 ```
-dnf-hydra-wandb
-├── conf
-│   ├── config.yaml          # Main configuration file for Hydra
-│   ├── data
-│   │   └── mnist.yaml       # Configuration for MNIST dataset
-│   ├── model
-│   │   └── dnf_cnn.yaml     # Model architecture and hyperparameters
-│   └── training
-│       └── default.yaml      # Training parameters
-├── src
-│   ├── data
-│   │   └── dataset.py       # Data loading and preprocessing
-│   ├── models
-│   │   └── dnf.py           # DNF model implementation
-│   ├── utils
-│   │   ├── evaluation.py     # Model evaluation functions
-│   │   └── losses.py         # Custom loss functions
-│   ├── evaluate.py           # Model evaluation script
-│   └── train.py              # Main training loop
-├── .gitignore                # Git ignore file
-├── requirements.txt          # Project dependencies
-└── README.md                 # Project documentation
+.
+├── conf/                  # Hydra configuration files
+│   ├── config.yaml        # Main configuration
+│   ├── data/              # Data-related configurations
+│   ├── model/             # Model architecture configurations
+│   └── training/          # Training loop configurations
+├── notebooks/             # Jupyter notebooks for analysis and visualization
+├── src/                   # Source code
+│   ├── data/              # Data loading and preprocessing
+│   ├── models/            # Model definitions (DNF, coupling layers, etc.)
+│   ├── utils/             # Utility functions (losses, evaluation)
+│   ├── train.py           # Main training script
+│   └── evaluate.py        # Evaluation script
+├── requirements.txt       # Project dependencies
+└── README.md              # This file
 ```
 
-## Installation
+## Getting Started
 
-To set up the project, clone the repository and install the required dependencies:
+### Prerequisites
 
-```bash
-git clone <repository-url>
-cd dnf-hydra-wandb
-pip install -r requirements.txt
-```
+- Python 3.8+
+- CUDA-enabled GPU (optional but recommended)
 
-## Configuration
+### Installation
 
-The project uses Hydra for configuration management. Configuration files are located in the `conf` directory. You can modify the settings in `config.yaml`, `mnist.yaml`, `dnf_cnn.yaml`, and `default.yaml` to customize the behavior of the project.
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/e1444/dnf.git
+   cd dnf
+   ```
 
-## Training
+2. **Install dependencies:**
+   It is recommended to use a virtual environment (e.g., `venv` or `conda`).
+   ```bash
+   python -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
 
-To train the model, run the following command:
+## How to Run
 
+### Training
+
+The model can be trained using the `train.py` script. Hydra allows for easy modification of parameters from the command line.
+
+**Default Training:**
+To run training with the default configuration (`conf/config.yaml`):
 ```bash
 python src/train.py
 ```
 
-This will start the training process using the configurations specified in the YAML files.
-
-## Evaluation
-
-After training, you can evaluate the model's performance using:
-
+**Customizing Parameters:**
+You can override any configuration parameter from the command line. For example, to change the learning rate and number of epochs:
 ```bash
-python src/evaluate.py
+python src/train.py training.lr=0.0005 training.epochs=50
 ```
 
-This will load the trained model and compute evaluation metrics on the test dataset.
+**Multi-Run Sweeps:**
+Hydra's sweeper plugins can be used to run hyperparameter sweeps. For example, to sweep over different learning rates:
+```bash
+python src/train.py --multirun training.lr=0.001,0.0005,0.0001
+```
+
+### Evaluation
+
+To evaluate a trained model, you need to provide the path to a model checkpoint.
+```bash
+python src/evaluate.py model.checkpoint_path=/path/to/your/checkpoint.pth
+```
+Evaluation results, including accuracy and Negative Log-Likelihood (NLL), will be logged to Weights & Biases.
+
+## The DNF Model
+
+The core of the project is the `DNFNetwork`, which is a type of normalizing flow composed of several building blocks:
+
+- **Squeeze Operation**: Reshapes the input tensor to increase channel depth while reducing spatial dimensions.
+- **Activation Normalization**: A data-dependent normalization layer that stabilizes training.
+- **Invertible 1x1 Convolution**: Allows for permutation of channels, improving the expressive power of the flow.
+- **Affine Coupling Layers**: The main transformation block, where half of the input dimensions are transformed based on the other half. The coupling network uses a `CNNCouplingLayer` with residual blocks.
+
+The model is trained with a combination of a discriminative loss and an auxiliary loss from deep supervision, encouraging a well-structured latent space.
 
 ## Experiment Tracking
 
-Weights & Biases (wandb) is integrated for tracking experiments. Make sure to set up your wandb account and log in before running the training script. You can monitor your experiments in real-time on the wandb dashboard.
+This project is integrated with [Weights & Biases](https://wandb.ai) for experiment tracking. To use it:
 
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for more details.
-
-## Acknowledgments
-
-- PyTorch for the deep learning framework.
-- Hydra for configuration management.
-- Weights & Biases for experiment tracking.
+1. **Log in to W&B**:
+   ```bash
+   wandb login
+   ```
+2. **Configure `conf/config.yaml`**:
+   Update the `wandb.project` and `wandb.entity` fields with your project name and W
