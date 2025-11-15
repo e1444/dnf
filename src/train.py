@@ -74,7 +74,7 @@ def train(cfg: DictConfig):
             initial_means += torch.randn_like(initial_means) * cfg.training.latent_noise
             trainable_means.copy_(initial_means)
 
-            initial_log_vars = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(torch.tensor(0.01, device=device))
+            initial_log_vars = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(cfg.training.latent_variance)
             initial_log_vars += torch.randn_like(initial_log_vars) * cfg.training.latent_noise
             trainable_log_vars.copy_(initial_log_vars)
 
