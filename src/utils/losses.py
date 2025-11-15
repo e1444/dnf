@@ -25,7 +25,7 @@ def generative_loss_fn(logits, y_true):
 def total_loss_fn(logits, y_true, lambda_):
     disc_loss = disc_loss_fn(logits, y_true)
     gen_loss = generative_loss_fn(logits, y_true)
-    total_loss = disc_loss + lambda_ * gen_loss
+    total_loss = (1 - lambda_) * disc_loss + lambda_ * gen_loss
     return total_loss
 
 def deep_supervision_loss(intermediate_logits, y_true, alphas, betas):
@@ -35,7 +35,7 @@ def deep_supervision_loss(intermediate_logits, y_true, alphas, betas):
         disc_loss_j = disc_loss_fn(logits_j, y_true)
         ent_loss_j = entropy_loss_fn(logits_j)
 
-        layer_loss = ent_loss_j + alphas[j] * disc_loss_j
+        layer_loss = (1 - alphas[j]) * ent_loss_j + alphas[j] * disc_loss_j
         total_loss += betas[j] * layer_loss
 
     return total_loss
