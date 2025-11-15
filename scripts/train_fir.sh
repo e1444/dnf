@@ -32,6 +32,7 @@ python -m src.train \
     model=dglow_resnet \
     training.lr_means=0 \
     training.lr_vars=0.001 \
+    "$@" # Pass command line arguments to the script
     # training.resume_from_checkpoint=logs/2025-11-14/13-23-09/checkpoint_epoch_50.pth
 
 # python -m src.train \
