@@ -52,15 +52,13 @@ class DGLOWNetwork(nn.Module):
             x = x.view(-1, 1, 28, 28)
 
         total_log_det = torch.zeros(x.shape[0], device=x.device)
-        
-        # Initial Squeeze - not collected for deep supervision
-        x, log_det = self.squeeze(x)
-        total_log_det += log_det
-        
         outputs = []
         
         for level in self.levels:
             if isinstance(level, nn.ModuleList): # Flow steps
+                x, log_det = self.squeeze(x)
+                total_log_det += log_det
+                
                 for flow_step in level:
                     x, log_det = flow_step(x)
                     total_log_det += log_det
