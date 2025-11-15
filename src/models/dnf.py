@@ -8,6 +8,8 @@ class DNFNetwork(nn.Module):
         self.squeeze = Squeeze()
         current_channels = in_channels * 4
         self.layers = nn.ModuleList()
+        self.num_layers = num_layers
+        
         for _ in range(num_layers):
             self.layers.append(ActNorm(current_channels))
             self.layers.append(Invertible1x1Conv(current_channels))

@@ -25,6 +25,8 @@ class DGLOWNetwork(nn.Module):
         super(DGLOWNetwork, self).__init__()
         self.squeeze = Squeeze()
         self.levels = nn.ModuleList()
+        self.num_levels = num_levels
+        self.steps_per_level = steps_per_level
         
         current_channels = in_channels
         for _ in range(num_levels):
