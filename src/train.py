@@ -42,25 +42,6 @@ def train(cfg: DictConfig):
     
     # Initialize model
     model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
-    if cfg.model.type == "dnf_resnet":
-        model = DNFNetwork(
-            in_channels=1, 
-            num_layers=cfg.model.num_layers, 
-            hidden_channels=cfg.model.hidden_channels,
-            bottleneck_channels=cfg.model.bottleneck_channels,
-            num_res_blocks=cfg.model.num_res_blocks
-        ).to(device)
-    elif cfg.model.type == "dglow_resnet":
-        model = DGLOWNetwork(
-            in_channels=1, 
-            num_levels=cfg.model.num_levels,
-            steps_per_level=cfg.model.steps_per_level,
-            hidden_channels=cfg.model.hidden_channels,
-            bottleneck_channels=cfg.model.bottleneck_channels,
-            num_res_blocks=cfg.model.num_res_blocks
-        ).to(device)
-    else:
-        raise ValueError(f"Unknown model type: {cfg.model.type}")
 
     initial_means_data = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
     trainable_means = nn.Parameter(initial_means_data)
