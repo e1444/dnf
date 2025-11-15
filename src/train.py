@@ -41,7 +41,7 @@ def train(cfg: DictConfig):
     train_loader, test_loader = load_mnist(cfg.data)
     
     # Initialize model
-    model = None
+    model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
     if cfg.model.type == "dnf_resnet":
         model = DNFNetwork(
             in_channels=1, 
@@ -100,16 +100,9 @@ def train(cfg: DictConfig):
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
 
-    # Loss weights for deep supervision
-    total_supervision_layers = 0
-    if cfg.model.type == "dnf_resnet":
-        total_supervision_layers = cfg.model.num_layers
-    elif cfg.model.type == "dglow_resnet":
-        total_supervision_layers = cfg.model.num_levels * cfg.model.steps_per_level
-    
-    aux_layers = np.arange(start=0, stop=total_supervision_layers - 1, step=cfg.training.aux_freq) + 1
-    alphas = torch.tensor(np.geomspace(start=cfg.training.gamma_alpha ** (total_supervision_layers - 1), stop=1, num=len(aux_layers)), device=device)
-    betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** (total_supervision_layers - 1), stop=1, num=len(aux_layers)), device=device)
+    aux_layers = np.arange(start=0, stop=model.total_supervision_layers - 1, step=cfg.training.aux_freq) + 1
+    alphas = torch.tensor(np.geomspace(start=cfg.training.gamma_alpha ** (model.total_supervision_layers - 1), stop=1, num=len(aux_layers)), device=device)
+    betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** (model.total_supervision_layers - 1), stop=1, num=len(aux_layers)), device=device)
 
     # Training loop
     print("Starting training...")

@@ -68,3 +68,7 @@ class DGLOWNetwork(nn.Module):
                 x, z = level(x)
 
         return outputs
+    
+    @property
+    def total_supervision_layers(self):
+        return self.num_levels * self.steps_per_level

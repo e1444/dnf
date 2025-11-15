@@ -29,3 +29,7 @@ class DNFNetwork(nn.Module):
                 intermediate_outputs.append((x.flatten(start_dim=1), total_log_det.clone()))
 
         return intermediate_outputs
+    
+    @property
+    def total_supervision_layers(self):
+        return self.num_layers
