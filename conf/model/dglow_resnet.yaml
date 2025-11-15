@@ -1,0 +1,5 @@
+num_levels: 3
+steps_per_level: 6
+hidden_channels: 256
+bottleneck_channels: 128
+num_res_blocks: 3

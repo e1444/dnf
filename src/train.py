@@ -8,6 +8,7 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_mnist
 from src.models.dnf import DNFNetwork
+from src.models.dglow import DGLOWNetwork
 from src.utils.losses import deep_supervision_loss, total_loss_fn, compute_logits
 from src.utils.evaluation import evaluate
 
@@ -40,11 +41,26 @@ def train(cfg: DictConfig):
     train_loader, test_loader = load_mnist(cfg.data)
     
     # Initialize model
-    model = DNFNetwork(
-        in_channels=1, 
-        num_layers=cfg.model.num_layers, 
-        hidden_channels=cfg.model.hidden_channels
-    ).to(device)
+    model = None
+    if cfg.model.type == "dnf_resnet":
+        model = DNFNetwork(
+            in_channels=1, 
+            num_layers=cfg.model.num_layers, 
+            hidden_channels=cfg.model.hidden_channels,
+            bottleneck_channels=cfg.model.bottleneck_channels,
+            num_res_blocks=cfg.model.num_res_blocks
+        ).to(device)
+    elif cfg.model.type == "dglow_resnet":
+        model = DGLOWNetwork(
+            in_channels=1, 
+            num_levels=cfg.model.num_levels,
+            steps_per_level=cfg.model.steps_per_level,
+            hidden_channels=cfg.model.hidden_channels,
+            bottleneck_channels=cfg.model.bottleneck_channels,
+            num_res_blocks=cfg.model.num_res_blocks
+        ).to(device)
+    else:
+        raise ValueError(f"Unknown model type: {cfg.model.type}")
 
     initial_means_data = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
     trainable_means = nn.Parameter(initial_means_data)
@@ -84,10 +100,16 @@ def train(cfg: DictConfig):
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
 
-    # Loss weights
-    aux_layers = np.arange(cfg.model.num_layers - 1, step=cfg.training.aux_freq) + 1
-    alphas = torch.tensor(np.geomspace(start=cfg.training.gamma_alpha ** (cfg.model.num_layers - 1), stop=1, num=len(aux_layers)), device=device)
-    betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** (cfg.model.num_layers - 1), stop=1, num=len(aux_layers)), device=device)
+    # Loss weights for deep supervision
+    total_supervision_layers = 0
+    if cfg.model.type == "dnf_resnet":
+        total_supervision_layers = cfg.model.num_layers
+    elif cfg.model.type == "dglow_resnet":
+        total_supervision_layers = cfg.model.num_levels * cfg.model.steps_per_level
+    
+    aux_layers = np.arange(start=0, stop=total_supervision_layers - 1, step=cfg.training.aux_freq) + 1
+    alphas = torch.tensor(np.geomspace(start=cfg.training.gamma_alpha ** (total_supervision_layers - 1), stop=1, num=len(aux_layers)), device=device)
+    betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** (total_supervision_layers - 1), stop=1, num=len(aux_layers)), device=device)
 
     # Training loop
     print("Starting training...")
