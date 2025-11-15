@@ -53,22 +53,41 @@ class DGLOWNetwork(nn.Module):
 
         total_log_det = torch.zeros(x.shape[0], device=x.device)
         outputs = []
+        z_out = []
         
         for level in self.levels:
             if isinstance(level, nn.ModuleList): # Flow steps
-                x, log_det = self.squeeze(x)
-                total_log_det += log_det
+                x, log_det_squeeze = self.squeeze(x)
+                total_log_det += log_det_squeeze
                 
                 for flow_step in level:
                     x, log_det = flow_step(x)
                     total_log_det += log_det
-                    outputs.append((x.flatten(start_dim=1), total_log_det.clone()))
+                    
+                    x_out = x.flatten(start_dim=1)
+                    x_out = torch.cat([x_out] + z_out, dim=1)
+                    outputs.append((x_out, total_log_det.clone()))
 
             elif isinstance(level, Split): # Split
                 x, z = level(x)
+                z_out.append(z.flatten(start_dim=1))
 
         return outputs
     
     @property
     def total_supervision_layers(self):
         return self.num_levels * self.steps_per_level
+
+if __name__ == "__main__":
+    model = DGLOWNetwork(
+        in_channels=1,
+        num_levels=2,
+        steps_per_level=6,
+        hidden_channels=156,
+        bottleneck_channels=128,
+        num_res_blocks=3
+    )
+    x = torch.randn(16, 1, 28, 28)
+    outputs = model(x)
+    for i, (z, log_det) in enumerate(outputs):
+        print(f"Output {i}: z shape = {z.shape}, log_det shape = {log_det.shape}")

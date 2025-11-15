@@ -94,9 +94,7 @@ class Invertible1x1Conv(nn.Module):
 class Split(nn.Module):
     def __init__(self, num_channels):
         super().__init__()
-        self.conv = nn.Conv2d(num_channels, num_channels * 2, kernel_size=3, padding=1, bias=False)
 
     def forward(self, x):
-        z = self.conv(x)
-        z1, z2 = z.chunk(2, dim=1)
-        return z1, z2
+        x1, x2 = x.chunk(2, dim=1)
+        return x1, x2
