@@ -93,7 +93,7 @@ These issues are unreconcilable and require fundamental rethinking of the model,
 1. We want to learn class distributions that are separable in some latent space.
 2. We want to learn a singular mapping through the network.
 3. We want to retain the analytical properties of the model.
-4. 
+
 ### Limitations
 1. Due to the properties of high-dimensional Gaussian distributions, the model has some limitations. An intuitive understanding is that in high dimensions, almost all the probability mass of a Gaussian is concentrated in a thin hypershell at a certain radius from the mean. While mapping to hypershells is feasible for complex networks (such as ours), the real crux of the problem is modelling uncertainty. An overlapping region of two high-dimensional Gaussians is typically a manifold of one lower dimension, and the overlapping region of three is two lower. This means that the model is implicitly biased towards making confident predictions, as the probability of being in the overlapping region of multiple classes is very low.
 
