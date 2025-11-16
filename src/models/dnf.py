@@ -61,3 +61,52 @@ class DNFNetwork(nn.Module):
     @property
     def total_supervision_layers(self):
         return self.num_layers
+
+
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # --- Test DNFNetwork Invertibility ---
+    print("\n--- Testing DNFNetwork Invertibility ---")
+    try:
+        model = DNFNetwork(
+            in_channels=1,
+            num_layers=3,
+            hidden_channels=64,
+            bottleneck_channels=32,
+            num_res_blocks=2
+        ).to(device)
+        
+        x_test = torch.randn(4, 1, 28, 28).to(device)
+        
+        # Forward pass
+        outputs = model.forward(x_test)
+        z_final, log_det_fwd = outputs[-1]
+        
+        # The inverse method expects a 4D tensor, but z_final from forward is flat.
+        # We need to reshape it to the shape it would have before being flattened.
+        # This is the shape after the initial Squeeze operation.
+        b, c, h, w = x_test.shape
+        c_squeezed, h_squeezed, w_squeezed = c * 4, h // 2, w // 2
+        z_final_4d = z_final.view(b, c_squeezed, h_squeezed, w_squeezed)
+
+        # Inverse pass
+        x_recon, log_det_inv = model.inverse(z_final_4d)
+        
+        # Check reconstruction error
+        recon_error = torch.abs(x_test - x_recon).mean().item()
+        print(f"  Reconstruction Error: {recon_error:.2e}")
+
+        # Check log-determinant
+        log_det_error = torch.abs(log_det_fwd + log_det_inv).mean().item()
+        print(f"  Log-Determinant Sum: {log_det_error:.2e}")
+
+        if recon_error > 1e-5 or log_det_error > 1e-5:
+            print("  [STATUS] DNFNetwork FAILED")
+        else:
+            print("  [STATUS] DNFNetwork PASSED")
+    except Exception as e:
+        print(f"  [STATUS] DNFNetwork FAILED with exception: {e}")
+        import traceback
+        traceback.print_exc()

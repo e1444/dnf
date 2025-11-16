@@ -38,14 +38,18 @@ class Squeeze(nn.Module):
         x = x.view(b, c, h // 2, 2, w // 2, 2)
         x = x.permute(0, 1, 3, 5, 2, 4).contiguous()
         x = x.view(b, c * 4, h // 2, w // 2)
-        return x, 0
+        # Return a zero tensor with shape (batch_size,) on the correct device
+        log_det = torch.zeros(b, device=x.device)
+        return x, log_det
     
     def inverse(self, x):
         b, c, h, w = x.size()
         x = x.view(b, c // 4, 2, 2, h, w)
         x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
         x = x.view(b, c // 4, h * 2, w * 2)
-        return x, 0
+        # Return a zero tensor with shape (batch_size,) on the correct device
+        log_det = torch.zeros(b, device=x.device)
+        return x, log_det
     
 class BottleneckResNetBlock(nn.Module):
     """A bottleneck residual block for the coupling network."""
@@ -133,3 +137,89 @@ class Split(nn.Module):
     def inverse(self, x1, x2):
         x = torch.cat((x1, x2), dim=1)
         return x, 0
+    
+
+if __name__ == "__main__":
+    print("--- Testing Invertible Layers ---")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    def test_layer(layer, x, layer_name):
+        print(f"\n[TESTING] {layer_name}")
+        try:
+            layer = layer.to(device)
+            x = x.to(device)
+
+            # Forward pass
+            y, log_det_fwd = layer.forward(x)
+            
+            # Inverse pass
+            x_recon, log_det_inv = layer.inverse(y)
+
+            # Check reconstruction error
+            recon_error = torch.abs(x - x_recon).mean().item()
+            print(f"  Reconstruction Error: {recon_error:.2e}")
+
+            # Check log-determinant
+            log_det_error = torch.abs(log_det_fwd + log_det_inv).mean().item()
+            print(f"  Log-Determinant Sum: {log_det_error:.2e}")
+
+            if recon_error > 1e-6 or log_det_error > 1e-6:
+                print("  [STATUS] FAILED")
+                return False
+            else:
+                print("  [STATUS] PASSED")
+                return True
+        except Exception as e:
+            print(f"  [STATUS] FAILED with exception: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    # --- Test Cases ---
+    B, H, W = 4, 16, 16
+    all_passed = True
+
+    # Test ActNorm
+    C_an = 8
+    all_passed &= test_layer(ActNorm(C_an), torch.randn(B, C_an, H, W), "ActNorm")
+
+    # Test Squeeze
+    C_sq = 2
+    all_passed &= test_layer(Squeeze(), torch.randn(B, C_sq, H, W), "Squeeze")
+
+    # Test Invertible1x1Conv
+    C_1x1 = 12
+    all_passed &= test_layer(Invertible1x1Conv(C_1x1), torch.randn(B, C_1x1, H, W), "Invertible1x1Conv")
+
+    # Test CNNCouplingLayer
+    C_cpl = 16 # Must be even
+    all_passed &= test_layer(CNNCouplingLayer(C_cpl), torch.randn(B, C_cpl, H, W), "CNNCouplingLayer")
+
+    # Special test for Split layer
+    print("\n[TESTING] Split")
+    try:
+        C_spl = 20 # Must be even
+        split_layer = Split(C_spl).to(device)
+        x_split = torch.randn(B, C_spl, H, W).to(device)
+        x1, x2 = split_layer.forward(x_split)
+        x_recon_split, _ = split_layer.inverse(x1, x2)
+        
+        recon_error_split = torch.abs(x_split - x_recon_split).mean().item()
+        print(f"  Reconstruction Error: {recon_error_split:.2e}")
+        
+        if recon_error_split > 1e-6:
+            print("  [STATUS] FAILED")
+            all_passed = False
+        else:
+            print("  [STATUS] PASSED")
+    except Exception as e:
+        print(f"  [STATUS] FAILED with exception: {e}")
+        all_passed = False
+
+
+    print("\n--- SUMMARY ---")
+    if all_passed:
+        print("All layers passed the invertibility test!")
+    else:
+        print("One or more layers FAILED the invertibility test.")

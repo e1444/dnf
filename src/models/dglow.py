@@ -73,7 +73,6 @@ class DGLOWNetwork(nn.Module):
                     x_out = x.flatten(start_dim=1)
                     x_out = torch.cat([x_out] + z_out, dim=1)
                     outputs.append((x_out, total_log_det.clone()))
-
             elif isinstance(level, Split): # Split
                 x, z = level(x)
                 z_out.append(z.flatten(start_dim=1))
@@ -81,52 +80,37 @@ class DGLOWNetwork(nn.Module):
         return outputs
     
     def inverse(self, z_final):
-        """
-        Generates data by applying the inverse transformation from the full latent vector z_final.
-        """
         total_log_det = torch.zeros(z_final.shape[0], device=z_final.device)
         
-        # We need to know the shapes of the tensors that were split off.
-        # We can infer them from the architecture.
         z_shapes = []
-        c, h, w = 1, 28, 28 # Initial MNIST shape
+        c, h, w = 1, 28, 28
+        temp_c = c
         for i in range(self.num_levels):
-            c, h, w = c * 4, h // 2, w // 2 # Squeeze
+            temp_c, h, w = temp_c * 4, h // 2, w // 2
             if i < self.num_levels - 1:
-                z_shapes.append((c // 2, h, w)) # Shape of the split-off z
-                c = c // 2 # Update channel count for the next level
+                z_shapes.append((temp_c // 2, h, w))
+                temp_c = temp_c // 2
             else:
-                z_shapes.append((c, h, w)) # Final x shape
+                z_shapes.insert(0, (temp_c, h, w))
         
-        # Split the flat z_final vector back into its constituent parts
         split_sizes = [s[0]*s[1]*s[2] for s in z_shapes]
+        
         z_parts = z_final.split(split_sizes, dim=1)
         
-        # The last part of z_final corresponds to the active tensor 'x' before the final split.
-        x = z_parts[-1].view(z_final.shape[0], *z_shapes[-1])
-        
-        # Stack of z's that were split off, to be used in reverse.
-        z_stack = [p.view(z_final.shape[0], *s) for p, s in zip(z_parts[:-1], z_shapes[:-1])]
+        x = z_parts[0].view(z_final.shape[0], *z_shapes[0])
+        z_stack = [p.view(z_final.shape[0], *s) for p, s in zip(z_parts[1:], z_shapes[1:])]
 
-        # Iterate through levels in reverse
-        for i in reversed(range(self.num_levels)):
-            # Get the correct module list for flows and the split layer
-            flow_level = self.levels[i*2]
-            
-            # 1. Inverse Flow Steps
-            for flow_step in reversed(flow_level):
-                x, log_det = flow_step.inverse(x)
-                total_log_det += log_det
-            
-            # 2. Inverse Squeeze
-            x, log_det = self.squeeze.inverse(x)
-            total_log_det += log_det
-            
-            # 3. Inverse Split (if not the first level)
-            if i > 0:
-                split_level = self.levels[i*2 - 1]
-                z_part = z_stack.pop()
-                x, log_det = split_level.inverse(x, z_part)
+        for level in reversed(self.levels):
+            if isinstance(level, nn.ModuleList): # Flow steps
+                for flow_step in reversed(level):
+                    x, log_det = flow_step.inverse(x)
+                    total_log_det += log_det
+                    
+                x, log_det_squeeze = self.squeeze.inverse(x)
+                total_log_det += log_det_squeeze
+            elif isinstance(level, Split): # Split
+                z = z_stack.pop()
+                x, log_det = level.inverse(x, z)
                 total_log_det += log_det
                 
         return x, total_log_det
@@ -136,19 +120,86 @@ class DGLOWNetwork(nn.Module):
         return self.num_levels * self.steps_per_level
 
 if __name__ == "__main__":
-    model = DGLOWNetwork(
-        in_channels=1,
-        num_levels=2,
-        steps_per_level=6,
-        hidden_channels=156,
-        bottleneck_channels=128,
-        num_res_blocks=3
-    )
-    x = torch.randn(16, 1, 28, 28)
-    outputs = model(x)
-    for i, (z, log_det) in enumerate(outputs):
-        print(f"Output {i}: z shape = {z.shape}, log_det shape = {log_det.shape}")
-        
-    print(outputs[-1][0][0].shape)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # --- Test FlowStep Invertibility ---
+    print("\n--- Testing FlowStep Invertibility ---")
     
-    x = model.inverse(outputs[-1][0])
+    # Define parameters for the test
+    test_in_channels = 8
+    test_hidden_channels = 32
+    test_bottleneck_channels = 16
+    test_num_res_blocks = 1
+    
+    flow_step_test = FlowStep(
+        in_channels=test_in_channels,
+        hidden_channels=test_hidden_channels,
+        bottleneck_channels=test_bottleneck_channels,
+        num_res_blocks=test_num_res_blocks
+    ).to(device)
+    
+    x_test = torch.randn(4, test_in_channels, 16, 16).to(device)
+    
+    try:
+        # Forward pass
+        y_test, log_det_fwd = flow_step_test.forward(x_test)
+        
+        # Inverse pass
+        x_recon_test, log_det_inv = flow_step_test.inverse(y_test)
+        
+        # Check reconstruction error
+        recon_error = torch.abs(x_test - x_recon_test).mean().item()
+        print(f"  Reconstruction Error: {recon_error:.2e}")
+
+        # Check log-determinant
+        log_det_error = torch.abs(log_det_fwd + log_det_inv).mean().item()
+        print(f"  Log-Determinant Sum: {log_det_error:.2e}")
+
+        if recon_error > 1e-5 or log_det_error > 1e-5:
+            print("  [STATUS] FlowStep FAILED")
+        else:
+            print("  [STATUS] FlowStep PASSED")
+    except Exception as e:
+        print(f"  [STATUS] FlowStep FAILED with exception: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    # --- Test DGLOWNetwork Invertibility (1 Level) ---
+    num_levels = 2
+    print(f"\n--- Testing DGLOWNetwork Invertibility ({num_levels} Level) ---")
+    try:
+        model = DGLOWNetwork(
+            in_channels=1,
+            num_levels=num_levels,
+            steps_per_level=6,
+            hidden_channels=32,
+            bottleneck_channels=16,
+            num_res_blocks=1
+        ).to(device)
+        
+        x_test = torch.randn(4, 1, 28, 28).to(device)
+        
+        # Forward pass
+        outputs = model.forward(x_test)
+        z_final, log_det_fwd = outputs[-1]
+        
+        # Inverse pass
+        x_recon, log_det_inv = model.inverse(z_final)
+        
+        # Check reconstruction error
+        recon_error = torch.abs(x_test - x_recon).mean().item()
+        print(f"  Reconstruction Error: {recon_error:.2e}")
+
+        # Check log-determinant
+        log_det_error = torch.abs(log_det_fwd + log_det_inv).mean().item()
+        print(f"  Log-Determinant Sum: {log_det_error:.2e}")
+
+        if recon_error > 1e-5 or log_det_error > 1e-5:
+            print(f"  [STATUS] DGLOWNetwork ({num_levels} Level) FAILED")
+        else:
+            print(f"  [STATUS] DGLOWNetwork ({num_levels} Level) PASSED")
+    except Exception as e:
+        print(f"  [STATUS] DGLOWNetwork ({num_levels} Level) FAILED with exception: {e}")
+        import traceback
+        traceback.print_exc()
