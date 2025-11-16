@@ -23,6 +23,12 @@ class ActNorm(nn.Module):
         log_det = torch.sum(torch.log(torch.abs(self.scale))) * h * w
         return y, log_det
 
+    def inverse(self, y):
+        x = (y - self.bias) / self.scale
+        _, _, h, w = y.size()
+        log_det = -torch.sum(torch.log(torch.abs(self.scale))) * h * w
+        return x, log_det
+
 class Squeeze(nn.Module):
     def __init__(self):
         super().__init__()
@@ -32,6 +38,13 @@ class Squeeze(nn.Module):
         x = x.view(b, c, h // 2, 2, w // 2, 2)
         x = x.permute(0, 1, 3, 5, 2, 4).contiguous()
         x = x.view(b, c * 4, h // 2, w // 2)
+        return x, 0
+    
+    def inverse(self, x):
+        b, c, h, w = x.size()
+        x = x.view(b, c // 4, 2, 2, h, w)
+        x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
+        x = x.view(b, c // 4, h * 2, w * 2)
         return x, 0
     
 class BottleneckResNetBlock(nn.Module):
@@ -77,6 +90,17 @@ class CNNCouplingLayer(nn.Module):
         log_det = torch.sum(torch.log(s), dim=[1, 2, 3])
         return y, log_det
 
+    def inverse(self, y):
+        y_a, y_b = y.split(self.split_size, dim=1)
+        s_and_t = self.coupling_net(y_a)
+        log_s, t = s_and_t.split(self.split_size, dim=1)
+        s = torch.exp(torch.tanh(log_s))
+        
+        x_b = (y_b - t) / s
+        x = torch.cat([y_a, x_b], dim=1)
+        log_det = -torch.sum(torch.log(s), dim=[1, 2, 3])
+        return x, log_det
+
 class Invertible1x1Conv(nn.Module):
     def __init__(self, num_channels):
         super().__init__()
@@ -91,6 +115,13 @@ class Invertible1x1Conv(nn.Module):
         log_det = torch.slogdet(self.conv.weight.squeeze())[1] * h * w
         return y, log_det
 
+    def inverse(self, y):
+        W_inv = torch.inverse(self.conv.weight.squeeze()).view(self.conv.in_channels, self.conv.in_channels, 1, 1)
+        x = nn.functional.conv2d(y, W_inv)
+        _, _, h, w = y.size()
+        log_det = -torch.slogdet(self.conv.weight.squeeze())[1] * h * w
+        return x, log_det
+
 class Split(nn.Module):
     def __init__(self, num_channels):
         super().__init__()
@@ -98,3 +129,7 @@ class Split(nn.Module):
     def forward(self, x):
         x1, x2 = x.chunk(2, dim=1)
         return x1, x2
+
+    def inverse(self, x1, x2):
+        x = torch.cat((x1, x2), dim=1)
+        return x, 0

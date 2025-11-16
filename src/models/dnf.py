@@ -32,6 +32,32 @@ class DNFNetwork(nn.Module):
 
         return intermediate_outputs
     
+    def inverse(self, z):
+        """
+        Generates data by applying the inverse transformation from the latent space z back to the data space.
+        
+        Args:
+            z (torch.Tensor): A tensor from the latent space, typically of shape 
+                              (batch_size, channels, height, width).
+        
+        Returns:
+            A tuple (x, total_log_det):
+                x (torch.Tensor): The generated data tensor.
+                total_log_det (torch.Tensor): The log-determinant of the inverse transformation.
+        """
+        total_log_det = torch.zeros(z.shape[0], device=z.device)
+
+        # Apply layers in reverse order
+        for layer in reversed(self.layers):
+            z, log_det = layer.inverse(z)
+            total_log_det += log_det
+
+        # Apply inverse squeeze
+        x, log_det = self.squeeze.inverse(z)
+        total_log_det += log_det
+
+        return x, total_log_det
+    
     @property
     def total_supervision_layers(self):
         return self.num_layers
