@@ -119,9 +119,9 @@ def train(cfg: DictConfig):
             loss += cfg.training.r_var * (trainable_log_vars ** 2).mean()
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            torch.nn.utils.clip_grad_norm_([trainable_means], max_norm=1e-2)
-            torch.nn.utils.clip_grad_norm_([trainable_log_vars], max_norm=1e-2)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
+            torch.nn.utils.clip_grad_norm_([trainable_means], max_norm=cfg.training.gradclip_means)
+            torch.nn.utils.clip_grad_norm_([trainable_log_vars], max_norm=cfg.training.gradclip_vars)
             optimizer.step()
 
             total_loss += loss.item()
