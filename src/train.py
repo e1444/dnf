@@ -12,6 +12,8 @@ from src.models.dglow import DGLOWNetwork
 from src.utils.losses import deep_supervision_loss, total_loss_fn, compute_logits
 from src.utils.evaluation import evaluate
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def get_target_distributions(means_param, log_vars_param, num_classes):
     """Creates a list of target distributions."""
     return [
@@ -33,10 +35,7 @@ def train(cfg: DictConfig):
         config=config_dict,
         name=cfg.wandb.name
     )
-
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    
     # Load data
     train_loader, test_loader = load_mnist(cfg.data)
     
