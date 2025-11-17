@@ -22,8 +22,8 @@ def evaluate(model, data_loader, device, cfg, target_dists, alphas, betas, lambd
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             
             intermediate_outputs = model(x_batch)
+            intermediate_outputs = [(z.view(z.size(0), -1), log_det) for z, log_det in intermediate_outputs]
             aux_outputs = [intermediate_outputs[i] for i in aux_layers]
-            aux_outputs = [(z.view(z.size(0), -1), log_det) for z, log_det in aux_outputs]
             z, log_det = intermediate_outputs[-1]
             
             aux_logits = [
