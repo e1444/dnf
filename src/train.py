@@ -14,12 +14,13 @@ from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def get_target_distributions(means_param, log_vars_param, num_classes):
+def get_target_distributions(means_param, v, num_classes):
     """Creates a list of target distributions."""
+    vars = torch.log(1 + torch.exp(v)) + 1e-3
     return [
         torch.distributions.MultivariateNormal(
             loc=means_param[i],
-            covariance_matrix=torch.diag(torch.exp(log_vars_param[i]))
+            covariance_matrix=torch.diag(vars[i])
         ) for i in range(num_classes)
     ]
 
@@ -45,13 +46,13 @@ def train(cfg: DictConfig):
     initial_means_data = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
     trainable_means = nn.Parameter(initial_means_data)
 
-    initial_log_vars_data = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
-    trainable_log_vars = nn.Parameter(initial_log_vars_data)
+    intial_v = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
+    trainable_v = nn.Parameter(intial_v)
 
     # --- FIX: Initialize optimizer BEFORE loading state ---
     optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
     optimizer.add_param_group({'params': [trainable_means], 'lr': cfg.training.lr_means})
-    optimizer.add_param_group({'params': [trainable_log_vars], 'lr': cfg.training.lr_vars})
+    optimizer.add_param_group({'params': [trainable_v], 'lr': cfg.training.lr_vars})
 
     start_epoch = 0
     if cfg.training.resume_from_checkpoint is not None:
@@ -61,7 +62,7 @@ def train(cfg: DictConfig):
         
         with torch.no_grad():
             trainable_means.copy_(checkpoint['trainable_means'])
-            trainable_log_vars.copy_(checkpoint['trainable_log_vars'])
+            trainable_v.copy_(checkpoint['trainable_v'])
         
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
@@ -73,9 +74,9 @@ def train(cfg: DictConfig):
             initial_means += torch.randn_like(initial_means) * cfg.training.latent_noise
             trainable_means.copy_(initial_means)
 
-            initial_log_vars = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(torch.tensor(cfg.training.latent_variance))
+            initial_log_vars = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(torch.tensor(cfg.training.latent_v))
             initial_log_vars += torch.randn_like(initial_log_vars) * cfg.training.latent_noise
-            trainable_log_vars.copy_(initial_log_vars)
+            trainable_v.copy_(initial_log_vars)
 
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
@@ -96,7 +97,7 @@ def train(cfg: DictConfig):
             optimizer.zero_grad()
 
             # Get the current dynamic target distributions
-            target_dists = get_target_distributions(trainable_means, trainable_log_vars, cfg.training.num_classes)
+            target_dists = get_target_distributions(trainable_means, trainable_v, cfg.training.num_classes)
 
             # Forward pass
             intermediate_outputs = model(x_batch)
@@ -117,12 +118,11 @@ def train(cfg: DictConfig):
             
             # Regularization terms
             loss += cfg.training.r_logdet * (log_det ** 2).mean()
-            loss += cfg.training.r_var * ((trainable_log_vars - torch.log(torch.tensor(cfg.training.latent_variance, device=device))) ** 2).mean()
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
             torch.nn.utils.clip_grad_norm_([trainable_means], max_norm=cfg.training.gradclip_means)
-            torch.nn.utils.clip_grad_norm_([trainable_log_vars], max_norm=cfg.training.gradclip_vars)
+            torch.nn.utils.clip_grad_norm_([trainable_v], max_norm=cfg.training.gradclip_vars)
             optimizer.step()
 
             total_loss += loss.item()
@@ -133,7 +133,7 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            eval_target_dists = get_target_distributions(trainable_means, trainable_log_vars, cfg.training.num_classes)
+            eval_target_dists = get_target_distributions(trainable_means, trainable_v, cfg.training.num_classes)
             test_loss, accuracy, nll = evaluate(model, test_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
@@ -153,7 +153,7 @@ def train(cfg: DictConfig):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'trainable_means': trainable_means,
-                'trainable_log_vars': trainable_log_vars,
+                'trainable_v': trainable_v,
             }, checkpoint_path)
             wandb.save(checkpoint_path)
             
@@ -162,7 +162,7 @@ def train(cfg: DictConfig):
     print("Training completed.")
 
     # Return the final accuracy for Optuna
-    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(trainable_means, trainable_log_vars, cfg.training.num_classes), alphas, betas, cfg.training.lambda_, aux_layers)
+    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(trainable_means, trainable_v, cfg.training.num_classes), alphas, betas, cfg.training.lambda_, aux_layers)
     return accuracy
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ scheduler:
 
 # Initialization
 latent_separation: 1.0
-latent_variance: 0.707
+latent_v: 0
 latent_noise: 0.1
 features: 784
 num_classes: 10
