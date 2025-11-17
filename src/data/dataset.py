@@ -21,6 +21,8 @@ def load_mnist(cfg: DictConfig):
             # In mnist.yaml, the transform is defined with 'type' and parameters
             # We need to convert 'type' to '_target_' for hydra instantiation
             transform_config = {'_target_': f'torchvision.transforms.{t_cfg["type"]}'}
+            if 'params' in t_cfg and t_cfg.params:
+                transform_config.update(t_cfg.params)
             if 'mean' in t_cfg and 'std' in t_cfg:
                 transform_config['mean'] = t_cfg['mean']
                 transform_config['std'] = t_cfg['std']
