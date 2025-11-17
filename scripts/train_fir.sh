@@ -23,6 +23,22 @@ module load cuda/12.6
 
 source ENV/bin/activate
 
+# --- DIAGNOSTICS ---
+echo "--- Job Diagnostics ---"
+echo "Date: $(date)"
+echo "Job ID: ${SLURM_JOB_ID}"
+echo "Node: ${SLURM_JOB_NODELIST}"
+echo "CPUs per task: ${SLURM_CPUS_PER_TASK}"
+echo "Assigned GPUs: ${SLURM_GPUS_ON_NODE}"
+echo "CUDA_VISIBLE_DEVICES: '${CUDA_VISIBLE_DEVICES}'"
+echo "Python executable: $(which python)"
+echo "PyTorch version: $(python -c 'import torch; print(torch.__version__)')"
+echo "CUDA available in PyTorch: $(python -c 'import torch; print(torch.cuda.is_available())')"
+echo "--- nvidia-smi output ---"
+nvidia-smi
+echo "-------------------------"
+# --- END DIAGNOSTICS ---
+
 # Run the training script, overriding the Hydra run directory
 python -m src.train \
     hydra.run.dir=${LOG_DIR} \
