@@ -14,9 +14,9 @@ from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def get_target_distributions(means_param, v, num_classes):
+def get_target_distributions(means_param, v, num_classes, eps=1e-2):
     """Creates a list of target distributions."""
-    vars = torch.log(1 + torch.exp(v)) + 1e-3
+    vars = torch.nn.functional.softplus(v) + eps
     return [
         torch.distributions.MultivariateNormal(
             loc=means_param[i],
@@ -50,9 +50,14 @@ def train(cfg: DictConfig):
         initial_means += torch.randn_like(initial_means) * cfg.training.latent_noise
         trainable_means = nn.Parameter(initial_means)
 
-        initial_log_vars = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(torch.tensor(cfg.training.latent_v))
-        initial_log_vars += torch.randn_like(initial_log_vars) * cfg.training.latent_noise
-        trainable_v = nn.Parameter(initial_log_vars)
+        initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(torch.tensor(cfg.training.latent_v))
+        initial_v += torch.randn_like(initial_v) * cfg.training.latent_noise
+        trainable_v = nn.Parameter(initial_v)
+
+    if cfg.training.lr_means == 0:
+        trainable_means.requires_grad_(False)
+    if cfg.training.lr_vars == 0:
+        trainable_v.requires_grad_(False)
 
     optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
     optimizer.add_param_group({'params': [trainable_means], 'lr': cfg.training.lr_means, 'weight_decay': 0.0})
@@ -69,12 +74,11 @@ def train(cfg: DictConfig):
             trainable_v.copy_(checkpoint['trainable_v'])
             
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        optimizer.param_groups[0]['lr'] = cfg.training.lr
+        optimizer.param_groups[0]['weight_decay'] = cfg.training.weight_decay
+        optimizer.param_groups[1]['lr'] = cfg.training.lr_means
+        optimizer.param_groups[2]['lr'] = cfg.training.lr_vars
         start_epoch = checkpoint['epoch'] + 1
-    else:
-        if cfg.training.lr_means == 0:
-            trainable_means.requires_grad_(False)
-        if cfg.training.lr_vars == 0:
-            trainable_v.requires_grad_(False)
         
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
@@ -152,8 +156,8 @@ def train(cfg: DictConfig):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'trainable_means': trainable_means,
-                'trainable_v': trainable_v,
+                'trainable_means': trainable_means.detach().cpu().clone(),
+                'trainable_v': trainable_v.detach().cpu().clone(),
             }, checkpoint_path)
             wandb.save(checkpoint_path)
             
