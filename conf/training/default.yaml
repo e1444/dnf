@@ -15,8 +15,8 @@ gamma_alpha: 0.5
 gamma_beta: 1.0
 beta_final: 2.0
 aux_freq: 1
+aux_total: 8
 r_logdet: 1e-2
-r_var: 1e-4
 
 # Scheduler settings
 scheduler:
