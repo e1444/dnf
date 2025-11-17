@@ -101,6 +101,8 @@ def train(cfg: DictConfig):
 
             # Forward pass
             intermediate_outputs = model(x_batch)
+            # Flatten outputs
+            intermediate_outputs = [(z.view(z.size(0), -1), log_det) for z, log_det in intermediate_outputs]
             aux_outputs = [intermediate_outputs[i] for i in aux_layers]
             z, log_det = intermediate_outputs[-1]
             

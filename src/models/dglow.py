@@ -114,39 +114,57 @@ class DGLOWNetwork(nn.Module):
     def total_supervision_layers(self):
         return self.num_levels * self.steps_per_level
 
+
 if __name__ == "__main__":
-    # test flowstep invertibility
-    x = torch.randn(8, 2, 14, 14)
+    # --- Test FlowStep Invertibility ---
+    print("--- Testing FlowStep Invertibility ---")
+    x_step = torch.randn(8, 2, 14, 14)
     step = FlowStep(
         in_channels=2,
-        hidden_channels=512,
-        bottleneck_channels=128,
+        hidden_channels=64,
+        bottleneck_channels=16,
         num_res_blocks=3,
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"
     )
-    z, log_det = step(x)
-    x_recon, log_det_inv = step.inverse(z)
-    print(torch.allclose(x, x_recon, atol=1e-4))
+    z, log_det_fwd = step(x_step)
+    x_recon_step, log_det_inv = step.inverse(z)
     
-    
+    recon_error_step = torch.abs(x_step - x_recon_step).mean().item()
+    log_det_error_step = torch.abs(log_det_fwd + log_det_inv).mean().item()
+
+    print(f"FlowStep Reconstruction Error: {recon_error_step:.2e}")
+    print(f"FlowStep Log-Determinant Sum: {log_det_error_step:.2e}")
+    if recon_error_step < 1e-5 and log_det_error_step < 1e-5:
+        print("[STATUS] PASSED")
+    else:
+        print("[STATUS] FAILED")
+
+
+    # --- Test DGLOWNetwork Invertibility ---
+    print("\n--- Testing DGLOWNetwork Invertibility ---")
     model = DGLOWNetwork(
         in_channels=1,
         num_levels=2,
         steps_per_level=1,
-        hidden_channels=512,
-        bottleneck_channels=128,
+        hidden_channels=64,
+        bottleneck_channels=16,
         num_res_blocks=3,
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"
     )
-    x = torch.randn(8, 1, 28, 28)
-    outputs = model(x)
-    # print(outputs[-1][0].shape)
-    # for output in outputs:
-    #     print(torch.allclose(output[0], x.flatten(start_dim=1)))
-        
-    x_recon, _ = model.inverse(outputs[-1][0])
+    x_net = torch.randn(8, 1, 28, 28)
+    outputs = model(x_net)
     
-    # evaluate
-    print(torch.allclose(x, x_recon, atol=1e-4))
+    # The final output of the forward pass is the reconstructed image
+    x_recon_fwd = outputs[-1][0]
+    
+    # The inverse method should also reconstruct the image
+    x_recon_inv, _ = model.inverse(x_recon_fwd)
+    
+    recon_error_net = torch.abs(x_net - x_recon_inv).mean().item()
+    print(f"DGLOWNetwork Reconstruction Error: {recon_error_net:.2e}")
+    if recon_error_net < 1e-5:
+        print("[STATUS] PASSED")
+    else:
+        print("[STATUS] FAILED")
