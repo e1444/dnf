@@ -50,7 +50,7 @@ def train(cfg: DictConfig):
         initial_means += torch.randn_like(initial_means) * cfg.training.latent_noise
         trainable_means = nn.Parameter(initial_means)
 
-        initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(torch.tensor(cfg.training.latent_v))
+        initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.tensor(cfg.training.latent_v)
         initial_v += torch.randn_like(initial_v) * cfg.training.latent_noise
         trainable_v = nn.Parameter(initial_v)
 
