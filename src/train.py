@@ -54,10 +54,6 @@ def train(cfg: DictConfig):
         initial_log_vars += torch.randn_like(initial_log_vars) * cfg.training.latent_noise
         trainable_v = nn.Parameter(initial_log_vars)
 
-    optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
-    optimizer.add_param_group({'params': [trainable_means], 'lr': cfg.training.lr_means, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': [trainable_v], 'lr': cfg.training.lr_vars, 'weight_decay': 0.0})
-
     start_epoch = 0
     if cfg.training.resume_from_checkpoint is not None:
         print(f"Resuming training from {cfg.training.resume_from_checkpoint}")
@@ -67,10 +63,26 @@ def train(cfg: DictConfig):
         with torch.no_grad():
             trainable_means.copy_(checkpoint['trainable_means'])
             trainable_v.copy_(checkpoint['trainable_v'])
-        
+            
+        optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
+        optimizer.add_param_group({'params': [trainable_means], 'lr': cfg.training.lr_means, 'weight_decay': 0.0})
+        optimizer.add_param_group({'params': [trainable_v], 'lr': cfg.training.lr_vars, 'weight_decay': 0.0})
+            
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
-    
+    else:
+        optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
+        
+        if cfg.training.lr_means > 0:
+            optimizer.add_param_group({'params': [trainable_means], 'lr': cfg.training.lr_means, 'weight_decay': 0.0})
+        else:
+            trainable_means.requires_grad_(False)
+            
+        if cfg.training.lr_vars > 0:
+            optimizer.add_param_group({'params': [trainable_v], 'lr': cfg.training.lr_vars, 'weight_decay': 0.0})
+        else:
+            trainable_v.requires_grad_(False)
+        
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
 
