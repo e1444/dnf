@@ -16,14 +16,12 @@ mkdir -p ${LOG_DIR}
 
 exec > ${LOG_DIR}/slurm-${SLURM_JOB_ID}.out 2> ${LOG_DIR}/slurm-${SLURM_JOB_ID}.err
 
+module purge
 module load StdEnv/2023
 module load python/3.11.5
 module load cuda/12.6
 
-# virtualenv --no-download --system-site-packages ENV --python=python3.11
 source ENV/bin/activate
-
-# pip install -r requirements.txt
 
 # Run the training script, overriding the Hydra run directory
 python -m src.train \
@@ -31,12 +29,4 @@ python -m src.train \
     data.dataset.num_workers=${SLURM_CPUS_PER_TASK} \
     model=dglow_resnet \
     training.lr_means=0 \
-    training.lr_vars=0.001 \
     "$@" # Pass command line arguments to the script
-    # training.resume_from_checkpoint=logs/2025-11-14/13-23-09/checkpoint_epoch_50.pth
-
-# python -m src.train \
-#     --multirun \
-#     hydra.sweep.dir=${LOG_DIR} \
-#     data.dataset.num_workers=${SLURM_CPUS_PER_TASK} \
-#     +hpo=default

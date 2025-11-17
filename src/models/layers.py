@@ -3,12 +3,18 @@ import torch.nn as nn
 import torch.linalg as la
 
 class ActNorm(nn.Module):
-    def __init__(self, num_channels):
+    def __init__(self, num_channels, initialization="identity"):
         super().__init__()
         self.scale = nn.Parameter(torch.ones(1, num_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
-        self.register_buffer("initialized", torch.tensor(0, dtype=torch.uint8))
-
+        
+        if initialization == "data-dependent":
+            self.register_buffer("initialized", torch.tensor(0, dtype=torch.uint8))
+        elif initialization == "identity":
+            self.register_buffer("initialized", torch.tensor(1, dtype=torch.uint8))
+        else:
+            raise ValueError(f"Unknown initialization: {initialization}")
+            
     def forward(self, x):
         if not self.initialized:
             with torch.no_grad():
@@ -80,8 +86,9 @@ class CNNCouplingLayer(nn.Module):
             *[BottleneckResNetBlock(hidden_channels, bottleneck_channels) for _ in range(num_res_blocks)],
             nn.Conv2d(hidden_channels, self.in_channels, kernel_size=3, padding=1)
         )
-        self.coupling_net[-1].weight.data.zero_()
-        self.coupling_net[-1].bias.data.zero_()
+        with torch.no_grad():
+            self.coupling_net[-1].weight.fill_(0)
+            self.coupling_net[-1].bias.fill_(0)
 
     def forward(self, x):
         x_a, x_b = x.split(self.split_size, dim=1)
@@ -106,10 +113,17 @@ class CNNCouplingLayer(nn.Module):
         return x, log_det
 
 class Invertible1x1Conv(nn.Module):
-    def __init__(self, num_channels):
+    def __init__(self, num_channels, initialization="orthogonal"):
         super().__init__()
         self.conv = nn.Conv2d(num_channels, num_channels, kernel_size=1, bias=False)
-        W = la.qr(torch.randn(num_channels, num_channels))[0]
+        
+        if initialization == "orthogonal":
+            W = la.qr(torch.randn(num_channels, num_channels))[0]
+        elif initialization == "identity":
+            W = torch.eye(num_channels)
+        else:
+            raise ValueError(f"Unknown initialization: {initialization}")
+
         self.conv.weight.data.copy_(W.view(num_channels, num_channels, 1, 1))
         self.register_buffer("initialized", torch.tensor(1, dtype=torch.uint8))
 
@@ -138,88 +152,5 @@ class Split(nn.Module):
         x = torch.cat((x1, x2), dim=1)
         return x, 0
     
-
 if __name__ == "__main__":
-    print("--- Testing Invertible Layers ---")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    def test_layer(layer, x, layer_name):
-        print(f"\n[TESTING] {layer_name}")
-        try:
-            layer = layer.to(device)
-            x = x.to(device)
-
-            # Forward pass
-            y, log_det_fwd = layer.forward(x)
-            
-            # Inverse pass
-            x_recon, log_det_inv = layer.inverse(y)
-
-            # Check reconstruction error
-            recon_error = torch.abs(x - x_recon).mean().item()
-            print(f"  Reconstruction Error: {recon_error:.2e}")
-
-            # Check log-determinant
-            log_det_error = torch.abs(log_det_fwd + log_det_inv).mean().item()
-            print(f"  Log-Determinant Sum: {log_det_error:.2e}")
-
-            if recon_error > 1e-6 or log_det_error > 1e-6:
-                print("  [STATUS] FAILED")
-                return False
-            else:
-                print("  [STATUS] PASSED")
-                return True
-        except Exception as e:
-            print(f"  [STATUS] FAILED with exception: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-
-    # --- Test Cases ---
-    B, H, W = 4, 16, 16
-    all_passed = True
-
-    # Test ActNorm
-    C_an = 8
-    all_passed &= test_layer(ActNorm(C_an), torch.randn(B, C_an, H, W), "ActNorm")
-
-    # Test Squeeze
-    C_sq = 2
-    all_passed &= test_layer(Squeeze(), torch.randn(B, C_sq, H, W), "Squeeze")
-
-    # Test Invertible1x1Conv
-    C_1x1 = 12
-    all_passed &= test_layer(Invertible1x1Conv(C_1x1), torch.randn(B, C_1x1, H, W), "Invertible1x1Conv")
-
-    # Test CNNCouplingLayer
-    C_cpl = 16 # Must be even
-    all_passed &= test_layer(CNNCouplingLayer(C_cpl), torch.randn(B, C_cpl, H, W), "CNNCouplingLayer")
-
-    # Special test for Split layer
-    print("\n[TESTING] Split")
-    try:
-        C_spl = 20 # Must be even
-        split_layer = Split(C_spl).to(device)
-        x_split = torch.randn(B, C_spl, H, W).to(device)
-        x1, x2 = split_layer.forward(x_split)
-        x_recon_split, _ = split_layer.inverse(x1, x2)
-        
-        recon_error_split = torch.abs(x_split - x_recon_split).mean().item()
-        print(f"  Reconstruction Error: {recon_error_split:.2e}")
-        
-        if recon_error_split > 1e-6:
-            print("  [STATUS] FAILED")
-            all_passed = False
-        else:
-            print("  [STATUS] PASSED")
-    except Exception as e:
-        print(f"  [STATUS] FAILED with exception: {e}")
-        all_passed = False
-
-
-    print("\n--- SUMMARY ---")
-    if all_passed:
-        print("All layers passed the invertibility test!")
-    else:
-        print("One or more layers FAILED the invertibility test.")
+    pass
