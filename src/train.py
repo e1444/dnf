@@ -42,17 +42,21 @@ def train(cfg: DictConfig):
     
     # Initialize model
     model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
+    
+    with torch.no_grad():
+        initial_means = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
+        for i in range(cfg.training.num_classes):
+            initial_means[i, i] = cfg.training.latent_separation
+        initial_means += torch.randn_like(initial_means) * cfg.training.latent_noise
+        trainable_means = nn.Parameter(initial_means)
 
-    initial_means_data = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
-    trainable_means = nn.Parameter(initial_means_data)
+        initial_log_vars = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(torch.tensor(cfg.training.latent_v))
+        initial_log_vars += torch.randn_like(initial_log_vars) * cfg.training.latent_noise
+        trainable_v = nn.Parameter(initial_log_vars)
 
-    intial_v = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
-    trainable_v = nn.Parameter(intial_v)
-
-    # --- FIX: Initialize optimizer BEFORE loading state ---
     optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
-    optimizer.add_param_group({'params': [trainable_means], 'lr': cfg.training.lr_means})
-    optimizer.add_param_group({'params': [trainable_v], 'lr': cfg.training.lr_vars})
+    optimizer.add_param_group({'params': [trainable_means], 'lr': cfg.training.lr_means, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [trainable_v], 'lr': cfg.training.lr_vars, 'weight_decay': 0.0})
 
     start_epoch = 0
     if cfg.training.resume_from_checkpoint is not None:
@@ -66,24 +70,13 @@ def train(cfg: DictConfig):
         
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
-    else:
-        with torch.no_grad():
-            initial_means = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
-            for i in range(cfg.training.num_classes):
-                initial_means[i, i] = cfg.training.latent_separation
-            initial_means += torch.randn_like(initial_means) * cfg.training.latent_noise
-            trainable_means.copy_(initial_means)
-
-            initial_log_vars = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.log(torch.tensor(cfg.training.latent_v))
-            initial_log_vars += torch.randn_like(initial_log_vars) * cfg.training.latent_noise
-            trainable_v.copy_(initial_log_vars)
-
+    
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
 
     aux_layers = np.arange(start=cfg.training.aux_freq - 1, stop=cfg.training.aux_total, step=cfg.training.aux_freq)
-    alphas = torch.tensor(np.geomspace(start=cfg.training.gamma_alpha ** (model.total_supervision_layers - 1), stop=1, num=len(aux_layers)), device=device)
-    betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** (model.total_supervision_layers - 1), stop=1, num=len(aux_layers)), device=device)
+    alphas = torch.tensor(np.geomspace(start=cfg.training.gamma_alpha ** len(aux_layers), stop=1, num=len(aux_layers)), device=device)
+    betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** len(aux_layers), stop=1, num=len(aux_layers)), device=device)
 
     # Training loop
     print("Starting training...")
