@@ -3,6 +3,12 @@ dataset:
   path: "./data/mnist"
   download: true
   transform:
+    - type: "RandomAffine"
+      degrees: 10         # Rotates the image by up to +/- 10 degrees
+      translate: [0.1, 0.1] # Shifts the image by up to 10% horizontally and vertically
+      scale: [0.9, 1.1]   # Zooms the image between 90% and 110%
+    - type: "ElasticTransform"
+      alpha: 20.0         # Controls the intensity of the elastic deformation
     - type: "ToTensor"
     - type: "Normalize"
       mean: [0.5]
