@@ -117,7 +117,7 @@ def train(cfg: DictConfig):
             
             # Regularization terms
             loss += cfg.training.r_logdet * (log_det ** 2).mean()
-            loss += cfg.training.r_var * (trainable_log_vars ** 2).mean()
+            loss += cfg.training.r_var * ((trainable_log_vars - torch.log(torch.tensor(cfg.training.latent_variance, device=device))) ** 2).mean()
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
