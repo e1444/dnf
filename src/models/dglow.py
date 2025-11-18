@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
+from layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
 
 class FlowStep(nn.Module):
     def __init__(self, in_channels, hidden_channels, bottleneck_channels, num_res_blocks, actnorm_initialization="identity", invconv_initialization="orthogonal"):
@@ -27,15 +27,17 @@ class FlowStep(nn.Module):
         return z, log_det_act + log_det_conv + log_det_coup
 
 class DGLOWNetwork(nn.Module):
-    def __init__(self, in_channels: int, num_levels: int, steps_per_level: int, hidden_channels: int, bottleneck_channels: int, num_res_blocks: int, actnorm_initialization: str = "identity", invconv_initialization: str = "orthogonal"):
+    def __init__(self, in_channels: int, num_fixed_levels: int,  num_split_levels: int, steps_per_level: int, hidden_channels: int, bottleneck_channels: int, num_res_blocks: int, actnorm_initialization: str = "identity", invconv_initialization: str = "orthogonal"):
         super(DGLOWNetwork, self).__init__()
         self.squeeze = Squeeze()
-        self.levels = nn.ModuleList()
-        self.num_levels = num_levels
+        self.fixed_levels = nn.ModuleList()
+        self.split_levels = nn.ModuleList()
+        self.num_fixed_levels = num_fixed_levels
+        self.num_split_levels = num_split_levels
         self.steps_per_level = steps_per_level
         
         current_channels = in_channels
-        for _ in range(num_levels):
+        for _ in range(num_fixed_levels):
             current_channels *= 4  # After Squeeze
             level_flows = nn.ModuleList([
                 FlowStep(
@@ -47,20 +49,56 @@ class DGLOWNetwork(nn.Module):
                     invconv_initialization=invconv_initialization
                 ) for _ in range(steps_per_level)
             ])
-            self.levels.append(level_flows)
+            self.fixed_levels.append(level_flows)
+        
+        current_channels = in_channels
+        for _ in range(num_split_levels):
+            current_channels *= 4  # After Squeeze
+            level_flows = nn.ModuleList([
+                FlowStep(
+                    current_channels, 
+                    hidden_channels, 
+                    bottleneck_channels=bottleneck_channels, 
+                    num_res_blocks=num_res_blocks,
+                    actnorm_initialization=actnorm_initialization,
+                    invconv_initialization=invconv_initialization
+                ) for _ in range(steps_per_level)
+            ])
+            self.split_levels.append(level_flows)
             
             split = Split(current_channels)
-            self.levels.append(split)
+            self.split_levels.append(split)
             current_channels //= 2  # After Split
 
-        self.levels = self.levels[:-1]  # Remove last split
+        self.split_levels = self.split_levels[:-1]  # Remove last split
 
     def forward(self, x):
         total_log_det = torch.zeros(x.shape[0], device=x.device)
         outputs = []
+        
+        squeezes = 0
+        for level in self.fixed_levels:
+            x, log_det_squeeze = self.squeeze(x)
+            total_log_det += log_det_squeeze
+            squeezes += 1
+            
+            for flow_step in level:
+                x, log_det = flow_step(x)
+                total_log_det += log_det
+            
+            x_out = x
+            for _ in range(squeezes):
+                x_out, log_det = self.squeeze.inverse(x_out)
+                total_log_det += log_det
+                
+            outputs.append((x_out, total_log_det.clone()))
+            
+        for _ in range(squeezes):
+            x, log_det = self.squeeze.inverse(x)
+            total_log_det += log_det
         z_out = []
         
-        for level in self.levels:
+        for level in self.split_levels:
             if isinstance(level, nn.ModuleList): # Flow steps
                 x, log_det_squeeze = self.squeeze(x)
                 total_log_det += log_det_squeeze
@@ -85,14 +123,14 @@ class DGLOWNetwork(nn.Module):
         zs = []
         x = z_final
         
-        for level in self.levels:
+        for level in self.split_levels:
             if isinstance(level, Split): # Split
                 x, z = level(x)
                 zs.append(z)
             elif isinstance(level, nn.ModuleList): # Flow steps
                 x, _ = self.squeeze(x)
         
-        for level in reversed(self.levels):
+        for level in reversed(self.split_levels):
             if isinstance(level, nn.ModuleList): # Flow steps
                 for flow_step in reversed(level):
                     x, log_det = flow_step.inverse(x)
@@ -105,11 +143,22 @@ class DGLOWNetwork(nn.Module):
                 x, log_det = level.inverse(x, z)
                 total_log_det += log_det
                 
+        for level in self.fixed_levels:
+            x, _ = self.squeeze(x)
+                
+        for level in reversed(self.fixed_levels):
+            for flow_step in reversed(level):
+                x, log_det = flow_step.inverse(x)
+                total_log_det += log_det
+            
+            x, log_det_squeeze = self.squeeze.inverse(x)
+            total_log_det += log_det_squeeze
+                
         return x, total_log_det
     
     @property
     def total_supervision_layers(self):
-        return self.num_levels * self.steps_per_level
+        return (self.num_split_levels + self.num_fixed_levels) * self.steps_per_level
 
 
 if __name__ == "__main__":
@@ -142,7 +191,8 @@ if __name__ == "__main__":
     print("\n--- Testing DGLOWNetwork Invertibility ---")
     model = DGLOWNetwork(
         in_channels=1,
-        num_levels=3,
+        num_fixed_levels=1,
+        num_split_levels=3,
         steps_per_level=1,
         hidden_channels=64,
         bottleneck_channels=16,
