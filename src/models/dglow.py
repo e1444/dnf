@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
+from layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
 
 class FlowStep(nn.Module):
     def __init__(self, in_channels, hidden_channels, bottleneck_channels, num_res_blocks, actnorm_initialization="identity", invconv_initialization="orthogonal"):
@@ -56,9 +56,6 @@ class DGLOWNetwork(nn.Module):
         self.levels = self.levels[:-1]  # Remove last split
 
     def forward(self, x):
-        if len(x.shape) == 2:
-            x = x.view(-1, 1, 28, 28)
-
         total_log_det = torch.zeros(x.shape[0], device=x.device)
         outputs = []
         z_out = []
@@ -73,7 +70,7 @@ class DGLOWNetwork(nn.Module):
                     total_log_det += log_det
                     
                     x_out, log_det = self.squeeze.inverse(x)
-                    for z in z_out:
+                    for z in reversed(z_out):
                         x_out = torch.cat([x_out, z], dim=1)
                         x_out, log_det = self.squeeze.inverse(x_out)
                     outputs.append((x_out, total_log_det.clone() + log_det))
@@ -145,7 +142,7 @@ if __name__ == "__main__":
     print("\n--- Testing DGLOWNetwork Invertibility ---")
     model = DGLOWNetwork(
         in_channels=1,
-        num_levels=2,
+        num_levels=3,
         steps_per_level=1,
         hidden_channels=64,
         bottleneck_channels=16,
@@ -153,7 +150,7 @@ if __name__ == "__main__":
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"
     )
-    x_net = torch.randn(8, 1, 28, 28)
+    x_net = torch.randn(8, 1, 32, 32)
     outputs = model(x_net)
     
     # The final output of the forward pass is the reconstructed image

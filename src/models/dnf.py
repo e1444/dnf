@@ -16,9 +16,6 @@ class DNFNetwork(nn.Module):
             self.layers.append(CNNCouplingLayer(current_channels, hidden_channels=hidden_channels, bottleneck_channels=bottleneck_channels, num_res_blocks=num_res_blocks))
 
     def forward(self, x):
-        if len(x.shape) == 2:
-            x = x.view(-1, 1, 28, 28)
-
         total_log_det = torch.zeros(x.shape[0], device=x.device)
         x, log_det = self.squeeze(x)
         total_log_det += log_det
