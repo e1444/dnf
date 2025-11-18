@@ -114,8 +114,8 @@ def train(cfg: DictConfig):
             logits = compute_logits(z, log_det, target_dists)
             
             # Calculate loss
-            aux_loss = deep_supervision_loss(aux_logits, y_batch, alphas, betas)
-            final_loss = cfg.training.beta_final * total_loss_fn(logits, y_batch, lambda_=cfg.training.lambda_)
+            aux_loss = deep_supervision_loss(aux_logits, y_batch, alphas, betas, label_smoothing=cfg.training.label_smoothing)
+            final_loss = cfg.training.beta_final * total_loss_fn(logits, y_batch, lambda_=cfg.training.lambda_, label_smoothing=cfg.training.label_smoothing)
             loss = aux_loss + final_loss
             
             # Regularization terms

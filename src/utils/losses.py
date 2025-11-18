@@ -8,12 +8,12 @@ def compute_logits(z, total_log_det, target_dists):
 
 def entropy_loss_fn(logits):
     probs = nn.functional.softmax(logits, dim=1)
-    log_probs = probs * nn.functional.log_softmax(logits, dim=1)
+    log_probs = nn.functional.log_softmax(logits, dim=1)
     entropy = -torch.sum(probs * log_probs, dim=1).mean()
     return entropy
 
-def disc_loss_fn(logits, y_true):
-    disc_loss = nn.functional.cross_entropy(logits, y_true)
+def disc_loss_fn(logits, y_true, label_smoothing=0.0):
+    disc_loss = nn.functional.cross_entropy(logits, y_true, label_smoothing=label_smoothing)
     return disc_loss
 
 def generative_loss_fn(logits, y_true):
@@ -22,17 +22,17 @@ def generative_loss_fn(logits, y_true):
     gen_loss = -true_class_logits.mean()
     return gen_loss
 
-def total_loss_fn(logits, y_true, lambda_):
-    disc_loss = disc_loss_fn(logits, y_true)
+def total_loss_fn(logits, y_true, lambda_, label_smoothing=0.0):
+    disc_loss = disc_loss_fn(logits, y_true, label_smoothing=label_smoothing)
     gen_loss = generative_loss_fn(logits, y_true)
     total_loss = (1 - lambda_) * disc_loss + lambda_ * gen_loss
     return total_loss
 
-def deep_supervision_loss(intermediate_logits, y_true, alphas, betas):
+def deep_supervision_loss(intermediate_logits, y_true, alphas, betas, label_smoothing=0.0):
     total_loss = torch.tensor(0.0, device=y_true.device)
 
     for j, logits_j in enumerate(intermediate_logits):
-        disc_loss_j = disc_loss_fn(logits_j, y_true)
+        disc_loss_j = disc_loss_fn(logits_j, y_true, label_smoothing=label_smoothing)
         ent_loss_j = entropy_loss_fn(logits_j)
 
         layer_loss = (1 - alphas[j]) * ent_loss_j + alphas[j] * disc_loss_j

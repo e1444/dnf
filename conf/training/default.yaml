@@ -17,6 +17,7 @@ beta_final: 2.0
 aux_freq: 1
 aux_total: 8
 r_logdet: 1e-2
+label_smoothing: 0.1
 
 # Scheduler settings
 scheduler:
