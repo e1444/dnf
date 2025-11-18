@@ -62,17 +62,16 @@ class BottleneckResNetBlock(nn.Module):
     def __init__(self, channels, bottleneck_channels):
         super().__init__()
         self.conv1 = nn.Conv2d(channels, bottleneck_channels, kernel_size=1, bias=False)
-        self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(bottleneck_channels, bottleneck_channels, kernel_size=3, padding=1, bias=False)
         self.conv3 = nn.Conv2d(bottleneck_channels, channels, kernel_size=1, bias=False)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         residual = x
-        out = self.relu(self.conv1(x))
-        out = self.relu(self.conv2(out))
+        out = self.conv1(self.relu(x))
+        out = self.conv2(self.relu(out))
         out = self.conv3(out)
         out += residual
-        out = self.relu(out)
         return out
 
 class CNNCouplingLayer(nn.Module):
