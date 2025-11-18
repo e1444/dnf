@@ -3,6 +3,9 @@ dataset:
   path: "./data/mnist"
   download: true
   transform:
+    - type: "Pad"
+      params:
+        padding: 2
     - type: "RandomAffine"
       params:
         degrees: 10         # Rotates the image by up to +/- 10 degrees
