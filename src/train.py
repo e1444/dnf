@@ -119,7 +119,11 @@ def train(cfg: DictConfig):
             loss = aux_loss + final_loss
             
             # Regularization terms
-            loss += cfg.training.r_logdet * (log_det ** 2).mean()
+            log_dets = [log_det for _, log_det in intermediate_outputs]
+            for i in reversed(range(1, len(log_dets))):
+                log_dets[i] = log_dets[i] - log_dets[i - 1]
+                
+            loss += cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
