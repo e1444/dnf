@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .\layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
+from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
 
 class FlowStep(nn.Module):
     def __init__(self, in_channels, hidden_channels, bottleneck_channels, num_res_blocks, actnorm_initialization="identity", invconv_initialization="orthogonal"):
