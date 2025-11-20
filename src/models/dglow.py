@@ -172,8 +172,6 @@ class DGLOWNetwork(nn.Module):
                 if start <= step_counter < end:
                     for param in flow_step.parameters():
                         param.requires_grad = not freeze
-                else:
-                    return
                 step_counter += 1
         for level in self.split_levels:
             if isinstance(level, nn.ModuleList):
@@ -181,8 +179,6 @@ class DGLOWNetwork(nn.Module):
                     if start <= step_counter < end:
                         for param in flow_step.parameters():
                             param.requires_grad = not freeze
-                    else:
-                        return
                     step_counter += 1
     
     @property
