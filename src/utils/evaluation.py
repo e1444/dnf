@@ -76,6 +76,7 @@ def get_all_predictions(model, data_loader, device, target_dists):
             
             intermediate_outputs = model(x_batch)
             z, log_det = intermediate_outputs[-1]
+            z = z.view(z.size(0), -1)
             
             logits = compute_logits(z, log_det, target_dists)
             probabilities = torch.softmax(logits, dim=1)
