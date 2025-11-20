@@ -27,14 +27,15 @@ class FlowStep(nn.Module):
         return z, log_det_act + log_det_conv + log_det_coup
 
 class DGLOWNetwork(nn.Module):
-    def __init__(self, in_channels: int, num_fixed_levels: int,  num_split_levels: int, steps_per_level: int, hidden_channels: int, bottleneck_channels: int, num_res_blocks: int, actnorm_initialization: str = "identity", invconv_initialization: str = "orthogonal"):
+    def __init__(self, in_channels: int, num_fixed_levels: int,  num_split_levels: int, steps_per_fixed_level: int, steps_per_split_level: int, hidden_channels: int, bottleneck_channels: int, num_res_blocks: int, actnorm_initialization: str = "identity", invconv_initialization: str = "orthogonal"):
         super(DGLOWNetwork, self).__init__()
         self.squeeze = Squeeze()
         self.fixed_levels = nn.ModuleList()
         self.split_levels = nn.ModuleList()
         self.num_fixed_levels = num_fixed_levels
         self.num_split_levels = num_split_levels
-        self.steps_per_level = steps_per_level
+        self.steps_per_fixed_level = steps_per_fixed_level
+        self.steps_per_split_level = steps_per_split_level
         
         current_channels = in_channels
         for _ in range(num_fixed_levels):
@@ -47,7 +48,7 @@ class DGLOWNetwork(nn.Module):
                     num_res_blocks=num_res_blocks,
                     actnorm_initialization=actnorm_initialization,
                     invconv_initialization=invconv_initialization
-                ) for _ in range(steps_per_level)
+                ) for _ in range(self.steps_per_fixed_level)
             ])
             self.fixed_levels.append(level_flows)
         
@@ -62,7 +63,7 @@ class DGLOWNetwork(nn.Module):
                     num_res_blocks=num_res_blocks,
                     actnorm_initialization=actnorm_initialization,
                     invconv_initialization=invconv_initialization
-                ) for _ in range(steps_per_level)
+                ) for _ in range(self.steps_per_split_level)
             ])
             self.split_levels.append(level_flows)
             
