@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, log_loss
-from .losses import deep_supervision_loss, total_loss_fn, compute_logits
+from .losses import deep_supervision_loss, total_loss_fn, compute_logits, generative_loss_fn, disc_loss_fn, entropy_loss_fn
 
 def evaluate(model, data_loader, device, cfg, target_dists, alphas, betas, lambda_, aux_layers):
     """
@@ -38,15 +38,15 @@ def evaluate(model, data_loader, device, cfg, target_dists, alphas, betas, lambd
             loss = aux_loss + final_loss
             
             # Regularization terms
-            loss += cfg.training.r_logdet * (log_det ** 2).mean()
-            
-            # Note: The trainable_log_vars are part of the optimizer, not directly in the model
-            # Regularization for trainable_log_vars should be handled in the training loop
-            
+            log_dets = [log_det for _, log_det in intermediate_outputs]
+            for i in reversed(range(1, len(log_dets))):
+                log_dets[i] = log_dets[i] - log_dets[i - 1]
+                
+            loss += cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
             total_test_loss += loss.item()
             
             # Calculate NLL for a clean evaluation metric
-            nll_batch = nn.functional.cross_entropy(logits, y_batch, reduction='sum')
+            nll_batch = generative_loss_fn(logits, y_batch) * y_batch.size(0)
             total_nll += nll_batch.item()
             
             # Calculate accuracy
