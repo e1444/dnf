@@ -152,13 +152,22 @@ def train(cfg: DictConfig):
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
             eval_target_dists = get_target_distributions(trainable_means, trainable_v, cfg.training.num_classes)
-            test_loss, accuracy, nll = evaluate(model, test_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
+            test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
-                "test_accuracy": accuracy,
-                "test_nll": nll
+                "test_accuracy": test_accuracy,
+                "test_nll": test_nll
             })
-            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Train Loss: {avg_train_loss:.4f} | Test Acc: {accuracy:.2f}% | NLL: {nll:.4f}")
+            
+            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
+            log_dict.update({
+                "train_eval_loss": train_loss,
+                "train_eval_accuracy": train_accuracy,
+                "train_eval_nll": train_nll
+            })
+            
+            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_accuracy:.2f}%/{test_accuracy:.2f}% | NLL (Tr/Te): {train_nll:.4f}/{test_nll:.4f}")
+
 
         wandb.log(log_dict)
 

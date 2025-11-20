@@ -5,7 +5,7 @@ gradclip: 1.0
 gradclip_means: 1.0
 gradclip_vars: 1.0
 weight_decay: 1e-4
-epochs: 50
+epochs: 20
 eval_interval: 1
 checkpoint_interval: 5
 
@@ -22,7 +22,7 @@ label_smoothing: 0.1
 # Scheduler settings
 scheduler:
   _target_: torch.optim.lr_scheduler.StepLR
-  step_size: 25
+  step_size: 10
   gamma: 0.5
 
 # Initialization
