@@ -87,12 +87,13 @@ class DGLOWNetwork(nn.Module):
                 x, log_det = flow_step(x)
                 total_log_det += log_det
             
-            x_out = x
-            for _ in range(squeezes):
-                x_out, log_det = self.squeeze.inverse(x_out)
-                total_log_det += log_det
-                
-            outputs.append((x_out, total_log_det.clone()))
+                x_out = x
+                log_det_out = total_log_det
+                for _ in range(squeezes):
+                    x_out, log_det = self.squeeze.inverse(x_out)
+                    log_det_out += log_det
+                    
+                outputs.append((x_out, log_det_out.clone()))
             
         for _ in range(squeezes):
             x, log_det = self.squeeze.inverse(x)
@@ -108,11 +109,12 @@ class DGLOWNetwork(nn.Module):
                     x, log_det = flow_step(x)
                     total_log_det += log_det
                     
-                    x_out, log_det = self.squeeze.inverse(x)
+                    x_out, log_det_out = self.squeeze.inverse(x)
                     for z in reversed(z_out):
                         x_out = torch.cat([x_out, z], dim=1)
                         x_out, log_det = self.squeeze.inverse(x_out)
-                    outputs.append((x_out, total_log_det.clone() + log_det))
+                        log_det_out += log_det
+                    outputs.append((x_out, log_det_out.clone()))
             elif isinstance(level, Split): # Split
                 x, z = level(x)
                 z_out.append(z)
