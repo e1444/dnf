@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
+from layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
 
 class FlowStep(nn.Module):
     def __init__(self, in_channels, hidden_channels, bottleneck_channels, num_res_blocks, actnorm_initialization="identity", invconv_initialization="orthogonal"):
@@ -156,6 +156,34 @@ class DGLOWNetwork(nn.Module):
                 
         return x, total_log_det
     
+    def set_freeze_steps(self, freeze: bool, start: int, end: int):
+        total_steps = self.total_supervision_layers
+        
+        if end == -1:
+            end = total_steps
+            
+        start = max(0, start)
+        end = min(total_steps, end)
+        
+        step_counter = 0
+        for level in self.fixed_levels:
+            for flow_step in level:
+                if start <= step_counter < end:
+                    for param in flow_step.parameters():
+                        param.requires_grad = not freeze
+                else:
+                    return
+                step_counter += 1
+        for level in self.split_levels:
+            if isinstance(level, nn.ModuleList):
+                for flow_step in level:
+                    if start <= step_counter < end:
+                        for param in flow_step.parameters():
+                            param.requires_grad = not freeze
+                    else:
+                        return
+                    step_counter += 1
+    
     @property
     def total_supervision_layers(self):
         return (self.num_split_levels + self.num_fixed_levels) * self.steps_per_level
@@ -197,8 +225,8 @@ if __name__ == "__main__":
         hidden_channels=64,
         bottleneck_channels=16,
         num_res_blocks=3,
-        actnorm_initialization="data-dependent",
-        invconv_initialization="orthogonal"
+        actnorm_initialization="identity",
+        invconv_initialization="identity"
     )
     x_net = torch.randn(8, 1, 32, 32)
     outputs = model(x_net)

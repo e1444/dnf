@@ -33,3 +33,7 @@ features: 1024
 num_classes: 10
 
 resume_from_checkpoint: null
+reset_freeze: true
+freeze_steps:
+  start: null
+  end: null

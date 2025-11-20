@@ -1,9 +1,10 @@
 _target_: src.models.dglow.DGLOWNetwork
 
 in_channels: 1
-num_fixed_levels: 1
+num_fixed_levels: 2
 num_split_levels: 3
-steps_per_level: 8
+steps_per_fixed_level: 2
+steps_per_split_level: 8
 hidden_channels: 256
 bottleneck_channels: 128
 num_res_blocks: 3

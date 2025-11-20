@@ -80,6 +80,16 @@ def train(cfg: DictConfig):
         optimizer.param_groups[2]['lr'] = cfg.training.lr_vars
         start_epoch = checkpoint['epoch'] + 1
         
+    if cfg.training.reset_freeze:
+        model.set_freeze_steps(freeze=False, start=0, end=-1)
+    
+    if cfg.training.freeze_steps.start is not None or cfg.training.freeze_steps.end is not None:
+        model.set_freeze_steps(
+            freeze=True,
+            start=cfg.training.freeze_steps.start,
+            end=cfg.training.freeze_steps.end
+        )
+        
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
 
