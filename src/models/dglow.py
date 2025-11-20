@@ -88,7 +88,7 @@ class DGLOWNetwork(nn.Module):
                 total_log_det += log_det
             
                 x_out = x
-                log_det_out = total_log_det
+                log_det_out = total_log_det.clone()
                 for _ in range(squeezes):
                     x_out, log_det = self.squeeze.inverse(x_out)
                     log_det_out += log_det
@@ -109,7 +109,8 @@ class DGLOWNetwork(nn.Module):
                     x, log_det = flow_step(x)
                     total_log_det += log_det
                     
-                    x_out, log_det_out = self.squeeze.inverse(x)
+                    x_out, log_det = self.squeeze.inverse(x)
+                    log_det_out = total_log_det.clone() + log_det
                     for z in reversed(z_out):
                         x_out = torch.cat([x_out, z], dim=1)
                         x_out, log_det = self.squeeze.inverse(x_out)
@@ -160,13 +161,11 @@ class DGLOWNetwork(nn.Module):
         return x, total_log_det
     
     def set_freeze_steps(self, freeze: bool, start: int, end: int):
-        total_steps = self.total_steps
-        
         if end == -1:
-            end = total_steps
+            end = self.total_steps
             
         start = max(0, start)
-        end = min(total_steps, end)
+        end = min(self.total_steps, end)
         
         step_counter = 0
         for level in self.fixed_levels:
