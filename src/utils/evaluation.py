@@ -140,6 +140,20 @@ def calculate_ece_and_reliability_diagram(confidences, predictions, true_labels,
             avg_conf_in_bin.append(0)
     
     print(f"Expected Calibration Error (ECE): {ece:.4f}")
+    
+    # Print the data in a tabular format
+    print("\n--- Reliability Diagram Data ---")
+    bin_labels = [f"{low:.2f}-{high:.2f}" for low, high in zip(bin_lowers, bin_uppers)]
+    data = {
+        "Confidence Bin": bin_labels,
+        "Avg Confidence": [f"{c:.4f}" for c in avg_conf_in_bin],
+        "Accuracy": [f"{a:.4f}" for a in accuracies_in_bin],
+        "Gap": [f"{abs(c-a):.4f}" for c, a in zip(avg_conf_in_bin, accuracies_in_bin)],
+        "Samples": samples_in_bin_list,
+    }
+    df = pd.DataFrame(data)
+    print(df.to_string(index=False))
+    print("--------------------------------\n")
 
     # Plot Reliability Diagram
     plt.figure(figsize=(8, 8))
@@ -157,17 +171,14 @@ def calculate_ece_and_reliability_diagram(confidences, predictions, true_labels,
 
     return ece
 
-def calculate_nll_and_brier_score(y_true, probabilities):
+def calculate_brier_score(y_true, probabilities):
     """
-    Calculate NLL and Brier score.
+    Calculate and Brier score.
     """
-    nll = log_loss(y_true, probabilities)
-    print(f"Negative Log-Likelihood (NLL): {nll:.4f}")
-
     y_true_one_hot = np.eye(probabilities.shape[1])[y_true]
     brier_score = np.mean(np.sum((probabilities - y_true_one_hot)**2, axis=1))
     print(f"Multi-class Brier Score: {brier_score:.4f}")
-    return nll, brier_score
+    return brier_score
 
 def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, target_dists):
     """
