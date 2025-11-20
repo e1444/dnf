@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
+from .\layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
 
 class FlowStep(nn.Module):
     def __init__(self, in_channels, hidden_channels, bottleneck_channels, num_res_blocks, actnorm_initialization="identity", invconv_initialization="orthogonal"):
@@ -158,7 +158,7 @@ class DGLOWNetwork(nn.Module):
         return x, total_log_det
     
     def set_freeze_steps(self, freeze: bool, start: int, end: int):
-        total_steps = self.total_supervision_layers
+        total_steps = self.total_steps
         
         if end == -1:
             end = total_steps
@@ -186,8 +186,8 @@ class DGLOWNetwork(nn.Module):
                     step_counter += 1
     
     @property
-    def total_supervision_layers(self):
-        return (self.num_split_levels + self.num_fixed_levels) * self.steps_per_level
+    def total_steps(self):
+        return (self.num_split_levels * self.steps_per_split_level) + (self.num_fixed_levels * self.steps_per_fixed_level)
 
 
 if __name__ == "__main__":
@@ -222,7 +222,8 @@ if __name__ == "__main__":
         in_channels=1,
         num_fixed_levels=1,
         num_split_levels=3,
-        steps_per_level=1,
+        steps_per_split_level=1,
+        steps_per_fixed_level=1,
         hidden_channels=64,
         bottleneck_channels=16,
         num_res_blocks=3,
