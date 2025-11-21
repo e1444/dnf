@@ -12,24 +12,79 @@ from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def get_target_distributions(means_param, v, num_classes, eps=1e-2):
-    """Creates a list of target distributions."""
-    vars = torch.nn.functional.softplus(v) + eps
-    # return [
-    #     torch.distributions.MultivariateNormal(
-    #         loc=means_param[i],
-    #         covariance_matrix=torch.diag(vars[i])
-    #     ) for i in range(num_classes)
-    # ]
 
+class MultivariateLowRankStudentT(torch.distributions.Distribution):
+    def __init__(self, mu: torch.Tensor, v: torch.Tensor, U: torch.Tensor, df: torch.Tensor, eps: float = 1e-6):
+        self.mu = mu
+        self.v = v
+        self.U = U
+        self.df = df
+        self.eps = eps
+        
+        self.mvn = torch.distributions.LowRankMultivariateNormal(
+            loc=torch.zeros_like(self.mu),
+            cov_factor = self.U,
+            cov_diag=torch.nn.functional.softplus(self.v) + self.eps
+        )
+        self.chi2 = torch.distributions.Chi2(df=df)
+        
+    def sample(self, sample_shape=torch.Size()):
+        z = self.mvn.sample(sample_shape)
+        s = self.chi2.sample(sample_shape)
+        scale = torch.sqrt(self.df / s).unsqueeze(-1)
+        return self.mu + scale * z
+    
+    def log_prob(self, value):
+        y = value - self.mu
+        d = y.shape[-1]
+        df = torch.tensor(self.df, device=value.device, dtype=value.dtype)
+
+        # Diagonal part
+        D = torch.nn.functional.softplus(self.v) + self.eps  # (d,)
+        Dinv = 1.0 / D
+
+        # y^T D^{-1} y
+        Dy = Dinv * y
+        term1 = torch.sum(y * Dy, dim=-1)  # scalar or batch
+
+        # Low-rank part: woodbury
+        # A = I + U^T D^{-1} U   (r × r)
+        UDinv = self.U * Dinv.unsqueeze(-1)       # (d × r)
+        A = torch.eye(self.U.shape[1], device=value.device, dtype=value.dtype) + \
+            self.U.transpose(-1, -2) @ UDinv
+
+        # Solve A^{-1} (U^T D^{-1} y)
+        b = self.U.transpose(-1, -2) @ Dy.unsqueeze(-1)  # (r,1)
+        Ainv_b = torch.linalg.solve(A, b).squeeze(-1)    # (r,)
+
+        # y^T D^{-1} U A^{-1} U^T D^{-1} y
+        term2 = torch.sum(b.squeeze(-1) * Ainv_b, dim=-1)
+
+        # Mahalanobis
+        M = term1 - term2
+
+        # log|Σ| = log|D| + log|I + U^T D^{-1}U|
+        logdet_D = torch.sum(torch.log(D))
+        logdet = logdet_D + torch.logdet(A)
+
+        # Student-t log density
+        c1 = torch.lgamma((df + d) / 2) - torch.lgamma(df / 2)
+        c2 = -0.5 * (d * (torch.log(df) + torch.log(torch.tensor(torch.pi, device=value.device, dtype=value.dtype))) + logdet)
+        c3 = -0.5 * (df + d) * torch.log1p(M / df)
+
+        return c1 + c2 + c3
+        
+
+def get_target_distributions(mu, v, U, num_classes, eps=1e-4):
+    """Creates a list of target distributions."""
     return [
-        torch.distributions.Independent(
-            torch.distributions.studentT.StudentT(
-                df=4.0,
-                loc=means_param[i],
-                scale=torch.sqrt(vars[i])
-            )
-        ,1) for i in range(num_classes)
+        MultivariateLowRankStudentT(
+            mu=mu[i],
+            v=v[i],
+            U=U[i],
+            df=torch.tensor(4.0, device=device),
+            eps=eps
+        ) for i in range(num_classes)
     ]
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -52,24 +107,30 @@ def train(cfg: DictConfig):
     model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
     
     with torch.no_grad():
-        initial_means = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
+        initial_mu = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
         for i in range(cfg.training.num_classes):
-            initial_means[i, i] = cfg.training.latent_separation
-        initial_means += torch.randn_like(initial_means) * cfg.training.latent_noise
-        trainable_means = nn.Parameter(initial_means)
-
+            initial_mu[i, i] = cfg.training.latent_separation
+        initial_mu += torch.randn_like(initial_mu) * cfg.training.latent_noise
+        latent_mu = nn.Parameter(initial_mu)
+        
         initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.tensor(cfg.training.latent_v)
         initial_v += torch.randn_like(initial_v) * cfg.training.latent_noise
-        trainable_v = nn.Parameter(initial_v)
+        latent_v = nn.Parameter(initial_v)
+        
+        initial_U = torch.zeros(cfg.training.num_classes, cfg.training.features, cfg.training.latent_U_size, device=device)
+        latent_U = nn.Parameter(initial_U)
 
-    if cfg.training.lr_means == 0:
-        trainable_means.requires_grad_(False)
-    if cfg.training.lr_vars == 0:
-        trainable_v.requires_grad_(False)
+    if cfg.training.lr_mu == 0:
+        latent_mu.requires_grad_(False)
+    if cfg.training.lr_v == 0:
+        latent_v.requires_grad_(False)
+    if cfg.training.lr_U == 0:
+        latent_U.requires_grad_(False)
 
     optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
-    optimizer.add_param_group({'params': [trainable_means], 'lr': cfg.training.lr_means, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': [trainable_v], 'lr': cfg.training.lr_vars, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [latent_mu], 'lr': cfg.training.lr_mu, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [latent_v], 'lr': cfg.training.lr_v, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [latent_U], 'lr': cfg.training.lr_U, 'weight_decay': 0.0})
     
     start_epoch = 0
     if cfg.training.resume_from_checkpoint is not None:
@@ -78,14 +139,16 @@ def train(cfg: DictConfig):
         model.load_state_dict(checkpoint['model_state_dict'])
         
         with torch.no_grad():
-            trainable_means.copy_(checkpoint['trainable_means'])
-            trainable_v.copy_(checkpoint['trainable_v'])
+            latent_mu.copy_(checkpoint['latent_mu'])
+            latent_v.copy_(checkpoint['latent_v'])
+            latent_U.copy_(checkpoint['latent_U'])
             
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         optimizer.param_groups[0]['lr'] = cfg.training.lr
         optimizer.param_groups[0]['weight_decay'] = cfg.training.weight_decay
-        optimizer.param_groups[1]['lr'] = cfg.training.lr_means
-        optimizer.param_groups[2]['lr'] = cfg.training.lr_vars
+        optimizer.param_groups[1]['lr'] = cfg.training.lr_mu
+        optimizer.param_groups[2]['lr'] = cfg.training.lr_v
+        optimizer.param_groups[3]['lr'] = cfg.training.lr_U
         start_epoch = checkpoint['epoch'] + 1
         
     if cfg.training.reset_freeze:
@@ -117,7 +180,7 @@ def train(cfg: DictConfig):
             optimizer.zero_grad()
 
             # Get the current dynamic target distributions
-            target_dists = get_target_distributions(trainable_means, trainable_v, cfg.training.num_classes)
+            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes)
 
             # Forward pass
             intermediate_outputs = model(x_batch)
@@ -145,10 +208,12 @@ def train(cfg: DictConfig):
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
-            if trainable_means.requires_grad:
-                torch.nn.utils.clip_grad_norm_([trainable_means], max_norm=cfg.training.gradclip_means)
-            if trainable_v.requires_grad:
-                torch.nn.utils.clip_grad_norm_([trainable_v], max_norm=cfg.training.gradclip_vars)
+            if latent_mu.requires_grad:
+                torch.nn.utils.clip_grad_norm_([latent_mu], max_norm=cfg.training.gradclip_mu)
+            if latent_v.requires_grad:
+                torch.nn.utils.clip_grad_norm_([latent_v], max_norm=cfg.training.gradclip_v)
+            if latent_U.requires_grad:
+                torch.nn.utils.clip_grad_norm_([latent_U], max_norm=cfg.training.gradclip_U)
             optimizer.step()
 
             total_loss += loss.item()
@@ -159,7 +224,7 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            eval_target_dists = get_target_distributions(trainable_means, trainable_v, cfg.training.num_classes)
+            eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes)
             test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
@@ -187,8 +252,9 @@ def train(cfg: DictConfig):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'trainable_means': trainable_means.detach().cpu().clone(),
-                'trainable_v': trainable_v.detach().cpu().clone(),
+                'latent_mu': latent_mu.detach().cpu().clone(),
+                'latent_v': latent_v.detach().cpu().clone(),
+                'latent_U': latent_U.detach().cpu().clone(),
             }, checkpoint_path)
             wandb.save(checkpoint_path)
             
@@ -197,7 +263,7 @@ def train(cfg: DictConfig):
     print("Training completed.")
 
     # Return the final accuracy for Optuna
-    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(trainable_means, trainable_v, cfg.training.num_classes), alphas, betas, cfg.training.lambda_, aux_layers)
+    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes), alphas, betas, cfg.training.lambda_, aux_layers)
     return accuracy
 
 if __name__ == "__main__":
@@ -208,11 +274,11 @@ if __name__ == "__main__":
 # =========================
 # sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
 
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=0 training.lr=0 training.lr_means=0.001 training.lr_vars=0.001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/21-37-57/checkpoint_epoch_40.pth
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=0 training.lr=0 training.lr_mu=0.001 training.lr_v=0.001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/21-37-57/checkpoint_epoch_40.pth
 
 # sbatch scripts/train_fir.sh training.epochs=20 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.01 training.aux_total=0 training.lr=0.001 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/21-51-59/checkpoint_epoch_55.pth
 
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=0 training.lr=0 training.lr_means=0.0001 training.lr_vars=0.0001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/22-14-58/checkpoint_epoch_75.pth
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=0 training.lr=0 training.lr_mu=0.0001 training.lr_v=0.0001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/22-14-58/checkpoint_epoch_75.pth
 
 # sbatch scripts/train_fir.sh training.epochs=20 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.001 training.aux_total=0 training.lr=0.001 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/22-49-30/checkpoint_epoch_85.pth
 
@@ -223,7 +289,7 @@ if __name__ == "__main__":
 # sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
 
 # centre latent space
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.lr=0 training.lr_means=0.001 training.lr_vars=0 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/19-46-56/checkpoint_epoch_20.pth
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.lr=0 training.lr_mu=0.001 training.lr_v=0 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/19-46-56/checkpoint_epoch_20.pth
 
 # =========================
 # Attempt 3
@@ -232,4 +298,9 @@ if __name__ == "__main__":
 # sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
 
 # expand latent space to match latent distributions
-# sbatch scripts/train_fir.sh training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.001 training.aux_total=0 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/19-46-56/checkpoint_epoch_20.pth
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.001 training.aux_total=0 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-20/16-55-56/checkpoint_epoch_20.pth
+
+# sharpen latent distributions
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.lr=0 training.lr_mu=0.001 training.lr_v=0.001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-20/17-27-42/checkpoint_epoch_30.pth
+
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.0001 training.aux_total=0 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-20/17-49-06/checkpoint_epoch_40.pth
