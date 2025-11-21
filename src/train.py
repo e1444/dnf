@@ -119,7 +119,9 @@ def train(cfg: DictConfig):
         
         initial_U = torch.zeros(cfg.training.num_classes, cfg.training.features, cfg.training.latent_U_size, device=device)
         latent_U = nn.Parameter(initial_U)
-
+        
+    if cfg.training.lr == 0:
+        model.requires_grad_(False)
     if cfg.training.lr_mu == 0:
         latent_mu.requires_grad_(False)
     if cfg.training.lr_v == 0:
