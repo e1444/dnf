@@ -7,8 +7,6 @@ import torch.optim as optim
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_mnist
-from src.models.dnf import DNFNetwork
-from src.models.dglow import DGLOWNetwork
 from src.utils.losses import deep_supervision_loss, total_loss_fn, compute_logits
 from src.utils.evaluation import evaluate
 
@@ -17,11 +15,21 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def get_target_distributions(means_param, v, num_classes, eps=1e-2):
     """Creates a list of target distributions."""
     vars = torch.nn.functional.softplus(v) + eps
+    # return [
+    #     torch.distributions.MultivariateNormal(
+    #         loc=means_param[i],
+    #         covariance_matrix=torch.diag(vars[i])
+    #     ) for i in range(num_classes)
+    # ]
+
     return [
-        torch.distributions.MultivariateNormal(
-            loc=means_param[i],
-            covariance_matrix=torch.diag(vars[i])
-        ) for i in range(num_classes)
+        torch.distributions.Independent(
+            torch.distributions.studentT.StudentT(
+                df=4.0,
+                loc=means_param[i],
+                scale=torch.sqrt(vars[i])
+            )
+        ,1) for i in range(num_classes)
     ]
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -194,3 +202,34 @@ def train(cfg: DictConfig):
 
 if __name__ == "__main__":
     train()
+
+# =========================
+# Attempt 1
+# =========================
+# sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
+
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=0 training.lr=0 training.lr_means=0.001 training.lr_vars=0.001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/21-37-57/checkpoint_epoch_40.pth
+
+# sbatch scripts/train_fir.sh training.epochs=20 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.01 training.aux_total=0 training.lr=0.001 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/21-51-59/checkpoint_epoch_55.pth
+
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=0 training.lr=0 training.lr_means=0.0001 training.lr_vars=0.0001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/22-14-58/checkpoint_epoch_75.pth
+
+# sbatch scripts/train_fir.sh training.epochs=20 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.001 training.aux_total=0 training.lr=0.001 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/22-49-30/checkpoint_epoch_85.pth
+
+# =========================
+# Attempt 2
+# =========================
+# separate space
+# sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
+
+# centre latent space
+# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.lr=0 training.lr_means=0.001 training.lr_vars=0 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/19-46-56/checkpoint_epoch_20.pth
+
+# =========================
+# Attempt 3
+# =========================
+# seperate space
+# sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
+
+# expand latent space to match latent distributions
+# sbatch scripts/train_fir.sh training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.001 training.aux_total=0 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/19-46-56/checkpoint_epoch_20.pth
