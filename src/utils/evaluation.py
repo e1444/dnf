@@ -194,6 +194,7 @@ def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device,
                 x_batch = x_batch.to(device)
                 intermediate_outputs = model(x_batch)
                 z, log_det = intermediate_outputs[-1]
+                z = z.view(z.size(0), -1)
                 logits = compute_logits(z, log_det, target_dists)
                 probabilities = torch.softmax(logits, dim=1)
                 confidences, _ = torch.max(probabilities, 1)
