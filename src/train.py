@@ -181,9 +181,6 @@ def train(cfg: DictConfig):
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
 
-            # Get the current dynamic target distributions
-            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df)
-
             # Forward pass
             intermediate_outputs = model(x_batch)
             # Flatten outputs
@@ -192,35 +189,45 @@ def train(cfg: DictConfig):
             z, log_det = intermediate_outputs[-1]
 
             # EMA Target Update (Adaptive Targets)
-            if cfg.training.get("adaptive_targets", False):
+            if cfg.training.adaptive_targets and epoch >= warmup_epochs:
                 with torch.no_grad():
-                    mu_momentum = cfg.training.get("ema_mu_momentum")
-                    v_momentum = cfg.training.get("ema_v_momentum")
+                    mu_momentum = cfg.training.get("ema_mu_momentum", 0.9)
+                    v_momentum = cfg.training.get("ema_v_momentum", 0.9)
                     
                     for c in range(cfg.training.num_classes):
                         mask = (y_batch == c)
-                        # Need at least 2 samples to calculate variance
                         if mask.sum() > 1:
                             z_c = z[mask]
                             
                             # 1. Update Mean
                             batch_mean = z_c.mean(dim=0)
-                            latent_mu[c].data = mu_momentum * latent_mu[c].data + (1 - mu_momentum) * batch_mean
+                            # Use lerp_ (linear interpolation) for cleaner in-place EMA
+                            # new = current * momentum + batch * (1 - momentum)
+                            # Equivalent to: current.lerp_(batch, 1 - momentum)
+                            latent_mu[c].data.lerp_(batch_mean, weight=1.0 - mu_momentum)
                             
                             # 2. Update Variance (in Variance Space)
                             batch_var = z_c.var(dim=0)
-                            
-                            # Get current variance from model parameter (softplus)
                             current_var = torch.nn.functional.softplus(latent_v[c])
                             
-                            # Linear average in variance space (Unbiased)
+                            # Linear average in variance space
                             new_var = v_momentum * current_var + (1 - v_momentum) * batch_var
                             
-                            # Convert back to parameter space (Inverse Softplus)
-                            # x = log(exp(y) - 1)
-                            # We add 1e-6 to ensure we don't take log(0)
-                            latent_v[c].data = torch.log(torch.exp(new_var + cfg.training.latent_v_eps) - 1 + 1e-6)
+                            # 3. Convert back to parameter space (Inverse Softplus)
+                            # Stable implementation using copy_
+                            latent_v[c].data.copy_(
+                                torch.where(
+                                    new_var > 20.0,
+                                    new_var,
+                                    torch.log(torch.expm1(new_var) + 1e-6)
+                                )
+                            )
             
+
+            # Get the current dynamic target distributions
+            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df)
+            
+            # Compute logits
             aux_logits = [
                 compute_logits(z, log_det, target_dists) for z, log_det in aux_outputs
             ]
