@@ -75,14 +75,14 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         return c1 + c2 + c3
         
 
-def get_target_distributions(mu, v, U, num_classes, eps=1e-4):
+def get_target_distributions(mu, v, U, num_classes, eps=1e-4, df=4.0):
     """Creates a list of target distributions."""
     return [
         MultivariateLowRankStudentT(
             mu=mu[i],
             v=v[i],
             U=U[i],
-            df=torch.tensor(4.0, device=device),
+            df=torch.tensor(df, device=device),
             eps=eps
         ) for i in range(num_classes)
     ]
@@ -182,7 +182,7 @@ def train(cfg: DictConfig):
             optimizer.zero_grad()
 
             # Get the current dynamic target distributions
-            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes)
+            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df)
 
             # Forward pass
             intermediate_outputs = model(x_batch)
@@ -190,6 +190,36 @@ def train(cfg: DictConfig):
             intermediate_outputs = [(z.view(z.size(0), -1), log_det) for z, log_det in intermediate_outputs]
             aux_outputs = [intermediate_outputs[i] for i in aux_layers]
             z, log_det = intermediate_outputs[-1]
+
+            # EMA Target Update (Adaptive Targets)
+            if cfg.training.get("adaptive_targets", False):
+                with torch.no_grad():
+                    mu_momentum = cfg.training.get("ema_mu_momentum")
+                    v_momentum = cfg.training.get("ema_v_momentum")
+                    
+                    for c in range(cfg.training.num_classes):
+                        mask = (y_batch == c)
+                        # Need at least 2 samples to calculate variance
+                        if mask.sum() > 1:
+                            z_c = z[mask]
+                            
+                            # 1. Update Mean
+                            batch_mean = z_c.mean(dim=0)
+                            latent_mu[c].data = mu_momentum * latent_mu[c].data + (1 - mu_momentum) * batch_mean
+                            
+                            # 2. Update Variance (in Variance Space)
+                            batch_var = z_c.var(dim=0)
+                            
+                            # Get current variance from model parameter (softplus)
+                            current_var = torch.nn.functional.softplus(latent_v[c])
+                            
+                            # Linear average in variance space (Unbiased)
+                            new_var = v_momentum * current_var + (1 - v_momentum) * batch_var
+                            
+                            # Convert back to parameter space (Inverse Softplus)
+                            # x = log(exp(y) - 1)
+                            # We add 1e-6 to ensure we don't take log(0)
+                            latent_v[c].data = torch.log(torch.exp(new_var + cfg.training.latent_v_eps) - 1 + 1e-6)
             
             aux_logits = [
                 compute_logits(z, log_det, target_dists) for z, log_det in aux_outputs
@@ -221,12 +251,11 @@ def train(cfg: DictConfig):
             total_loss += loss.item()
 
         avg_train_loss = total_loss / len(train_loader)
-        
         log_dict = {"epoch": epoch, "train_loss": avg_train_loss}
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes)
+            eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df)
             test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
@@ -265,44 +294,8 @@ def train(cfg: DictConfig):
     print("Training completed.")
 
     # Return the final accuracy for Optuna
-    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes), alphas, betas, cfg.training.lambda_, aux_layers)
+    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df), alphas, betas, cfg.training.lambda_, aux_layers)
     return accuracy
 
 if __name__ == "__main__":
     train()
-
-# =========================
-# Attempt 1
-# =========================
-# sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
-
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=0 training.lr=0 training.lr_mu=0.001 training.lr_v=0.001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/21-37-57/checkpoint_epoch_40.pth
-
-# sbatch scripts/train_fir.sh training.epochs=20 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.01 training.aux_total=0 training.lr=0.001 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/21-51-59/checkpoint_epoch_55.pth
-
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=0 training.lr=0 training.lr_mu=0.0001 training.lr_v=0.0001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/22-14-58/checkpoint_epoch_75.pth
-
-# sbatch scripts/train_fir.sh training.epochs=20 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.001 training.aux_total=0 training.lr=0.001 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/22-49-30/checkpoint_epoch_85.pth
-
-# =========================
-# Attempt 2
-# =========================
-# separate space
-# sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
-
-# centre latent space
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.lr=0 training.lr_mu=0.001 training.lr_v=0 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-19/19-46-56/checkpoint_epoch_20.pth
-
-# =========================
-# Attempt 3
-# =========================
-# seperate space
-# sbatch scripts/train_fir.sh training.lambda_=0.01 training.beta_final=1.0 training.r_logdet=1.0 training.aux_total=4 training.gamma_alpha=1 training.gamma_beta=0.5 training.freeze_steps.start=4 training.freeze_steps.end=-1 model.hidden_channels=512
-
-# expand latent space to match latent distributions
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.001 training.aux_total=0 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-20/16-55-56/checkpoint_epoch_20.pth
-
-# sharpen latent distributions
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.lr=0 training.lr_mu=0.001 training.lr_v=0.001 training.freeze_steps.start=0 training.freeze_steps.end=-1 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-20/17-27-42/checkpoint_epoch_30.pth
-
-# sbatch scripts/train_fir.sh training.epochs=10 training.lambda_=0.99 training.beta_final=1.0 training.r_logdet=0.0001 training.aux_total=0 training.freeze_steps.start=0 training.freeze_steps.end=4 model.hidden_channels=512 training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-20/17-49-06/checkpoint_epoch_40.pth
