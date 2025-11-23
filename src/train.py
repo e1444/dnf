@@ -178,6 +178,12 @@ def train(cfg: DictConfig):
     for epoch in range(start_epoch, total_epochs):
         model.train()
         total_loss = 0.0
+        
+        # Initialize ema accumulators for adaptive targets
+        if cfg.training.adaptive_targets:
+            acc_mu = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
+            acc_sq = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
+            acc_count = torch.zeros(cfg.training.num_classes, device=device)
 
         for x_batch, y_batch in train_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
@@ -193,26 +199,17 @@ def train(cfg: DictConfig):
             # EMA Target Update (Adaptive Targets)
             if cfg.training.adaptive_targets:
                 with torch.no_grad():
-                    mu_momentum = cfg.training.ema_mu_momentum
-                    v_momentum = cfg.training.ema_v_momentum
-                    
-                    for c in range(cfg.training.num_classes):
+                    # Only loop over classes present in this batch for speed
+                    unique_classes = torch.unique(y_batch)
+                    for c in unique_classes:
                         mask = (y_batch == c)
-                        if mask.sum() > 1:
-                            z_c = z[mask]
-                            
-                            batch_mean = z_c.mean(dim=0)
-                            if torch.isnan(batch_mean).any():
-                                continue
-
-                            latent_mu[c].data.lerp_(batch_mean, weight=1.0 - mu_momentum)
-                            
-                            batch_var = z_c.var(dim=0)
-                            if torch.isnan(batch_var).any():
-                                continue
-                            
-                            latent_v[c].data.lerp_(batch_var, weight=1.0 - v_momentum)
-                            latent_v[c].data.clamp_(min=1e-5)
+                        z_c = z[mask]
+                        
+                        # Accumulate Sum and Sum of Squares
+                        # We use these to calculate Mean and Variance at end of epoch
+                        acc_mu[c] += z_c.sum(dim=0)
+                        acc_sq[c] += (z_c.pow(2)).sum(dim=0)
+                        acc_count[c] += mask.sum()
             
 
             # Get the current dynamic target distributions
@@ -286,6 +283,34 @@ def train(cfg: DictConfig):
                 'latent_U': latent_U.detach().cpu().clone(),
             }, checkpoint_path)
             wandb.save(checkpoint_path)
+            
+        if cfg.training.adaptive_targets:
+            with torch.no_grad():
+                mu_momentum = cfg.training.ema_mu_momentum
+                v_momentum = cfg.training.ema_v_momentum
+                
+                for c in range(cfg.training.num_classes):
+                    if acc_count[c] > 1:
+                        # Calculate Global Epoch Mean
+                        epoch_mean = acc_mu[c] / acc_count[c]
+                        
+                        # Calculate Global Epoch Variance: E[x^2] - (E[x])^2
+                        epoch_mean_sq = acc_sq[c] / acc_count[c]
+                        epoch_var = epoch_mean_sq - epoch_mean.pow(2)
+                        
+                        # Numerical stability: Variance cannot be negative
+                        # (Floating point errors can cause -1e-8)
+                        epoch_var = torch.clamp(epoch_var, min=1e-6)
+                        
+                        assert torch.isfinite(epoch_var).all(), f"Non-finite variance for class {c} at epoch {epoch}"
+                        assert torch.isfinite(epoch_mean).all(), f"Non-finite mean for class {c} at epoch {epoch}"
+                        
+                        # Update Mean
+                        latent_mu[c].data.lerp_(epoch_mean, weight=1.0 - mu_momentum)
+                        
+                        # Update Variance (Only if momentum allows)
+                        latent_v[c].data.lerp_(epoch_var, weight=1.0 - v_momentum)
+                        latent_v[c].data.clamp_(min=1e-5, max=10.0)
             
         scheduler.step()
         
