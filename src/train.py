@@ -21,10 +21,12 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         self.df = df
         self.eps = eps
         
+        self.cov_diag = self.v + self.eps
+        
         self.mvn = torch.distributions.LowRankMultivariateNormal(
             loc=torch.zeros_like(self.mu),
             cov_factor = self.U,
-            cov_diag=self.v
+            cov_diag=self.cov_diag
         )
         self.chi2 = torch.distributions.Chi2(df=df)
         
@@ -40,7 +42,7 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         df = torch.tensor(self.df, device=value.device, dtype=value.dtype)
 
         # Diagonal part
-        D = self.v  # (d,)
+        D = self.cov_diag  # (d,)
         Dinv = 1.0 / D
 
         # y^T D^{-1} y
@@ -210,6 +212,7 @@ def train(cfg: DictConfig):
                                 continue
                             
                             latent_v[c].data.lerp_(batch_var, weight=1.0 - v_momentum)
+                            latent_v[c].data.clamp_(min=1e-5)
             
 
             # Get the current dynamic target distributions
