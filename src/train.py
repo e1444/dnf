@@ -305,31 +305,6 @@ def train(cfg: DictConfig):
             }, checkpoint_path)
             wandb.save(checkpoint_path)
             
-        if cfg.training.adaptive_targets:
-            print("Estimating latent statistics for target update...")
-            # 1. Compute exact stats using the current model state
-            epoch_means, epoch_vars = estimate_latent_statistics(
-                model, train_loader, device, 
-                cfg.training.num_classes, cfg.training.features
-            )
-            
-            with torch.no_grad():
-                mu_momentum = cfg.training.ema_mu_momentum
-                v_momentum = cfg.training.ema_v_momentum
-                df = cfg.training.latent_df
-                scale_factor = (df - 2) / df if df > 2 else 1.0
-
-                for c in range(cfg.training.num_classes):
-                    # Update Mean
-                    latent_mu[c].data.lerp_(epoch_means[c], weight=1.0 - mu_momentum)
-                    
-                    # Update Variance
-                    target_v = epoch_vars[c] * scale_factor
-                    target_v = torch.clamp(target_v, min=1e-5) # Safety
-                    
-                    latent_v[c].data.lerp_(target_v, weight=1.0 - v_momentum)
-                    latent_v[c].data.clamp_(min=1e-5, max=10.0)
-            
         scheduler.step()
         
     print("Training completed.")
