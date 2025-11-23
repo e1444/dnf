@@ -212,6 +212,9 @@ def train(cfg: DictConfig):
                         # Linear average in variance space
                         new_var = v_momentum * current_var + (1 - v_momentum) * batch_var
                         
+                        # Safety clamp to prevent numerical instability (negative or zero variance)
+                        new_var = torch.clamp(new_var, min=1e-6)
+                        
                         # 3. Convert back to parameter space (Inverse Softplus)
                         # Stable implementation using copy_
                         latent_v[c].data.copy_(
