@@ -309,6 +309,9 @@ def train(cfg: DictConfig):
                         latent_mu[c].data.lerp_(epoch_mean, weight=1.0 - mu_momentum)
                         
                         # Update Variance (Only if momentum allows)
+                        df = cfg.training.latent_df
+                        scale_factor = (df - 2) / df
+                        epoch_var = epoch_var * scale_factor
                         latent_v[c].data.lerp_(epoch_var, weight=1.0 - v_momentum)
                         latent_v[c].data.clamp_(min=1e-5, max=10.0)
             
