@@ -7,130 +7,12 @@ import torch.optim as optim
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_mnist
+from src.distributions.mvt import get_target_distributions
 from src.utils.losses import deep_supervision_loss, total_loss_fn, compute_logits
 from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-class MultivariateLowRankStudentT(torch.distributions.Distribution):
-    def __init__(self, mu: torch.Tensor, v: torch.Tensor, U: torch.Tensor, df: torch.Tensor, eps: float = 1e-6):
-        self.mu = mu
-        self.v = v
-        self.U = U
-        self.df = df
-        self.eps = eps
-        
-        self.cov_diag = self.v + self.eps
-        
-        self.mvn = torch.distributions.LowRankMultivariateNormal(
-            loc=torch.zeros_like(self.mu),
-            cov_factor = self.U,
-            cov_diag=self.cov_diag
-        )
-        self.chi2 = torch.distributions.Chi2(df=df)
-        
-    def sample(self, sample_shape=torch.Size()):
-        z = self.mvn.sample(sample_shape)
-        s = self.chi2.sample(sample_shape)
-        scale = torch.sqrt(self.df / s).unsqueeze(-1)
-        return self.mu + scale * z
-    
-    def log_prob(self, value):
-        y = value - self.mu
-        d = y.shape[-1]
-        df = self.df
-
-        # Diagonal part
-        D = self.cov_diag  # (d,)
-        Dinv = 1.0 / D
-
-        # y^T D^{-1} y
-        Dy = Dinv * y
-        term1 = torch.sum(y * Dy, dim=-1)  # scalar or batch
-
-        # Low-rank part: woodbury
-        # A = I + U^T D^{-1} U   (r × r)
-        UDinv = self.U * Dinv.unsqueeze(-1)       # (d × r)
-        A = torch.eye(self.U.shape[1], device=value.device, dtype=value.dtype) + \
-            self.U.transpose(-1, -2) @ UDinv
-
-        # Solve A^{-1} (U^T D^{-1} y)
-        b = self.U.transpose(-1, -2) @ Dy.unsqueeze(-1)  # (r,1)
-        Ainv_b = torch.linalg.solve(A, b).squeeze(-1)    # (r,)
-
-        # y^T D^{-1} U A^{-1} U^T D^{-1} y
-        term2 = torch.sum(b.squeeze(-1) * Ainv_b, dim=-1)
-
-        # Mahalanobis
-        M = term1 - term2
-
-        # log|Σ| = log|D| + log|I + U^T D^{-1}U|
-        logdet_D = torch.sum(torch.log(D))
-        logdet = logdet_D + torch.logdet(A)
-
-        # Student-t log density
-        c1 = torch.lgamma((df + d) / 2) - torch.lgamma(df / 2)
-        c2 = -0.5 * (d * (torch.log(df) + torch.log(torch.tensor(torch.pi, device=value.device, dtype=value.dtype))) + logdet)
-        c3 = -0.5 * (df + d) * torch.log1p(M / df)
-
-        return c1 + c2 + c3
-        
-
-def get_target_distributions(mu, v, U, num_classes, eps=1e-4, df=4.0):
-    """Creates a list of target distributions."""
-    return [
-        MultivariateLowRankStudentT(
-            mu=mu[i],
-            v=v[i],
-            U=U[i],
-            df=torch.tensor(df, device=device),
-            eps=eps
-        ) for i in range(num_classes)
-    ]
-    
-def estimate_latent_statistics(model, loader, device, num_classes, num_features):
-    """
-    Computes the exact mean and variance of the latent space for the current model state.
-    """
-    model.eval()
-    acc_mu = torch.zeros(num_classes, num_features, device=device, dtype=torch.float64)
-    acc_sq = torch.zeros(num_classes, num_features, device=device, dtype=torch.float64)
-    acc_count = torch.zeros(num_classes, device=device, dtype=torch.float64)
-    
-    with torch.no_grad():
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            
-            # Get latent z
-            intermediate_outputs = model(x)
-            z, _ = intermediate_outputs[-1]
-            z = z.view(z.size(0), -1)
-            
-            # Accumulate
-            unique_classes = torch.unique(y)
-            for c in unique_classes:
-                mask = (y == c)
-                z_c = z[mask]
-                
-                acc_mu[c] += z_c.sum(dim=0)
-                acc_sq[c] += (z_c.pow(2)).sum(dim=0)
-                acc_count[c] += mask.sum()
-                
-    # Compute final stats
-    means = torch.zeros(num_classes, num_features, device=device)
-    vars = torch.zeros(num_classes, num_features, device=device)
-    
-    for c in range(num_classes):
-        if acc_count[c] > 1:
-            mean = acc_mu[c] / acc_count[c]
-            mean_sq = acc_sq[c] / acc_count[c]
-            var = mean_sq - mean.pow(2)
-            
-            means[c] = mean.float()
-            vars[c] = var.float()
-            
-    return means, vars
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def train(cfg: DictConfig):
@@ -234,7 +116,7 @@ def train(cfg: DictConfig):
             z, log_det = intermediate_outputs[-1]
             
             # Get the current dynamic target distributions
-            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df)
+            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device)
             
             # Compute logits
             aux_logits = [
@@ -271,7 +153,7 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df)
+            eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device)
             test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
@@ -310,7 +192,7 @@ def train(cfg: DictConfig):
     print("Training completed.")
 
     # Return the final accuracy for Optuna
-    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df), alphas, betas, cfg.training.lambda_, aux_layers)
+    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device), alphas, betas, cfg.training.lambda_, aux_layers)
     return accuracy
 
 if __name__ == "__main__":
