@@ -24,7 +24,7 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         self.mvn = torch.distributions.LowRankMultivariateNormal(
             loc=torch.zeros_like(self.mu),
             cov_factor = self.U,
-            cov_diag=torch.nn.functional.softplus(self.v) + self.eps
+            cov_diag=self.v
         )
         self.chi2 = torch.distributions.Chi2(df=df)
         
@@ -40,7 +40,7 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         df = torch.tensor(self.df, device=value.device, dtype=value.dtype)
 
         # Diagonal part
-        D = torch.nn.functional.softplus(self.v) + self.eps  # (d,)
+        D = self.v  # (d,)
         Dinv = 1.0 / D
 
         # y^T D^{-1} y
@@ -216,23 +216,8 @@ def train(cfg: DictConfig):
                         if torch.isnan(batch_var).any():
                             continue
                         
-                        current_var = torch.nn.functional.softplus(latent_v[c])
-                        
-                        # Linear average in variance space
-                        new_var = v_momentum * current_var + (1 - v_momentum) * batch_var
-                        
-                        # Safety clamp to prevent numerical instability (negative or zero variance)
-                        new_var = torch.clamp(new_var, min=1e-6)
-                        
-                        # 3. Convert back to parameter space (Inverse Softplus)
                         # Stable implementation using copy_
-                        latent_v[c].data.copy_(
-                            torch.where(
-                                new_var > 20.0,
-                                new_var,
-                                torch.log(torch.expm1(new_var) + 1e-6)
-                            )
-                        )
+                        latent_v[c].data.lerp_(batch_var, weight=1.0 - v_momentum)
             
 
             # Get the current dynamic target distributions
