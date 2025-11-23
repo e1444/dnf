@@ -198,15 +198,24 @@ def train(cfg: DictConfig):
                     if mask.sum() > 1:
                         z_c = z[mask]
                         
+                        
                         # 1. Update Mean
                         batch_mean = z_c.mean(dim=0)
+                        
+                        # NaN Guard
+                        if torch.isnan(batch_mean).any():
+                            continue
+
                         # Use lerp_ (linear interpolation) for cleaner in-place EMA
-                        # new = current * momentum + batch * (1 - momentum)
-                        # Equivalent to: current.lerp_(batch, 1 - momentum)
                         latent_mu[c].data.lerp_(batch_mean, weight=1.0 - mu_momentum)
                         
                         # 2. Update Variance (in Variance Space)
                         batch_var = z_c.var(dim=0)
+                        
+                        # NaN Guard
+                        if torch.isnan(batch_var).any():
+                            continue
+                        
                         current_var = torch.nn.functional.softplus(latent_v[c])
                         
                         # Linear average in variance space
