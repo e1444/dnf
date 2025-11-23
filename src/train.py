@@ -189,35 +189,27 @@ def train(cfg: DictConfig):
             z, log_det = intermediate_outputs[-1]
 
             # EMA Target Update (Adaptive Targets)
-            with torch.no_grad():
-                mu_momentum = cfg.training.get("ema_mu_momentum", 0.9)
-                v_momentum = cfg.training.get("ema_v_momentum", 0.9)
-                
-                for c in range(cfg.training.num_classes):
-                    mask = (y_batch == c)
-                    if mask.sum() > 1:
-                        z_c = z[mask]
-                        
-                        
-                        # 1. Update Mean
-                        batch_mean = z_c.mean(dim=0)
-                        
-                        # NaN Guard
-                        if torch.isnan(batch_mean).any():
-                            continue
+            if cfg.training.adaptive_targets:
+                with torch.no_grad():
+                    mu_momentum = cfg.training.ema_mu_momentum
+                    v_momentum = cfg.training.ema_v_momentum
+                    
+                    for c in range(cfg.training.num_classes):
+                        mask = (y_batch == c)
+                        if mask.sum() > 1:
+                            z_c = z[mask]
+                            
+                            batch_mean = z_c.mean(dim=0)
+                            if torch.isnan(batch_mean).any():
+                                continue
 
-                        # Use lerp_ (linear interpolation) for cleaner in-place EMA
-                        latent_mu[c].data.lerp_(batch_mean, weight=1.0 - mu_momentum)
-                        
-                        # 2. Update Variance (in Variance Space)
-                        batch_var = z_c.var(dim=0)
-                        
-                        # NaN Guard
-                        if torch.isnan(batch_var).any():
-                            continue
-                        
-                        # Stable implementation using copy_
-                        latent_v[c].data.lerp_(batch_var, weight=1.0 - v_momentum)
+                            latent_mu[c].data.lerp_(batch_mean, weight=1.0 - mu_momentum)
+                            
+                            batch_var = z_c.var(dim=0)
+                            if torch.isnan(batch_var).any():
+                                continue
+                            
+                            latent_v[c].data.lerp_(batch_var, weight=1.0 - v_momentum)
             
 
             # Get the current dynamic target distributions
