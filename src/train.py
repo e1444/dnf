@@ -39,7 +39,7 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
     def log_prob(self, value):
         y = value - self.mu
         d = y.shape[-1]
-        df = torch.tensor(self.df, device=value.device, dtype=value.dtype)
+        df = self.df
 
         # Diagonal part
         D = self.cov_diag  # (d,)
@@ -88,6 +88,49 @@ def get_target_distributions(mu, v, U, num_classes, eps=1e-4, df=4.0):
             eps=eps
         ) for i in range(num_classes)
     ]
+    
+def estimate_latent_statistics(model, loader, device, num_classes, num_features):
+    """
+    Computes the exact mean and variance of the latent space for the current model state.
+    """
+    model.eval()
+    acc_mu = torch.zeros(num_classes, num_features, device=device, dtype=torch.float64)
+    acc_sq = torch.zeros(num_classes, num_features, device=device, dtype=torch.float64)
+    acc_count = torch.zeros(num_classes, device=device, dtype=torch.float64)
+    
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            
+            # Get latent z
+            intermediate_outputs = model(x)
+            z, _ = intermediate_outputs[-1]
+            z = z.view(z.size(0), -1)
+            
+            # Accumulate
+            unique_classes = torch.unique(y)
+            for c in unique_classes:
+                mask = (y == c)
+                z_c = z[mask]
+                
+                acc_mu[c] += z_c.sum(dim=0)
+                acc_sq[c] += (z_c.pow(2)).sum(dim=0)
+                acc_count[c] += mask.sum()
+                
+    # Compute final stats
+    means = torch.zeros(num_classes, num_features, device=device)
+    vars = torch.zeros(num_classes, num_features, device=device)
+    
+    for c in range(num_classes):
+        if acc_count[c] > 1:
+            mean = acc_mu[c] / acc_count[c]
+            mean_sq = acc_sq[c] / acc_count[c]
+            var = mean_sq - mean.pow(2)
+            
+            means[c] = mean.float()
+            vars[c] = var.float()
+            
+    return means, vars
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def train(cfg: DictConfig):
@@ -178,12 +221,6 @@ def train(cfg: DictConfig):
     for epoch in range(start_epoch, total_epochs):
         model.train()
         total_loss = 0.0
-        
-        # Initialize ema accumulators for adaptive targets
-        if cfg.training.adaptive_targets:
-            acc_mu = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
-            acc_sq = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
-            acc_count = torch.zeros(cfg.training.num_classes, device=device)
 
         for x_batch, y_batch in train_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
@@ -195,23 +232,7 @@ def train(cfg: DictConfig):
             intermediate_outputs = [(z.view(z.size(0), -1), log_det) for z, log_det in intermediate_outputs]
             aux_outputs = [intermediate_outputs[i] for i in aux_layers]
             z, log_det = intermediate_outputs[-1]
-
-            # EMA Target Update (Adaptive Targets)
-            if cfg.training.adaptive_targets:
-                with torch.no_grad():
-                    # Only loop over classes present in this batch for speed
-                    unique_classes = torch.unique(y_batch)
-                    for c in unique_classes:
-                        mask = (y_batch == c)
-                        z_c = z[mask]
-                        
-                        # Accumulate Sum and Sum of Squares
-                        # We use these to calculate Mean and Variance at end of epoch
-                        acc_mu[c] += z_c.sum(dim=0)
-                        acc_sq[c] += (z_c.pow(2)).sum(dim=0)
-                        acc_count[c] += mask.sum()
             
-
             # Get the current dynamic target distributions
             target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df)
             
@@ -285,35 +306,29 @@ def train(cfg: DictConfig):
             wandb.save(checkpoint_path)
             
         if cfg.training.adaptive_targets:
+            print("Estimating latent statistics for target update...")
+            # 1. Compute exact stats using the current model state
+            epoch_means, epoch_vars = estimate_latent_statistics(
+                model, train_loader, device, 
+                cfg.training.num_classes, cfg.training.features
+            )
+            
             with torch.no_grad():
                 mu_momentum = cfg.training.ema_mu_momentum
                 v_momentum = cfg.training.ema_v_momentum
-                
+                df = cfg.training.latent_df
+                scale_factor = (df - 2) / df if df > 2 else 1.0
+
                 for c in range(cfg.training.num_classes):
-                    if acc_count[c] > 1:
-                        # Calculate Global Epoch Mean
-                        epoch_mean = acc_mu[c] / acc_count[c]
-                        
-                        # Calculate Global Epoch Variance: E[x^2] - (E[x])^2
-                        epoch_mean_sq = acc_sq[c] / acc_count[c]
-                        epoch_var = epoch_mean_sq - epoch_mean.pow(2)
-                        
-                        # Numerical stability: Variance cannot be negative
-                        # (Floating point errors can cause -1e-8)
-                        epoch_var = torch.clamp(epoch_var, min=1e-6)
-                        
-                        assert torch.isfinite(epoch_var).all(), f"Non-finite variance for class {c} at epoch {epoch}"
-                        assert torch.isfinite(epoch_mean).all(), f"Non-finite mean for class {c} at epoch {epoch}"
-                        
-                        # Update Mean
-                        latent_mu[c].data.lerp_(epoch_mean, weight=1.0 - mu_momentum)
-                        
-                        # Update Variance (Only if momentum allows)
-                        df = cfg.training.latent_df
-                        scale_factor = (df - 2) / df
-                        epoch_var = epoch_var * scale_factor
-                        latent_v[c].data.lerp_(epoch_var, weight=1.0 - v_momentum)
-                        latent_v[c].data.clamp_(min=1e-5, max=10.0)
+                    # Update Mean
+                    latent_mu[c].data.lerp_(epoch_means[c], weight=1.0 - mu_momentum)
+                    
+                    # Update Variance
+                    target_v = epoch_vars[c] * scale_factor
+                    target_v = torch.clamp(target_v, min=1e-5) # Safety
+                    
+                    latent_v[c].data.lerp_(target_v, weight=1.0 - v_momentum)
+                    latent_v[c].data.clamp_(min=1e-5, max=10.0)
             
         scheduler.step()
         
