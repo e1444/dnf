@@ -40,11 +40,6 @@ latent_noise: 0.1
 features: 1024
 num_classes: 10
 
-# ema (expects frozen latent variables)
-adaptive_targets: false
-ema_mu_momentum: 0.9
-ema_v_momentum: 0.9
-
 resume_from_checkpoint: null
 reset_freeze: true
 freeze_steps:
