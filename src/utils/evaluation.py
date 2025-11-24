@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, log_loss
-from .losses import deep_supervision_loss, total_loss_fn, compute_logits, generative_loss_fn, disc_loss_fn, entropy_loss_fn
+from .losses import deep_ce_loss, total_loss_fn, compute_logits, nll_loss_fn, ce_loss_fn, entropy_loss_fn
 
 def evaluate(model, data_loader, device, cfg, target_dists, alphas, betas, lambda_, aux_layers):
     """
@@ -33,7 +33,7 @@ def evaluate(model, data_loader, device, cfg, target_dists, alphas, betas, lambd
             logits = compute_logits(z, log_det, target_dists)
             
             # Calculate loss
-            aux_loss = deep_supervision_loss(aux_logits, y_batch, alphas, betas)
+            aux_loss = deep_ce_loss(aux_logits, y_batch, alphas, betas)
             final_loss = total_loss_fn(logits, y_batch, lambda_=lambda_)
             loss = aux_loss + final_loss
             
@@ -46,7 +46,7 @@ def evaluate(model, data_loader, device, cfg, target_dists, alphas, betas, lambd
             total_test_loss += loss.item()
             
             # Calculate NLL for a clean evaluation metric
-            nll_batch = generative_loss_fn(logits, y_batch) * y_batch.size(0)
+            nll_batch = nll_loss_fn(logits, y_batch) * y_batch.size(0)
             total_nll += nll_batch.item()
             
             # Calculate accuracy

@@ -3,12 +3,13 @@ import hydra
 import wandb
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_mnist
 from src.distributions.mvt import get_target_distributions
-from src.utils.losses import deep_supervision_loss, total_loss_fn, compute_logits
+from src.utils.losses import compute_logits, nll_loss_fn, ce_loss_fn, deep_ce_loss, total_loss_fn
 from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -42,6 +43,8 @@ def train(cfg: DictConfig):
         
         initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.tensor(cfg.training.latent_v)
         initial_v += torch.randn_like(initial_v) * cfg.training.latent_noise
+        # Safety: Ensure positive start
+        initial_v = torch.abs(initial_v)
         latent_v = nn.Parameter(initial_v)
         
         initial_U = torch.zeros(cfg.training.num_classes, cfg.training.features, cfg.training.latent_U_size, device=device)
@@ -61,6 +64,18 @@ def train(cfg: DictConfig):
     optimizer.add_param_group({'params': [latent_v], 'lr': cfg.training.lr_v, 'weight_decay': 0.0})
     optimizer.add_param_group({'params': [latent_U], 'lr': cfg.training.lr_U, 'weight_decay': 0.0})
     
+    # --- Augmented Lagrangian Setup ---
+    # Initialize dual variable (log_alpha)
+    log_alpha = torch.tensor(0.0, requires_grad=True, device=device)
+    # Separate optimizer for alpha (dual)
+    alpha_lr = cfg.training.log_alpha_lr
+    alpha_optimizer = optim.Adam([log_alpha], lr=alpha_lr)
+    
+    # Hyperparams
+    rho = cfg.training.aug_rho
+    # Default constraint: 1.0 nat per dimension if not specified
+    nll_constraint = cfg.training.nll_constraint
+
     start_epoch = 0
     if cfg.training.resume_from_checkpoint is not None:
         print(f"Resuming training from {cfg.training.resume_from_checkpoint}")
@@ -79,6 +94,12 @@ def train(cfg: DictConfig):
         optimizer.param_groups[2]['lr'] = cfg.training.lr_v
         optimizer.param_groups[3]['lr'] = cfg.training.lr_U
         start_epoch = checkpoint['epoch'] + 1
+        
+        # Load dual variables if available
+        if 'log_alpha' in checkpoint:
+            log_alpha.data.copy_(checkpoint['log_alpha'])
+        if 'alpha_optimizer_state_dict' in checkpoint:
+            alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
         
     if cfg.training.reset_freeze:
         model.set_freeze_steps(freeze=False, start=0, end=-1)
@@ -103,9 +124,14 @@ def train(cfg: DictConfig):
     for epoch in range(start_epoch, total_epochs):
         model.train()
         total_loss = 0.0
+        total_nll = 0.0
+        total_ce = 0.0
+        total_alpha = 0.0
 
         for x_batch, y_batch in train_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            
+            # --- Primal Step ---
             optimizer.zero_grad()
 
             # Forward pass
@@ -116,6 +142,7 @@ def train(cfg: DictConfig):
             z, log_det = intermediate_outputs[-1]
             
             # Get the current dynamic target distributions
+            # Note: We allow gradients to flow through latent params here
             target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device)
             
             # Compute logits
@@ -124,19 +151,32 @@ def train(cfg: DictConfig):
             ]
             logits = compute_logits(z, log_det, target_dists)
             
-            # Calculate loss
-            aux_loss = deep_supervision_loss(aux_logits, y_batch, alphas, betas, label_smoothing=cfg.training.label_smoothing)
-            final_loss = cfg.training.beta_final * total_loss_fn(logits, y_batch, lambda_=cfg.training.lambda_, label_smoothing=cfg.training.label_smoothing)
-            loss = aux_loss + final_loss
+            # 1. Task Loss (CE + Aux)
+            aux_ce_loss = deep_ce_loss(aux_logits, y_batch, alphas, betas, label_smoothing=cfg.training.label_smoothing)
+            ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
+            task_loss = (1 - cfg.training.lambda_) * aux_ce_loss + cfg.training.lambda_ * ce_loss
             
-            # Regularization terms
+            # 2. NLL Loss (The Constraint)
+            nll_loss = nll_loss_fn(logits, y_batch)
+            
+            # 3. Regularization terms (Jacobian smoothness)
             log_dets = [log_det for _, log_det in intermediate_outputs]
             for i in reversed(range(1, len(log_dets))):
                 log_dets[i] = log_dets[i] - log_dets[i - 1]
-                
-            loss += cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
+            reg_loss = cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
 
-            loss.backward()
+            # 4. Augmented Lagrangian
+            alpha = F.softplus(log_alpha)
+            nll_violation = nll_loss - nll_constraint
+            violation_pos = F.relu(nll_violation)
+            
+            # Primal Objective
+            primal_loss = task_loss + alpha * nll_violation + 0.5 * rho * violation_pos.pow(2)
+            primal_loss += reg_loss
+
+            primal_loss.backward()
+            
+            # Clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
             if latent_mu.requires_grad:
                 torch.nn.utils.clip_grad_norm_([latent_mu], max_norm=cfg.training.gradclip_mu)
@@ -145,11 +185,38 @@ def train(cfg: DictConfig):
             if latent_U.requires_grad:
                 torch.nn.utils.clip_grad_norm_([latent_U], max_norm=cfg.training.gradclip_U)
             optimizer.step()
+            
+            # FIX 3: Safety clamp for latent_v to prevent negative values during optimization
+            if latent_v.requires_grad:
+                with torch.no_grad():
+                    latent_v.data.clamp_(min=1e-5)
 
-            total_loss += loss.item()
+            # --- Dual Step ---
+            alpha_optimizer.zero_grad()
+            # Maximize alpha * violation => Minimize -alpha * violation
+            # Use detached violation to avoid affecting primal vars
+            dual_loss = -F.softplus(log_alpha) * nll_violation.detach()
+            dual_loss.backward()
+            alpha_optimizer.step()
+
+            total_loss += primal_loss.item()
+            total_nll += nll_loss.item()
+            total_ce += ce_loss.item()
+            total_alpha += alpha.item()
 
         avg_train_loss = total_loss / len(train_loader)
-        log_dict = {"epoch": epoch, "train_loss": avg_train_loss}
+        avg_nll = total_nll / len(train_loader)
+        avg_ce = total_ce / len(train_loader)
+        avg_alpha = total_alpha / len(train_loader)
+        
+        log_dict = {
+            "epoch": epoch, 
+            "train_loss": avg_train_loss,
+            "train_nll": avg_nll,
+            "train_ce": avg_ce,
+            "alpha": avg_alpha,
+            "nll_violation": avg_nll - nll_constraint
+        }
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
@@ -168,7 +235,7 @@ def train(cfg: DictConfig):
                 "train_eval_nll": train_nll
             })
             
-            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_accuracy:.2f}%/{test_accuracy:.2f}% | NLL (Tr/Te): {train_nll:.4f}/{test_nll:.4f}")
+            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_accuracy:.2f}%/{test_accuracy:.2f}% | NLL: {avg_nll:.2f} (Target {nll_constraint:.1f}) | Alpha: {avg_alpha:.4f}")
 
 
         wandb.log(log_dict)
@@ -184,6 +251,8 @@ def train(cfg: DictConfig):
                 'latent_mu': latent_mu.detach().cpu().clone(),
                 'latent_v': latent_v.detach().cpu().clone(),
                 'latent_U': latent_U.detach().cpu().clone(),
+                'log_alpha': log_alpha.detach().cpu().clone(),
+                'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),
             }, checkpoint_path)
             wandb.save(checkpoint_path)
             

@@ -16,9 +16,7 @@ checkpoint_interval: 5
 
 # Loss and regularization weights
 lambda_: 0.8
-gamma_alpha: 0.5
 gamma_beta: 1.0
-beta_final: 2.0
 aux_freq: 1
 aux_total: 8
 r_logdet: 1e-2
@@ -39,6 +37,11 @@ latent_df: 10
 latent_noise: 0.1
 features: 1024
 num_classes: 10
+
+# Lagrange multipliers settings
+log_alpha_lr: 1e-3
+aug_rho: 1.0
+nll_constraint: -3000.0
 
 resume_from_checkpoint: null
 reset_freeze: true
