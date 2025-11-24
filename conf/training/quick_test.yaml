@@ -1,9 +1,0 @@
-# This config is for a quick test run in a notebook.
-# It inherits from the default but overrides some values for speed.
-defaults:
-  - default
-
-epochs: 1
-eval_interval: 1
-checkpoint_interval: 1 # Checkpoint after 1 epoch to inspect
-lr_vars: 0 # Explicitly set to 0 for testing the freezing behavior
