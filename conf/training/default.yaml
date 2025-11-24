@@ -46,6 +46,7 @@ aug_rho: 1.0
 nll_constraint: -3000.0
 
 resume_from_checkpoint: null
+reset_optimizer: false
 reset_freeze: true
 freeze_steps:
   start: null

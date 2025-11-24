@@ -551,7 +551,6 @@ sbatch scripts/train_fir.sh \
     training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-21/18-31-27/checkpoint_epoch_40.pth
 ```
 
-# Attempt 11 (ema)
 ```sh
 sbatch scripts/train_fir.sh \
     training.epochs=10 \
@@ -658,40 +657,64 @@ sbatch scripts/train_fir.sh \
     training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-23/01-55-45/checkpoint_epoch_60.pth
 ```
 
-## Path 1
-
-```sh
-sbatch scripts/train_fir.sh \
-    training.lambda_=0.999 \
-    training.lr=1e-4 \
-    training.lr_mu=0 \
-    training.lr_v=0 \
-    training.lr_U=0 \
-    training.beta_final=1.0 \
-    training.r_logdet=1e-3 \
-    training.aux_total=0 \
-    training.freeze_steps.start=0 \
-    training.freeze_steps.end=6 \
-    training.adaptive_targets=False \
-    model.hidden_channels=512 \
-    model.num_fixed_levels=3 \
-    training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-23/12-29-07/checkpoint_epoch_80.pth
-```
-
 ```sh
 sbatch scripts/train_fir.sh \
     training.lambda_=0.999 \
     training.lr=1e-4 \
     training.lr_mu=1e-4 \
-    training.lr_v=0 \
+    training.lr_v=1e-4 \
     training.lr_U=1e-4 \
-    training.beta_final=0.1 \
     training.r_logdet=1e-3 \
     training.aux_total=6 \
-    training.gamma_alpha=1 \
-    training.gamma_beta=0.5 \
     model.hidden_channels=512 \
     model.num_fixed_levels=3 \
-    training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-23/13-27-44/checkpoint_epoch_100.pth
+    training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-23/12-29-07/checkpoint_epoch_80.pth
 ```
+```sh
+sbatch scripts/train_fir.sh \
+    training.epochs=50 \
+    training.lambda_=0.999 \
+    training.lr=1e-4 \
+    training.lr_mu=1e-4 \
+    training.lr_v=1e-4 \
+    training.lr_U=1e-4 \
+    training.r_logdet=1e-3 \
+    training.aux_total=6 \
+    model.hidden_channels=512 \
+    model.num_fixed_levels=3 \
+    training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-23/17-02-09/checkpoint_epoch_100.pth
+```
+
+```sh
+sbatch scripts/train_fir.sh \
+    training.epochs=20 \
+    training.lambda_=0.999 \
+    training.lr=1e-7 \
+    training.lr_mu=1e-7 \
+    training.lr_v=1e-7 \
+    training.lr_U=1e-7 \
+    training.r_logdet=1e-3 \
+    training.aux_total=6 \
+    model.hidden_channels=512 \
+    model.num_fixed_levels=3 \
+    training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-23/17-58-10/checkpoint_epoch_150.pth
+```
+
+```sh
+sbatch scripts/train_fir.sh \
+    training.epochs=120 \
+    training.lambda_=0.9 \
+    training.lr=1e-3 \
+    training.lr_mu=1e-3 \
+    training.lr_v=1e-3 \
+    training.lr_U=1e-3 \
+    training.lr_df=1e-3 \
+    training.r_logdet=1e-4 \
+    training.label_smoothing=1e-2 \
+    training.aux_total=6 \
+    model.hidden_channels=512 \
+    model.num_fixed_levels=3 \
+    training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-23/12-29-07/checkpoint_epoch_80.pth
+```
+
 
