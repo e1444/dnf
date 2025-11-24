@@ -1,8 +1,16 @@
+import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from omegaconf import DictConfig
 import hydra
 
+
+class Dequantize(object):
+    def __call__(self, tensor):
+        # Adds uniform noise [0, 1/256]
+        return tensor + torch.rand_like(tensor) / 256.0
+    
+    
 def load_mnist(cfg: DictConfig):
     """
     Loads the MNIST dataset using configuration from a Hydra DictConfig.
@@ -18,8 +26,10 @@ def load_mnist(cfg: DictConfig):
     transform_list = []
     if cfg.dataset.transform:
         for t_cfg in cfg.dataset.transform:
-            # In mnist.yaml, the transform is defined with 'type' and parameters
-            # We need to convert 'type' to '_target_' for hydra instantiation
+            if t_cfg["type"] == "Dequantize":
+                transform_list.append(Dequantize())
+                continue
+            
             transform_config = {'_target_': f'torchvision.transforms.{t_cfg["type"]}'}
             if 'params' in t_cfg and t_cfg.params:
                 transform_config.update(t_cfg.params)

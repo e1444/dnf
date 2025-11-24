@@ -106,7 +106,7 @@ def train(cfg: DictConfig):
             optimizer.param_groups[2]['lr'] = cfg.training.lr_v
             optimizer.param_groups[3]['lr'] = cfg.training.lr_U
             optimizer.param_groups[4]['lr'] = cfg.training.lr_df
-            start_epoch = checkpoint['epoch'] + 1
+        start_epoch = checkpoint['epoch'] + 1
             
         # Load dual variables if available
         if 'log_alpha' in checkpoint:

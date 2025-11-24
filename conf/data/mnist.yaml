@@ -16,6 +16,7 @@ dataset:
         alpha: 20.0         # Controls the intensity of the elastic deformation
         sigma: 4.0          # Controls the smoothness of the deformation
     - type: "ToTensor"
+    - type: "Dequantize"
     - type: "Normalize"
       mean: [0.5]
       std: [0.5]
