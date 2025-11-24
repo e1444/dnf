@@ -74,8 +74,7 @@ def train(cfg: DictConfig):
     # Initialize dual variable (log_alpha)
     log_alpha = torch.tensor(0.0, requires_grad=True, device=device)
     # Separate optimizer for alpha (dual)
-    alpha_lr = cfg.training.log_alpha_lr
-    alpha_optimizer = optim.Adam([log_alpha], lr=alpha_lr)
+    alpha_optimizer = optim.Adam([log_alpha], lr=cfg.training.lr_log_alpha)
     
     # Hyperparams
     rho = cfg.training.aug_rho
