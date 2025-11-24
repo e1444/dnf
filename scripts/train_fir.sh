@@ -4,7 +4,7 @@
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32000M
-#SBATCH --time=2:00:00
+#SBATCH --time=12:00:00
 #SBATCH --mail-user=er.liang@mail.utoronto.ca
 #SBATCH --mail-type=ALL
 
