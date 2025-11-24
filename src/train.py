@@ -151,7 +151,7 @@ def train(cfg: DictConfig):
             logits = compute_logits(z, log_det, target_dists)
             
             # 1. Task Loss (CE + Aux)
-            aux_ce_loss = deep_ce_loss(aux_logits, y_batch, alphas, betas, label_smoothing=cfg.training.label_smoothing)
+            aux_ce_loss = deep_ce_loss(aux_logits, y_batch, betas, label_smoothing=cfg.training.label_smoothing)
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             task_loss = (1 - cfg.training.lambda_) * aux_ce_loss + cfg.training.lambda_ * ce_loss
             
@@ -220,14 +220,14 @@ def train(cfg: DictConfig):
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
             eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device)
-            test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
+            test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
                 "test_accuracy": test_accuracy,
                 "test_nll": test_nll
             })
             
-            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, eval_target_dists, alphas, betas, cfg.training.lambda_, aux_layers)
+            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "train_eval_loss": train_loss,
                 "train_eval_accuracy": train_accuracy,
@@ -260,7 +260,7 @@ def train(cfg: DictConfig):
     print("Training completed.")
 
     # Return the final accuracy for Optuna
-    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device), alphas, betas, cfg.training.lambda_, aux_layers)
+    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device), betas, cfg.training.lambda_, aux_layers)
     return accuracy
 
 if __name__ == "__main__":

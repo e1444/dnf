@@ -7,7 +7,7 @@ import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, log_loss
 from .losses import deep_ce_loss, total_loss_fn, compute_logits, nll_loss_fn, ce_loss_fn, entropy_loss_fn
 
-def evaluate(model, data_loader, device, cfg, target_dists, alphas, betas, lambda_, aux_layers):
+def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_layers):
     """
     Evaluate the model on a given dataset.
     """
@@ -33,7 +33,7 @@ def evaluate(model, data_loader, device, cfg, target_dists, alphas, betas, lambd
             logits = compute_logits(z, log_det, target_dists)
             
             # Calculate loss
-            aux_loss = deep_ce_loss(aux_logits, y_batch, alphas, betas)
+            aux_loss = deep_ce_loss(aux_logits, y_batch, betas)
             final_loss = total_loss_fn(logits, y_batch, lambda_=lambda_)
             loss = aux_loss + final_loss
             

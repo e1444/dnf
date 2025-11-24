@@ -28,7 +28,7 @@ def total_loss_fn(logits, y_true, lambda_, label_smoothing=0.0):
     total_loss = (1 - lambda_) * disc_loss + lambda_ * gen_loss
     return total_loss
 
-def deep_ce_loss(intermediate_logits, y_true, alphas, betas, label_smoothing=0.0):
+def deep_ce_loss(intermediate_logits, y_true, betas, label_smoothing=0.0):
     total_loss = torch.tensor(0.0, device=y_true.device)
 
     for j, logits_j in enumerate(intermediate_logits):
