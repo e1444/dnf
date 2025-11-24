@@ -86,14 +86,19 @@ class CNNCouplingLayer(nn.Module):
             nn.Conv2d(hidden_channels, self.in_channels, kernel_size=3, padding=1)
         )
         with torch.no_grad():
-            self.coupling_net[-1].weight.fill_(0)
-            self.coupling_net[-1].bias.fill_(0)
+            self.coupling_net[-1].weight.fill_(0) # type: ignore
+            self.coupling_net[-1].bias.fill_(0) # type: ignore
+                    
+        self.scale_clamp = nn.Parameter(torch.tensor(1.0)) 
+
 
     def forward(self, x):
         x_a, x_b = x.split(self.split_size, dim=1)
         s_and_t = self.coupling_net(x_a)
         log_s, t = s_and_t.split(self.split_size, dim=1)
-        s = torch.exp(torch.tanh(log_s))
+        scale = self.scale_clamp
+        log_s = (2.0 * scale / 3.14159) * torch.atan(log_s / scale)
+        s = torch.exp(log_s)
 
         y_b = x_b * s + t
         y = torch.cat([x_a, y_b], dim=1)
@@ -104,7 +109,9 @@ class CNNCouplingLayer(nn.Module):
         y_a, y_b = y.split(self.split_size, dim=1)
         s_and_t = self.coupling_net(y_a)
         log_s, t = s_and_t.split(self.split_size, dim=1)
-        s = torch.exp(torch.tanh(log_s))
+        scale = self.scale_clamp
+        log_s = (2.0 * scale / 3.14159) * torch.atan(log_s / scale)
+        s = torch.exp(log_s)
         
         x_b = (y_b - t) / s
         x = torch.cat([y_a, x_b], dim=1)
