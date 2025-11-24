@@ -24,7 +24,7 @@ def train(cfg: DictConfig):
     wandb.init(
         project=cfg.wandb.project, 
         entity=cfg.wandb.entity, 
-        config=config_dict,
+        config=config_dict, # type: ignore
         name=cfg.wandb.name
     )
     
@@ -181,9 +181,10 @@ def train(cfg: DictConfig):
             primal_loss += reg_loss
             
             alpha = F.softplus(log_alpha)
+            nll_violation = nll_loss - nll_constraint
+            violation_pos = F.relu(nll_violation)
+            
             if cfg.training.use_al:
-                nll_violation = nll_loss - nll_constraint
-                violation_pos = F.relu(nll_violation)
                 primal_loss += alpha * nll_violation 
                 primal_loss += 0.5 * rho * violation_pos.pow(2)
 
@@ -261,7 +262,7 @@ def train(cfg: DictConfig):
 
         # Checkpointing
         if (epoch + 1) % cfg.training.checkpoint_interval == 0:
-            checkpoint_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+            checkpoint_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir # type: ignore
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch + 1}.pth")
             torch.save({
                 'epoch': epoch,
@@ -276,7 +277,13 @@ def train(cfg: DictConfig):
             }, checkpoint_path)
             wandb.save(checkpoint_path)
             
-        scheduler.step()
+        if scheduler is not None:
+            # Check if it's ReduceLROnPlateau (requires a metric)
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(avg_train_loss)
+            else:
+                # For other schedulers (StepLR, Cosine, etc.)
+                scheduler.step()
         
     print("Training completed.")
 

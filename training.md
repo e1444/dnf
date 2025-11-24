@@ -730,9 +730,24 @@ sbatch scripts/train_fir.sh \
     training.lr_v=0 \
     training.lr_U=0 \
     training.lr_df=0 \
-    training.r_logdet=1e-4 \
+    training.r_logdet=1e-1 \
     training.label_smoothing=1e-1 \
     training.aux_total=12 \
-    training.lr_alpha=0 \
-    training.nll_constraint=5000 # effectively no constraint -> purely optimize for ce
+    training.use_al=False
+```
+
+```sh
+sbatch scripts/train_fir.sh \
+    training.epochs=100 \
+    training.lambda_=0.9 \
+    training.lr=1e-3 \
+    training.lr_mu=1e-3 \
+    training.lr_v=1e-3 \
+    training.lr_U=1e-3 \
+    training.lr_df=1e-3 \
+    training.r_logdet=1e-4 \
+    training.label_smoothing=0 \
+    training.aux_total=12 \
+    training.nll_constraint=-4800 \
+    training.resume_from_checkpoint=/home/e1444/scratch/dnf/logs/2025-11-24/14-19-01/checkpoint_epoch_10.pth
 ```

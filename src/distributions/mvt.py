@@ -64,7 +64,7 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         return c1 + c2 + c3
         
 
-def get_target_distributions(mu, v, U, df, num_classes, eps=1e-4, device='cpu'):
+def get_target_distributions(mu, v, U, df, num_classes, eps=1e-4, device=torch.device('cpu')):
     """Creates a list of target distributions."""
     return [
         MultivariateLowRankStudentT(
