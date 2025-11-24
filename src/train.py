@@ -175,15 +175,17 @@ def train(cfg: DictConfig):
             for i in reversed(range(1, len(log_dets))):
                 log_dets[i] = log_dets[i] - log_dets[i - 1]
             reg_loss = cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
-
-            # 4. Augmented Lagrangian
-            alpha = F.softplus(log_alpha)
-            nll_violation = nll_loss - nll_constraint
-            violation_pos = F.relu(nll_violation)
             
             # Primal Objective
-            primal_loss = task_loss + alpha * nll_violation + 0.5 * rho * violation_pos.pow(2)
+            primal_loss = task_loss
             primal_loss += reg_loss
+            
+            alpha = F.softplus(log_alpha)
+            if cfg.training.use_al:
+                nll_violation = nll_loss - nll_constraint
+                violation_pos = F.relu(nll_violation)
+                primal_loss += alpha * nll_violation 
+                primal_loss += 0.5 * rho * violation_pos.pow(2)
 
             primal_loss.backward()
             
@@ -208,12 +210,13 @@ def train(cfg: DictConfig):
                     latent_df.data.clamp_(min=2.0 + 1e-4)  # df > 2 for finite variance
 
             # --- Dual Step ---
-            alpha_optimizer.zero_grad()
-            # Maximize alpha * violation => Minimize -alpha * violation
-            # Use detached violation to avoid affecting primal vars
-            dual_loss = -F.softplus(log_alpha) * nll_violation.detach()
-            dual_loss.backward()
-            alpha_optimizer.step()
+            if cfg.training.use_al:
+                alpha_optimizer.zero_grad()
+                # Maximize alpha * violation => Minimize -alpha * violation
+                # Use detached violation to avoid affecting primal vars
+                dual_loss = -F.softplus(log_alpha) * nll_violation.detach()
+                dual_loss.backward()
+                alpha_optimizer.step()
 
             total_loss += primal_loss.item()
             total_nll += nll_loss.item()
