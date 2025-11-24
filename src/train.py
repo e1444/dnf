@@ -24,7 +24,7 @@ def train(cfg: DictConfig):
     wandb.init(
         project=cfg.wandb.project, 
         entity=cfg.wandb.entity, 
-        config=config_dict, # type: ignore
+        config=config_dict,
         name=cfg.wandb.name
     )
     
@@ -262,7 +262,7 @@ def train(cfg: DictConfig):
 
         # Checkpointing
         if (epoch + 1) % cfg.training.checkpoint_interval == 0:
-            checkpoint_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir # type: ignore
+            checkpoint_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch + 1}.pth")
             torch.save({
                 'epoch': epoch,
@@ -277,13 +277,7 @@ def train(cfg: DictConfig):
             }, checkpoint_path)
             wandb.save(checkpoint_path)
             
-        if scheduler is not None:
-            # Check if it's ReduceLROnPlateau (requires a metric)
-            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(avg_train_loss)
-            else:
-                # For other schedulers (StepLR, Cosine, etc.)
-                scheduler.step()
+        scheduler.step()
         
     print("Training completed.")
 

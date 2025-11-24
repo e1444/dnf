@@ -26,13 +26,9 @@ label_smoothing: 0.1
 
 # Scheduler settings
 scheduler:
-  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-  mode: min
-  factor: 0.5        # Cut LR by half when stuck (gentle decay)
-  patience: 5        # Wait 5 epochs before cutting
-  threshold: 1e-4
-  min_lr: 1e-6
-  verbose: True
+  _target_: torch.optim.lr_scheduler.StepLR
+  step_size: 10
+  gamma: 0.5
 
 # Initialization
 latent_separation: 1e-1
