@@ -115,7 +115,6 @@ def train(cfg: DictConfig):
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
 
     aux_layers = np.arange(start=cfg.training.aux_freq - 1, stop=cfg.training.aux_total, step=cfg.training.aux_freq)
-    alphas = torch.tensor(np.geomspace(start=cfg.training.gamma_alpha ** len(aux_layers), stop=1, num=len(aux_layers)), device=device)
     betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** len(aux_layers), stop=1, num=len(aux_layers)), device=device)
 
     # Training loop
