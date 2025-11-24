@@ -97,16 +97,17 @@ def train(cfg: DictConfig):
                 latent_U.copy_(checkpoint['latent_U'])
             if "latent_df" in checkpoint:
                 latent_df.copy_(checkpoint['latent_df'])
-            
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        optimizer.param_groups[0]['lr'] = cfg.training.lr
-        optimizer.param_groups[0]['weight_decay'] = cfg.training.weight_decay
-        optimizer.param_groups[1]['lr'] = cfg.training.lr_mu
-        optimizer.param_groups[2]['lr'] = cfg.training.lr_v
-        optimizer.param_groups[3]['lr'] = cfg.training.lr_U
-        optimizer.param_groups[4]['lr'] = cfg.training.lr_df
-        start_epoch = checkpoint['epoch'] + 1
         
+        if not cfg.training.reset_optimizer:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            optimizer.param_groups[0]['lr'] = cfg.training.lr
+            optimizer.param_groups[0]['weight_decay'] = cfg.training.weight_decay
+            optimizer.param_groups[1]['lr'] = cfg.training.lr_mu
+            optimizer.param_groups[2]['lr'] = cfg.training.lr_v
+            optimizer.param_groups[3]['lr'] = cfg.training.lr_U
+            optimizer.param_groups[4]['lr'] = cfg.training.lr_df
+            start_epoch = checkpoint['epoch'] + 1
+            
         # Load dual variables if available
         if 'log_alpha' in checkpoint:
             log_alpha.data.copy_(checkpoint['log_alpha'])
