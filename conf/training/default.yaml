@@ -41,7 +41,7 @@ features: 1024
 num_classes: 10
 
 # Lagrange multipliers settings
-log_alpha_lr: 1e-3
+lr_log_alpha: 1e-3
 aug_rho: 1.0
 nll_constraint: -3000.0
 
