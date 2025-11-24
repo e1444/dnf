@@ -31,12 +31,12 @@ scheduler:
   gamma: 0.5
 
 # Initialization
-latent_separation: 1.0
-latent_v: 0
+latent_separation: 1e-1
+latent_v: 4e-3
 latent_v_eps: 1e-4
 latent_U_size: 20
 latent_df: 20
-latent_noise: 0.1
+latent_noise: 0.0
 features: 1024
 num_classes: 10
 
