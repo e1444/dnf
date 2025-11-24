@@ -50,6 +50,9 @@ def train(cfg: DictConfig):
         initial_U = torch.zeros(cfg.training.num_classes, cfg.training.features, cfg.training.latent_U_size, device=device)
         latent_U = nn.Parameter(initial_U)
         
+        initial_df = torch.ones(cfg.training.num_classes, device=device) * cfg.training.latent_df
+        latent_df = nn.Parameter(initial_df)
+        
     if cfg.training.lr == 0:
         model.requires_grad_(False)
     if cfg.training.lr_mu == 0:
@@ -58,11 +61,14 @@ def train(cfg: DictConfig):
         latent_v.requires_grad_(False)
     if cfg.training.lr_U == 0:
         latent_U.requires_grad_(False)
+    if cfg.training.lr_df == 0:
+        latent_df.requires_grad_(False)
 
     optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
     optimizer.add_param_group({'params': [latent_mu], 'lr': cfg.training.lr_mu, 'weight_decay': 0.0})
     optimizer.add_param_group({'params': [latent_v], 'lr': cfg.training.lr_v, 'weight_decay': 0.0})
     optimizer.add_param_group({'params': [latent_U], 'lr': cfg.training.lr_U, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [latent_df], 'lr': cfg.training.lr_df, 'weight_decay': 0.0})
     
     # --- Augmented Lagrangian Setup ---
     # Initialize dual variable (log_alpha)
@@ -83,9 +89,14 @@ def train(cfg: DictConfig):
         model.load_state_dict(checkpoint['model_state_dict'])
         
         with torch.no_grad():
-            latent_mu.copy_(checkpoint['latent_mu'])
-            latent_v.copy_(checkpoint['latent_v'])
-            latent_U.copy_(checkpoint['latent_U'])
+            if "latent_mu" in checkpoint:
+                latent_mu.copy_(checkpoint['latent_mu'])
+            if "latent_v" in checkpoint:
+                latent_v.copy_(checkpoint['latent_v'])
+            if "latent_U" in checkpoint:
+                latent_U.copy_(checkpoint['latent_U'])
+            if "latent_df" in checkpoint:
+                latent_df.copy_(checkpoint['latent_df'])
             
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         optimizer.param_groups[0]['lr'] = cfg.training.lr
@@ -93,6 +104,7 @@ def train(cfg: DictConfig):
         optimizer.param_groups[1]['lr'] = cfg.training.lr_mu
         optimizer.param_groups[2]['lr'] = cfg.training.lr_v
         optimizer.param_groups[3]['lr'] = cfg.training.lr_U
+        optimizer.param_groups[4]['lr'] = cfg.training.lr_df
         start_epoch = checkpoint['epoch'] + 1
         
         # Load dual variables if available
@@ -142,7 +154,7 @@ def train(cfg: DictConfig):
             
             # Get the current dynamic target distributions
             # Note: We allow gradients to flow through latent params here
-            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device)
+            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
             
             # Compute logits
             aux_logits = [
@@ -183,12 +195,17 @@ def train(cfg: DictConfig):
                 torch.nn.utils.clip_grad_norm_([latent_v], max_norm=cfg.training.gradclip_v)
             if latent_U.requires_grad:
                 torch.nn.utils.clip_grad_norm_([latent_U], max_norm=cfg.training.gradclip_U)
+            if latent_df.requires_grad:
+                torch.nn.utils.clip_grad_norm_([latent_df], max_norm=cfg.training.gradclip_df)
             optimizer.step()
             
-            # FIX 3: Safety clamp for latent_v to prevent negative values during optimization
+            # Clamping
             if latent_v.requires_grad:
                 with torch.no_grad():
                     latent_v.data.clamp_(min=1e-5)
+            if latent_df.requires_grad:
+                with torch.no_grad():
+                    latent_df.data.clamp_(min=2.0 + 1e-4)  # df > 2 for finite variance
 
             # --- Dual Step ---
             alpha_optimizer.zero_grad()
@@ -219,7 +236,7 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device)
+            eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
             test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
@@ -250,6 +267,7 @@ def train(cfg: DictConfig):
                 'latent_mu': latent_mu.detach().cpu().clone(),
                 'latent_v': latent_v.detach().cpu().clone(),
                 'latent_U': latent_U.detach().cpu().clone(),
+                'latent_df': latent_df.detach().cpu().clone(),
                 'log_alpha': log_alpha.detach().cpu().clone(),
                 'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),
             }, checkpoint_path)
@@ -260,7 +278,7 @@ def train(cfg: DictConfig):
     print("Training completed.")
 
     # Return the final accuracy for Optuna
-    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, cfg.training.num_classes, cfg.training.latent_v_eps, cfg.training.latent_df, device=device), betas, cfg.training.lambda_, aux_layers)
+    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device), betas, cfg.training.lambda_, aux_layers)
     return accuracy
 
 if __name__ == "__main__":
