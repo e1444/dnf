@@ -72,7 +72,7 @@ def train(cfg: DictConfig):
     
     # --- Augmented Lagrangian Setup ---
     # Initialize dual variable (log_alpha)
-    log_alpha = torch.tensor(0.0, requires_grad=True, device=device)
+    log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
     # Separate optimizer for alpha (dual)
     alpha_optimizer = optim.Adam([log_alpha], lr=cfg.training.lr_log_alpha)
     
