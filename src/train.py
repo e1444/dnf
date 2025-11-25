@@ -24,7 +24,7 @@ def train(cfg: DictConfig):
     wandb.init(
         project=cfg.wandb.project, 
         entity=cfg.wandb.entity, 
-        config=config_dict,
+        config=config_dict, # type: ignore
         name=cfg.wandb.name
     )
     
@@ -254,7 +254,7 @@ def train(cfg: DictConfig):
 
         # Checkpointing
         if (epoch + 1) % cfg.training.checkpoint_interval == 0:
-            checkpoint_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+            checkpoint_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir # type: ignore
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch + 1}.pth")
             torch.save({
                 'epoch': epoch,

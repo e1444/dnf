@@ -32,7 +32,7 @@ scheduler:
 
 # Initialization
 latent_separation: 1e-1
-latent_v: 4e-3
+latent_v: -5
 latent_v_eps: 1e-4
 latent_U_size: 20
 latent_df: 20
