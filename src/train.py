@@ -106,12 +106,13 @@ def train(cfg: DictConfig):
             optimizer.param_groups[3]['lr'] = cfg.training.lr_U
             optimizer.param_groups[4]['lr'] = cfg.training.lr_df
             
-        # Load dual variables if available
-        if 'log_alpha' in checkpoint:
-            log_alpha.data.copy_(checkpoint['log_alpha'])
-        if 'alpha_optimizer_state_dict' in checkpoint:
-            alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
-            alpha_optimizer.param_groups[0]['lr'] = cfg.training.lr_log_alpha
+            # Load dual variables if available
+            if 'log_alpha' in checkpoint:
+                log_alpha.data.copy_(checkpoint['log_alpha'])
+            if 'alpha_optimizer_state_dict' in checkpoint:
+                alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
+                alpha_optimizer.param_groups[0]['lr'] = cfg.training.lr_log_alpha
+        
         start_epoch = checkpoint['epoch'] + 1
         
     if cfg.training.reset_freeze:
