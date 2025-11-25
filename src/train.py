@@ -201,14 +201,6 @@ def train(cfg: DictConfig):
             if latent_df.requires_grad:
                 torch.nn.utils.clip_grad_norm_([latent_df], max_norm=cfg.training.gradclip_df)
             optimizer.step()
-            
-            # Clamping
-            if latent_v.requires_grad:
-                with torch.no_grad():
-                    latent_v.data.clamp_(min=1e-5)
-            if latent_df.requires_grad:
-                with torch.no_grad():
-                    latent_df.data.clamp_(min=2.0 + 1e-4)  # df > 2 for finite variance
 
             # --- Dual Step ---
             if cfg.training.use_al:

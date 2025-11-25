@@ -1,14 +1,15 @@
 import torch
+import torch.nn.functional as F
 
 class MultivariateLowRankStudentT(torch.distributions.Distribution):
     def __init__(self, mu: torch.Tensor, v: torch.Tensor, U: torch.Tensor, df: torch.Tensor, eps: float = 1e-6):
         self.mu = mu
-        self.v = v
+        self._v = v
         self.U = U
-        self.df = df
-        self.eps = eps
+        self._df = df
+        self._eps = eps
         
-        self.cov_diag = self.v + self.eps
+        self.cov_diag = self.v
         
         self.mvn = torch.distributions.LowRankMultivariateNormal(
             loc=torch.zeros_like(self.mu),
@@ -62,6 +63,14 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         c3 = -0.5 * (df + d) * torch.log1p(M / df)
 
         return c1 + c2 + c3
+    
+    @property
+    def v(self):
+        return F.softplus(self._v) + self._eps  # Ensure positivity
+    
+    @property
+    def df(self):
+        return F.softplus(self._df) + 2 + self._eps  # Ensure > 2 for finite variance
         
 
 def get_target_distributions(mu, v, U, df, num_classes, eps=1e-4, device=torch.device('cpu')):
