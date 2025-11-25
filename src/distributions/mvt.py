@@ -9,14 +9,13 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         self._df = df
         self._eps = eps
         
-        self.cov_diag = self.v
-        
+        # We add mu manually in sample() to correctly scale the deviation by the Chi2 factor
         self.mvn = torch.distributions.LowRankMultivariateNormal(
-            loc=torch.zeros_like(self.mu),
+            loc=torch.zeros_like(self.mu), 
             cov_factor = self.U,
-            cov_diag=self.cov_diag
+            cov_diag=self.v
         )
-        self.chi2 = torch.distributions.Chi2(df=df)
+        self.chi2 = torch.distributions.Chi2(df=self.df)
         
     def sample(self, sample_shape=torch.Size()):
         z = self.mvn.sample(sample_shape)
@@ -30,7 +29,7 @@ class MultivariateLowRankStudentT(torch.distributions.Distribution):
         df = self.df
 
         # Diagonal part
-        D = self.cov_diag  # (d,)
+        D = self.v  # (d,)
         Dinv = 1.0 / D
 
         # y^T D^{-1} y
