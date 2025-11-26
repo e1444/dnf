@@ -30,7 +30,7 @@ class DGLOWNetwork(nn.Module):
     def __init__(self, in_channels: int, num_fixed_levels: int,  num_split_levels: int, steps_per_fixed_level: int, steps_per_split_level: int, hidden_channels: int, bottleneck_channels: int, num_res_blocks: int, actnorm_initialization: str = "identity", invconv_initialization: str = "orthogonal"):
         super(DGLOWNetwork, self).__init__()
         self.squeeze = Squeeze()
-        self.logit_transform = LogitTransform(alpha=1e-4)
+        self.logit_transform = LogitTransform(alpha=0.05)
         self.fixed_levels = nn.ModuleList()
         self.split_levels = nn.ModuleList()
         self.num_fixed_levels = num_fixed_levels
