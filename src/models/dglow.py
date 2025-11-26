@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split
+from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
     def __init__(self, in_channels, hidden_channels, bottleneck_channels, num_res_blocks, actnorm_initialization="identity", invconv_initialization="orthogonal"):
@@ -30,6 +30,7 @@ class DGLOWNetwork(nn.Module):
     def __init__(self, in_channels: int, num_fixed_levels: int,  num_split_levels: int, steps_per_fixed_level: int, steps_per_split_level: int, hidden_channels: int, bottleneck_channels: int, num_res_blocks: int, actnorm_initialization: str = "identity", invconv_initialization: str = "orthogonal"):
         super(DGLOWNetwork, self).__init__()
         self.squeeze = Squeeze()
+        self.logit_transform = LogitTransform(alpha=1e-4)
         self.fixed_levels = nn.ModuleList()
         self.split_levels = nn.ModuleList()
         self.num_fixed_levels = num_fixed_levels
@@ -75,6 +76,9 @@ class DGLOWNetwork(nn.Module):
 
     def forward(self, x):
         total_log_det = torch.zeros(x.shape[0], device=x.device)
+        x, log_det = self.logit_transform(x)
+        total_log_det += log_det
+        
         outputs = []
         
         squeezes = 0
@@ -158,6 +162,9 @@ class DGLOWNetwork(nn.Module):
             x, log_det_squeeze = self.squeeze.inverse(x)
             total_log_det += log_det_squeeze
                 
+        x, log_det = self.logit_transform.inverse(x)
+        total_log_det += log_det
+
         return x, total_log_det
     
     def set_freeze_steps(self, freeze: bool, start: int, end: int):

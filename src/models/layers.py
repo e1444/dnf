@@ -2,6 +2,43 @@ import torch
 import torch.nn as nn
 import torch.linalg as la
 
+class LogitTransform(nn.Module):
+    """
+    Maps data from [0, 1] to (-inf, inf) using logit(alpha + (1 - 2*alpha) * x).
+    Standard preprocessing for images in Flows.
+    """
+    def __init__(self, alpha=1e-4):
+        super().__init__()
+        self.alpha = alpha
+
+    def forward(self, x):
+        # x in [0, 1]
+        s = self.alpha + (1 - 2 * self.alpha) * x
+        y = torch.log(s) - torch.log(1 - s)
+        
+        # Log-det calculation
+        # d/dx logit(s) = (1-2a) / (s(1-s))
+        # log_det = log(1-2a) - log(s) - log(1-s)
+        log_det = torch.sum(
+            torch.log(torch.tensor(1 - 2 * self.alpha, device=x.device))
+            - torch.log(s) - torch.log(1 - s),
+            dim=[1, 2, 3]
+        )
+        return y, log_det
+
+    def inverse(self, y):
+        # y in (-inf, inf)
+        s = torch.sigmoid(y)
+        x = (s - self.alpha) / (1 - 2 * self.alpha)
+        
+        # Log-det is negative of forward
+        log_det = -torch.sum(
+            torch.log(torch.tensor(1 - 2 * self.alpha, device=y.device))
+            - torch.log(s) - torch.log(1 - s),
+            dim=[1, 2, 3]
+        )
+        return x, log_det
+
 class ActNorm(nn.Module):
     def __init__(self, num_channels, initialization="identity"):
         super().__init__()
