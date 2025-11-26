@@ -15,7 +15,6 @@ dataset:
       params:
         alpha: 20.0         # Controls the intensity of the elastic deformation
         sigma: 4.0          # Controls the smoothness of the deformation
-    - type: "ToTensor"
     - type: "Dequantize"
   batch_size: 256
   num_workers: 4

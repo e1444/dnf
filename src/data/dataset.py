@@ -3,12 +3,26 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from omegaconf import DictConfig
 import hydra
+import numpy as np
+import PIL.Image
 
 
 class Dequantize(object):
-    def __call__(self, tensor):
+    def __call__(self, x):
         # Adds uniform noise [0, 1/256]
-        return tensor + torch.rand_like(tensor) / 256.0
+        if isinstance(x, np.ndarray):
+            x = torch.from_numpy(x)
+        elif isinstance(x, PIL.Image.Image):
+            x = torch.from_numpy(np.array(x))
+            
+        # 2. FIX: Add Channel Dimension if missing (H, W) -> (1, H, W)
+        if x.ndim == 2:
+            x = x.unsqueeze(0)
+            
+        x = x.float()
+        
+        x = (x + torch.rand_like(x)) / 256.0
+        return torch.clamp(x, 0.0, 1.0)
     
     
 def load_mnist(cfg: DictConfig):
