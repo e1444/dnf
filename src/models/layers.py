@@ -7,7 +7,7 @@ class LogitTransform(nn.Module):
     Maps data from [0, 1] to (-inf, inf) using logit(alpha + (1 - 2*alpha) * x).
     Standard preprocessing for images in Flows.
     """
-    def __init__(self, alpha=1e-4):
+    def __init__(self, alpha=0.05):
         super().__init__()
         self.alpha = alpha
 
