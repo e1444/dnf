@@ -99,19 +99,26 @@ def train(cfg: DictConfig):
         
         if not cfg.training.reset_optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            optimizer.param_groups[0]['lr'] = cfg.training.lr
-            optimizer.param_groups[0]['weight_decay'] = cfg.training.weight_decay
-            optimizer.param_groups[1]['lr'] = cfg.training.lr_mu
-            optimizer.param_groups[2]['lr'] = cfg.training.lr_v
-            optimizer.param_groups[3]['lr'] = cfg.training.lr_U
-            optimizer.param_groups[4]['lr'] = cfg.training.lr_df
+            if cfg.training.lr is not None:
+                optimizer.param_groups[0]['lr'] = cfg.training.lr
+            if cfg.training.weight_decay is not None:
+                optimizer.param_groups[0]['weight_decay'] = cfg.training.weight_decay
+            if cfg.training.lr_mu is not None:
+                optimizer.param_groups[1]['lr'] = cfg.training.lr_mu
+            if cfg.training.lr_v is not None:
+                optimizer.param_groups[2]['lr'] = cfg.training.lr_v
+            if cfg.training.lr_U is not None:
+                optimizer.param_groups[3]['lr'] = cfg.training.lr_U
+            if cfg.training.lr_df is not None:
+                optimizer.param_groups[4]['lr'] = cfg.training.lr_df
             
             # Load dual variables if available
             if 'log_alpha' in checkpoint:
                 log_alpha.data.copy_(checkpoint['log_alpha'])
             if 'alpha_optimizer_state_dict' in checkpoint:
                 alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
-                alpha_optimizer.param_groups[0]['lr'] = cfg.training.lr_log_alpha
+                if cfg.training.lr_log_alpha is not None:
+                    alpha_optimizer.param_groups[0]['lr'] = cfg.training.lr_log_alpha
         
         start_epoch = checkpoint['epoch'] + 1
         
