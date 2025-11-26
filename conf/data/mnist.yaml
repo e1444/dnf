@@ -17,9 +17,6 @@ dataset:
         sigma: 4.0          # Controls the smoothness of the deformation
     - type: "ToTensor"
     - type: "Dequantize"
-    - type: "Normalize"
-      mean: [0.5]
-      std: [0.5]
   batch_size: 256
   num_workers: 4
   shuffle: true
