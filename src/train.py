@@ -138,6 +138,9 @@ def train(cfg: DictConfig):
     aux_layers = np.arange(start=cfg.training.aux_freq - 1, stop=cfg.training.aux_total, step=cfg.training.aux_freq)
     betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** len(aux_layers), stop=1, num=len(aux_layers)), device=device)
 
+    steps_per_epoch = len(train_loader)
+    total_warmup_steps = cfg.training.warmup_epochs * steps_per_epoch
+    
     # Training loop
     print("Starting training...")
     total_epochs = start_epoch + cfg.training.epochs
@@ -147,23 +150,28 @@ def train(cfg: DictConfig):
         total_nll = 0.0
         total_ce = 0.0
         total_alpha = 0.0
-        
-        if epoch < cfg.training.warmup_epochs:
-            warmup_factor = (epoch + 1) / cfg.training.warmup_epochs
-            for param_group in optimizer.param_groups:
-                if param_group['params'][0] is latent_mu:
-                    param_group['lr'] = cfg.training.lr_mu * warmup_factor
-                elif param_group['params'][0] is latent_v:
-                    param_group['lr'] = cfg.training.lr_v * warmup_factor
-                elif param_group['params'][0] is latent_U:
-                    param_group['lr'] = cfg.training.lr_U * warmup_factor
-                elif param_group['params'][0] is latent_df:
-                    param_group['lr'] = cfg.training.lr_df * warmup_factor
-                else:
-                    param_group['lr'] = cfg.training.lr * warmup_factor
 
-        for x_batch, y_batch in train_loader:
+        for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            
+            if epoch < cfg.training.warmup_epochs:
+                current_step = epoch * steps_per_epoch + batch_idx
+                warmup_factor = (current_step + 1) / total_warmup_steps
+                
+                for param_group in optimizer.param_groups:
+                    # Check param identity to assign correct specific LR
+                    if param_group['params'][0] is latent_mu:
+                        target_lr = cfg.training.lr_mu
+                    elif param_group['params'][0] is latent_v:
+                        target_lr = cfg.training.lr_v
+                    elif param_group['params'][0] is latent_U:
+                        target_lr = cfg.training.lr_U
+                    elif param_group['params'][0] is latent_df:
+                        target_lr = cfg.training.lr_df
+                    else:
+                        target_lr = cfg.training.lr
+                    
+                    param_group['lr'] = target_lr * warmup_factor
             
             # --- Primal Step ---
             optimizer.zero_grad()
