@@ -12,6 +12,7 @@ gradclip_df: 1.0
 
 weight_decay: 1e-4
 epochs: 20
+warmup_epochs: 5
 
 eval_interval: 1
 checkpoint_interval: 5
