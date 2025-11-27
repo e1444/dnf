@@ -147,6 +147,20 @@ def train(cfg: DictConfig):
         total_nll = 0.0
         total_ce = 0.0
         total_alpha = 0.0
+        
+        if epoch < cfg.training.warmup_epochs:
+            warmup_factor = (epoch + 1) / cfg.training.warmup_epochs
+            for param_group in optimizer.param_groups:
+                if param_group['params'][0] is latent_mu:
+                    param_group['lr'] = cfg.training.lr_mu * warmup_factor
+                elif param_group['params'][0] is latent_v:
+                    param_group['lr'] = cfg.training.lr_v * warmup_factor
+                elif param_group['params'][0] is latent_U:
+                    param_group['lr'] = cfg.training.lr_U * warmup_factor
+                elif param_group['params'][0] is latent_df:
+                    param_group['lr'] = cfg.training.lr_df * warmup_factor
+                else:
+                    param_group['lr'] = cfg.training.lr * warmup_factor
 
         for x_batch, y_batch in train_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)

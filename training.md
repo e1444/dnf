@@ -1207,10 +1207,10 @@ sbatch scripts/train_fir.sh \
     training.epochs=30 \
     training.lambda_=0.5 \
     training.lr=1e-4 \
-    training.lr_mu=1e-3 \
-    training.lr_v=1e-3 \
-    training.lr_U=1e-3 \
-    training.lr_df=1e-3 \
+    training.lr_mu=1e-5 \
+    training.lr_v=1e-5 \
+    training.lr_U=1e-5 \
+    training.lr_df=1e-5 \
     training.r_logdet=1e-1 \
     training.label_smoothing=1e-1 \
     training.aux_total=8 \
