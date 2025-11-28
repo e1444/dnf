@@ -185,7 +185,9 @@ def train(cfg: DictConfig):
             
             # Get the current dynamic target distributions
             # Note: We allow gradients to flow through latent params here
-            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
+            mean_v = latent_v.mean()
+            constrained_v = latent_v - mean_v
+            target_dists = get_target_distributions(latent_mu, constrained_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
             
             # Compute logits
             aux_logits = [
