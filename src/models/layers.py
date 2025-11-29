@@ -117,11 +117,19 @@ class CNNCouplingLayer(nn.Module):
         self.in_channels = in_channels
         self.split_size = in_channels // 2
 
+        # self.coupling_net = nn.Sequential(
+        #     nn.Conv2d(self.split_size, hidden_channels, kernel_size=3, padding=1),
+        #     *[BottleneckResNetBlock(hidden_channels, bottleneck_channels) for _ in range(num_res_blocks)],
+        #     nn.Conv2d(hidden_channels, self.in_channels, kernel_size=3, padding=1)
+        # )
         self.coupling_net = nn.Sequential(
             nn.Conv2d(self.split_size, hidden_channels, kernel_size=3, padding=1),
-            *[BottleneckResNetBlock(hidden_channels, bottleneck_channels) for _ in range(num_res_blocks)],
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=1),
+            nn.ReLU(inplace=True),
             nn.Conv2d(hidden_channels, self.in_channels, kernel_size=3, padding=1)
         )
+        
         with torch.no_grad():
             self.coupling_net[-1].weight.fill_(0) # type: ignore
             self.coupling_net[-1].bias.fill_(0) # type: ignore
@@ -133,8 +141,9 @@ class CNNCouplingLayer(nn.Module):
         x_a, x_b = x.split(self.split_size, dim=1)
         s_and_t = self.coupling_net(x_a)
         log_s, t = s_and_t.split(self.split_size, dim=1)
+        
         scale = self.scale_clamp
-        log_s = (2.0 * scale / 3.14159) * torch.atan(log_s / scale)
+        log_s = (2.0 * scale / torch.pi) * torch.atan(log_s / scale)
         s = torch.exp(log_s)
 
         y_b = x_b * s + t
@@ -146,8 +155,9 @@ class CNNCouplingLayer(nn.Module):
         y_a, y_b = y.split(self.split_size, dim=1)
         s_and_t = self.coupling_net(y_a)
         log_s, t = s_and_t.split(self.split_size, dim=1)
+        
         scale = self.scale_clamp
-        log_s = (2.0 * scale / 3.14159) * torch.atan(log_s / scale)
+        log_s = (2.0 * scale / torch.pi) * torch.atan(log_s / scale)
         s = torch.exp(log_s)
         
         x_b = (y_b - t) / s
