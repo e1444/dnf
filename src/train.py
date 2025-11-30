@@ -101,16 +101,31 @@ def train(cfg: DictConfig):
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if cfg.training.lr is not None:
                 optimizer.param_groups[0]['lr'] = cfg.training.lr
+            else:
+                cfg.training.lr = optimizer.param_groups[0]['lr']
+                
             if cfg.training.weight_decay is not None:
                 optimizer.param_groups[0]['weight_decay'] = cfg.training.weight_decay
+                
             if cfg.training.lr_mu is not None:
                 optimizer.param_groups[1]['lr'] = cfg.training.lr_mu
+            else:
+                cfg.training.lr_mu = optimizer.param_groups[1]['lr']
+                
             if cfg.training.lr_v is not None:
                 optimizer.param_groups[2]['lr'] = cfg.training.lr_v
+            else:
+                cfg.training.lr_v = optimizer.param_groups[2]['lr']
+                
             if cfg.training.lr_U is not None:
                 optimizer.param_groups[3]['lr'] = cfg.training.lr_U
+            else:
+                cfg.training.lr_U = optimizer.param_groups[3]['lr']
+                
             if cfg.training.lr_df is not None:
                 optimizer.param_groups[4]['lr'] = cfg.training.lr_df
+            else:
+                cfg.training.lr_df = optimizer.param_groups[4]['lr']
             
             # Load dual variables if available
             if 'log_alpha' in checkpoint:
