@@ -64,11 +64,11 @@ def train(cfg: DictConfig):
     if cfg.training.lr_df == 0:
         latent_df.requires_grad_(False)
 
-    optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
-    optimizer.add_param_group({'params': [latent_mu], 'lr': cfg.training.lr_mu, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': [latent_v], 'lr': cfg.training.lr_v, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': [latent_U], 'lr': cfg.training.lr_U, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': [latent_df], 'lr': cfg.training.lr_df, 'weight_decay': 0.0})
+    optimizer = optim.AdamW(model.parameters(), lr=cfg.training.lr or 0, weight_decay=cfg.training.weight_decay or 0)
+    optimizer.add_param_group({'params': [latent_mu], 'lr': cfg.training.lr_mu or 0, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [latent_v], 'lr': cfg.training.lr_v or 0, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [latent_U], 'lr': cfg.training.lr_U or 0, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [latent_df], 'lr': cfg.training.lr_df or 0, 'weight_decay': 0.0})
     
     # --- Augmented Lagrangian Setup ---
     # Initialize dual variable (log_alpha)
