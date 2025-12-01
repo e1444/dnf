@@ -21,16 +21,27 @@ def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_
         for x_batch, y_batch in data_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             
-            intermediate_outputs = model(x_batch)
-            intermediate_outputs = [(z.view(z.size(0), -1), log_det) for z, log_det in intermediate_outputs]
-            aux_outputs = [intermediate_outputs[i] for i in aux_layers]
-            z, log_det = intermediate_outputs[-1]
+            zs = model(x_batch)
+            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs] # Flatten each part of z
+            zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]  # Concatenate all parts
+            zs = [((z[:, :-cfg.training.features], z[:, -cfg.training.features:]), log_det) for z, log_det in zs]  # Split into noise + semantic parts
+            aux_zs = [zs[i] for i in aux_layers]
+            z, log_det = zs[-1]
             
-            aux_logits = [
-                compute_logits(z, log_det, target_dists) for z, log_det in aux_outputs
-            ]
+            noise_dists = torch.distributions.Independent(
+                torch.distributions.Normal(loc=torch.zeros_like(z[0]), scale=torch.ones_like(z[0])), 
+                reinterpreted_batch_ndims=1
+            )
             
-            logits = compute_logits(z, log_det, target_dists)
+            log_prob_noise = noise_dists.log_prob(z[0])
+            log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
+            log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
+            logits = log_prob + log_det.unsqueeze(1)
+            
+            aux_log_prob_noise = [noise_dists.log_prob(aux_z[0][0]) for aux_z in aux_zs]
+            aux_log_prob_semantic = [torch.stack([dist.log_prob(aux_z[0][1]) for dist in target_dists], dim=1) for aux_z in aux_zs]
+            aux_log_prob = [ln.unsqueeze(1) + ls for ln, ls in zip(aux_log_prob_noise, aux_log_prob_semantic)]
+            aux_logits = [lp + log_det.unsqueeze(1) for lp, (_, log_det) in zip(aux_log_prob, aux_zs)]
             
             # Calculate loss
             aux_loss = deep_ce_loss(aux_logits, y_batch, betas)
@@ -38,7 +49,7 @@ def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_
             loss = aux_loss + final_loss
             
             # Regularization terms
-            log_dets = [log_det for _, log_det in intermediate_outputs]
+            log_dets = [log_det for _, log_det in zs]
             for i in reversed(range(1, len(log_dets))):
                 log_dets[i] = log_dets[i] - log_dets[i - 1]
                 
@@ -74,11 +85,20 @@ def get_all_predictions(model, data_loader, device, target_dists):
         for x_batch, y_batch in data_loader:
             x_batch = x_batch.to(device)
             
-            intermediate_outputs = model(x_batch)
-            z, log_det = intermediate_outputs[-1]
-            z = z.view(z.size(0), -1)
+            zs = model(x_batch)
+            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs] # Flatten each part of z
+            z, log_det = zs[-1]
+            z = (torch.cat(z[:-1], dim=1), z[-1])  # Concatenate all but semantic part
             
-            logits = compute_logits(z, log_det, target_dists)
+            noise_dists = torch.distributions.Independent(
+                torch.distributions.Normal(loc=torch.zeros_like(z[0]), scale=torch.ones_like(z[0])), 
+                reinterpreted_batch_ndims=1
+            )
+            
+            log_prob_noise = noise_dists.log_prob(z[0])
+            log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
+            log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
+            logits = log_prob + log_det.unsqueeze(1)
             probabilities = torch.softmax(logits, dim=1)
             confidences, y_pred = torch.max(probabilities, 1)
 

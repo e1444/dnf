@@ -154,7 +154,7 @@ def train(cfg: DictConfig):
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
 
-    aux_layers = np.arange(start=cfg.training.aux_freq - 1, stop=cfg.training.aux_total, step=cfg.training.aux_freq)
+    aux_layers = np.arange(start=cfg.training.aux_start + cfg.training.aux_freq - 1, stop=cfg.training.aux_end, step=cfg.training.aux_freq).tolist()
     betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** len(aux_layers), stop=1, num=len(aux_layers)), device=device)
 
     steps_per_epoch = len(train_loader)
@@ -196,23 +196,34 @@ def train(cfg: DictConfig):
             optimizer.zero_grad()
 
             # Forward pass
-            intermediate_outputs = model(x_batch)
-            # Flatten outputs
-            intermediate_outputs = [(z.view(z.size(0), -1), log_det) for z, log_det in intermediate_outputs]
-            aux_outputs = [intermediate_outputs[i] for i in aux_layers]
-            z, log_det = intermediate_outputs[-1]
+            zs = model(x_batch)
+            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs] # Flatten each part of z
+            zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]  # Concatenate all parts
+            zs = [((z[:, :-cfg.training.features], z[:, -cfg.training.features:]), log_det) for z, log_det in zs]  # Split into noise + semantic parts
+            aux_zs = [zs[i] for i in aux_layers]
+            z, log_det = zs[-1]
             
             # Get the current dynamic target distributions
             # Note: We allow gradients to flow through latent params here
+            noise_dists = torch.distributions.Independent(
+                torch.distributions.Normal(loc=torch.zeros_like(z[0]), scale=torch.ones_like(z[0])), 
+                reinterpreted_batch_ndims=1
+            )
+            
             mean_v = latent_v.mean()
             constrained_v = latent_v - mean_v
             target_dists = get_target_distributions(latent_mu, constrained_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
             
             # Compute logits
-            aux_logits = [
-                compute_logits(z, log_det, target_dists) for z, log_det in aux_outputs
-            ]
-            logits = compute_logits(z, log_det, target_dists)
+            log_prob_noise = noise_dists.log_prob(z[0])
+            log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
+            log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
+            logits = log_prob + log_det.unsqueeze(1)
+            
+            aux_log_prob_noise = [noise_dists.log_prob(aux_z[0][0]) for aux_z in aux_zs]
+            aux_log_prob_semantic = [torch.stack([dist.log_prob(aux_z[0][1]) for dist in target_dists], dim=1) for aux_z in aux_zs]
+            aux_log_prob = [ln.unsqueeze(1) + ls for ln, ls in zip(aux_log_prob_noise, aux_log_prob_semantic)]
+            aux_logits = [lp + log_det.unsqueeze(1) for lp, (_, log_det) in zip(aux_log_prob, aux_zs)]
             
             # 1. Task Loss (CE + Aux)
             aux_ce_loss = deep_ce_loss(aux_logits, y_batch, betas, label_smoothing=cfg.training.label_smoothing)
@@ -223,7 +234,7 @@ def train(cfg: DictConfig):
             nll_loss = nll_loss_fn(logits, y_batch)
             
             # 3. Regularization terms (Jacobian smoothness)
-            log_dets = [log_det for _, log_det in intermediate_outputs]
+            log_dets = [log_det for _, log_det in zs]
             for i in reversed(range(1, len(log_dets))):
                 log_dets[i] = log_dets[i] - log_dets[i - 1]
             reg_loss = cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
@@ -284,7 +295,9 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            eval_target_dists = get_target_distributions(latent_mu, latent_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
+            mean_v = latent_v.mean()
+            constrained_v = latent_v - mean_v
+            eval_target_dists = get_target_distributions(latent_mu, constrained_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
             test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
@@ -319,15 +332,11 @@ def train(cfg: DictConfig):
                 'log_alpha': log_alpha.detach().cpu().clone(),
                 'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),
             }, checkpoint_path)
-            wandb.save(checkpoint_path)
+            # wandb.save(checkpoint_path)
             
         scheduler.step()
         
     print("Training completed.")
-
-    # Return the final accuracy for Optuna
-    _, accuracy, _ = evaluate(model, test_loader, device, cfg, get_target_distributions(latent_mu, latent_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device), betas, cfg.training.lambda_, aux_layers)
-    return accuracy
 
 if __name__ == "__main__":
     train()

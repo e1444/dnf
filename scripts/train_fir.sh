@@ -43,5 +43,4 @@ echo "-------------------------"
 python -m src.train \
     hydra.run.dir=${LOG_DIR} \
     data.dataset.num_workers=${SLURM_CPUS_PER_TASK} \
-    model=dglow_resnet \
     "$@" # Pass command line arguments to the script

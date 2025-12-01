@@ -112,7 +112,7 @@ class BottleneckResNetBlock(nn.Module):
         return out
 
 class CNNCouplingLayer(nn.Module):
-    def __init__(self, in_channels, hidden_channels=512, bottleneck_channels=128, num_res_blocks=3):
+    def __init__(self, in_channels, hidden_channels=512):
         super().__init__()
         self.in_channels = in_channels
         self.split_size = in_channels // 2

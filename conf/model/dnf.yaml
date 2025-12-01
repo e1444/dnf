@@ -3,5 +3,3 @@ _target_: src.models.dnf.DNFNetwork
 in_channels: 1
 num_layers: 12
 hidden_channels: 512
-bottleneck_channels: 128
-num_res_blocks: 4

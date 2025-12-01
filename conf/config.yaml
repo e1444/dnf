@@ -2,7 +2,7 @@
 defaults:
   - _self_
   - data: mnist
-  - model: dnf_resnet
+  - model: dglow
   - training: default
 
 project:
