@@ -39,7 +39,7 @@ latent_v_eps: 1e-4
 latent_U_size: 20
 latent_df: 20
 latent_noise: 0.0
-features: 128
+features: 256
 num_classes: 10
 
 # Lagrange multipliers settings

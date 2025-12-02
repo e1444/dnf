@@ -118,7 +118,7 @@ class DGLOWNetwork(nn.Module):
     
     @property
     def total_steps(self):
-        return self.num_levels * self.steps_per_level
+        return sum(self.steps_per_level)
 
 
 if __name__ == "__main__":
