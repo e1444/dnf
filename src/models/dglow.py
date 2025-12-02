@@ -70,7 +70,7 @@ class DGLOWNetwork(nn.Module):
                 for flow_step in level:
                     x, log_det = flow_step(x)
                     total_log_det += log_det
-                    zs.append((z + [x], total_log_det))
+                    zs.append((z + [x], total_log_det.clone()))
 
                     i += 1
             elif isinstance(level, Split): # Split
