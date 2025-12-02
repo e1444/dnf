@@ -25,8 +25,10 @@ class FlowStep(nn.Module):
         return z, log_det_act + log_det_conv + log_det_coup
 
 class DGLOWNetwork(nn.Module):
-    def __init__(self, in_channels: int, num_levels: int, steps_per_level: int, hidden_channels: int,actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal"):
+    def __init__(self, in_channels: int, num_levels: int, steps_per_level: list[int], hidden_channels: int,actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal"):
         super(DGLOWNetwork, self).__init__()
+        assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
+        
         self.squeeze = Squeeze()
         self.logit_transform = LogitTransform(alpha=0.05)
         self.split_levels = nn.ModuleList()
@@ -34,7 +36,7 @@ class DGLOWNetwork(nn.Module):
         self.steps_per_level = steps_per_level  
         
         current_channels = in_channels
-        for _ in range(num_levels):
+        for level_idx in range(num_levels):
             current_channels *= 4  # After Squeeze
             level_flows = nn.ModuleList([
                 FlowStep(
@@ -42,7 +44,7 @@ class DGLOWNetwork(nn.Module):
                     hidden_channels, 
                     actnorm_initialization=actnorm_initialization,
                     invconv_initialization=invconv_initialization
-                ) for _ in range(self.steps_per_level)
+                ) for _ in range(self.steps_per_level[level_idx])
             ])
             self.split_levels.append(level_flows)
             
