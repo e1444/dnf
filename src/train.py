@@ -9,7 +9,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
-from src.data.dataset import load_mnist
+from src.data.dataset import load_dataset
 from src.distributions.mvt import get_target_distributions
 from src.utils.losses import compute_logits, nll_loss_fn, ce_loss_fn, deep_ce_loss, total_loss_fn
 from src.utils.evaluation import evaluate
@@ -31,7 +31,7 @@ def train(cfg: DictConfig):
     )
     
     # Load data
-    train_loader, test_loader = load_mnist(cfg.data)
+    train_loader, test_loader = load_dataset(cfg.data)
     
     # Initialize model
     model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
@@ -45,8 +45,6 @@ def train(cfg: DictConfig):
         
         initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.tensor(cfg.training.latent_v)
         initial_v += torch.randn_like(initial_v) * cfg.training.latent_noise
-        # Safety: Ensure positive start
-        initial_v = torch.abs(initial_v)
         latent_v = nn.Parameter(initial_v)
         
         initial_U = torch.zeros(cfg.training.num_classes, cfg.training.features, cfg.training.latent_U_size, device=device)

@@ -18,6 +18,9 @@ class Dequantize(object):
         # 2. FIX: Add Channel Dimension if missing (H, W) -> (1, H, W)
         if x.ndim == 2:
             x = x.unsqueeze(0)
+        # Handle RGB (H, W, C) -> (C, H, W)
+        elif x.ndim == 3 and x.shape[2] == 3:
+            x = x.permute(2, 0, 1)
             
         x = x.float()
         
@@ -25,15 +28,9 @@ class Dequantize(object):
         return torch.clamp(x, 0.0, 1.0)
     
     
-def load_mnist(cfg: DictConfig):
+def load_dataset(cfg: DictConfig):
     """
-    Loads the MNIST dataset using configuration from a Hydra DictConfig.
-    
-    Args:
-        cfg (DictConfig): Hydra configuration object, typically cfg.data.
-    
-    Returns:
-        tuple: A tuple containing the training and test DataLoaders.
+    Loads a dataset (MNIST or CIFAR10) using configuration from a Hydra DictConfig.
     """
     
     # Build the transformation pipeline from the config
@@ -54,8 +51,16 @@ def load_mnist(cfg: DictConfig):
 
     transform = transforms.Compose(transform_list)
     
+    # Select Dataset Class
+    if cfg.dataset.name == "MNIST":
+        dataset_cls = datasets.MNIST
+    elif cfg.dataset.name == "CIFAR10":
+        dataset_cls = datasets.CIFAR10
+    else:
+        raise ValueError(f"Dataset {cfg.dataset.name} not supported.")
+
     # Create the training dataset
-    train_dataset = datasets.MNIST(
+    train_dataset = dataset_cls(
         root=cfg.dataset.path,
         train=True,
         transform=transform,
@@ -63,7 +68,7 @@ def load_mnist(cfg: DictConfig):
     )
     
     # Create the test dataset
-    test_dataset = datasets.MNIST(
+    test_dataset = dataset_cls(
         root=cfg.dataset.path,
         train=False,
         transform=transform,

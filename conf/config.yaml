@@ -7,7 +7,7 @@ defaults:
 
 project:
   name: Discriminative Normalizing Flow
-  description: A project for training a DNF model on the MNIST dataset using Hydra for configuration management and Weights & Biases for experiment tracking.
+  description: Training a DNF model.
 
 paths:
   data: ./data
