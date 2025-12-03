@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_mnist
@@ -33,6 +35,9 @@ def train(cfg: DictConfig):
     
     # Initialize model
     model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
+    
+    # Initialize EMA model
+    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
     
     with torch.no_grad():
         initial_mu = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
@@ -263,7 +268,9 @@ def train(cfg: DictConfig):
                 torch.nn.utils.clip_grad_norm_([latent_U], max_norm=cfg.training.gradclip_U)
             if latent_df.requires_grad:
                 torch.nn.utils.clip_grad_norm_([latent_df], max_norm=cfg.training.gradclip_df)
+            
             optimizer.step()
+            ema_model.update_parameters(model)
 
             # --- Dual Step ---
             if cfg.training.use_al:
@@ -298,7 +305,7 @@ def train(cfg: DictConfig):
             mean_v = latent_v.mean()
             constrained_v = latent_v - mean_v
             eval_target_dists = get_target_distributions(latent_mu, constrained_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
-            test_loss, test_accuracy, test_nll = evaluate(model, test_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
+            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
                 "test_accuracy": test_accuracy,
@@ -324,13 +331,14 @@ def train(cfg: DictConfig):
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
+                'ema_model_state_dict': ema_model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),
                 'latent_mu': latent_mu.detach().cpu().clone(),
                 'latent_v': latent_v.detach().cpu().clone(),
                 'latent_U': latent_U.detach().cpu().clone(),
                 'latent_df': latent_df.detach().cpu().clone(),
                 'log_alpha': log_alpha.detach().cpu().clone(),
-                'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),
             }, checkpoint_path)
             # wandb.save(checkpoint_path)
             
