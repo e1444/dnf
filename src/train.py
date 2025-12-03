@@ -36,9 +36,6 @@ def train(cfg: DictConfig):
     # Initialize model
     model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
     
-    # Initialize EMA model
-    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
-    
     with torch.no_grad():
         initial_mu = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
         for i in range(cfg.training.num_classes):
@@ -155,6 +152,9 @@ def train(cfg: DictConfig):
             start=cfg.training.freeze_steps.start,
             end=cfg.training.freeze_steps.end
         )
+        
+    # Initialize EMA model
+    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
         
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
