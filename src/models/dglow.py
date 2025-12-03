@@ -128,8 +128,6 @@ if __name__ == "__main__":
     step = FlowStep(
         in_channels=2,
         hidden_channels=64,
-        bottleneck_channels=16,
-        num_res_blocks=3,
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"
     )
@@ -151,16 +149,14 @@ if __name__ == "__main__":
     print("\n--- Testing DGLOWNetwork Invertibility ---")
     model = DGLOWNetwork(
         in_channels=1,
-        num_levels=1,
-        steps_per_level=1,
+        num_levels=3,
+        steps_per_level=[4, 4, 4],
         hidden_channels=64,
-        bottleneck_channels=16,
-        num_res_blocks=3,
         actnorm_initialization="identity",
         invconv_initialization="identity"
     )
     x = torch.randn(8, 1, 32, 32).clamp(min=0.0, max=1.0)
-    outputs = model(x, aux_indices=[model.total_steps - 1])
+    outputs = model(x)
     
     # The final output of the forward pass is the reconstructed image
     z_parts, log_det = outputs[-1]

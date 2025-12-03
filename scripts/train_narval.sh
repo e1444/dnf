@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --account=def-six
-#SBATCH --job-name=DNF_train
-#SBATCH --gpus-per-node=h100:1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=64000M
+#SBATCH --job-name=DNF_narval
+#SBATCH --gpus-per-node=a100:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32000M
 #SBATCH --time=6:00:00
 #SBATCH --mail-user=er.liang@mail.utoronto.ca
 #SBATCH --mail-type=ALL
@@ -11,6 +11,7 @@
 TIMESTAMP=$(date +"%Y-%m-%d/%H-%M-%S")
 LOG_DIR="${SCRATCH}/dnf/logs/${TIMESTAMP}"
 export WANDB_DIR="${SCRATCH}/dnf/wandb"
+export WANDB_MODE=offline
 
 mkdir -p ${LOG_DIR}
 
