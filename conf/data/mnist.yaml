@@ -1,6 +1,6 @@
 dataset:
   name: "MNIST"
-  path: "./data/mnist"
+  path: "${oc.env:SCRATCH}/dnf/data/mnist"
   download: true
   transform:
     - type: "Pad"
