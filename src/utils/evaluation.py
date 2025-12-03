@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import classification_report, confusion_matrix, log_loss
+from sklearn.metrics import classification_report, confusion_matrix, log_loss, roc_curve, auc
 from .losses import deep_ce_loss, total_loss_fn, compute_logits, nll_loss_fn, ce_loss_fn, entropy_loss_fn
 
 def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_layers):
@@ -70,6 +70,71 @@ def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_
     accuracy = 100 * correct / total
     
     return avg_test_loss, accuracy, avg_nll
+
+
+def compute_marginal_bpd(model, target_dists, loader, device, cfg):
+    total_bpd = 0
+    total_pixels = 0
+    
+    with torch.no_grad():
+        for x, _ in loader:
+            x = x.to(device)
+            
+            # 2. Forward Pass on Dequantized Data
+            zs = model(x)
+            
+            # 3. Preprocess (Flatten, Concat, Split)
+            # Flatten each part of z: [B, C, H, W] -> [B, D_part]
+            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs]
+            # Concatenate: [Noise1 | Noise2 | ... | Semantic]
+            zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]
+            # Slice: Noise = [:-feat], Semantic = [-feat:]
+            feat = cfg.training.features
+            zs = [((z[:, :-feat], z[:, -feat:]), log_det) for z, log_det in zs]
+            
+            # Get final state
+            (z_noise, z_sem), log_det = zs[-1]
+            
+            # 4. Calculate Noise Probability: log p(z_noise) ~ N(0, I)
+            # -0.5 * (z^2 + log(2pi)) summed over dimensions
+            log_p_noise = -0.5 * (z_noise ** 2 + np.log(2 * np.pi)).sum(dim=1)
+            
+            # 5. Calculate log p(x|c) for ALL classes
+            log_probs_conditional = []
+            num_classes = len(target_dists)
+            
+            for c in range(num_classes):
+                target = target_dists[c]
+                # log p(z_sem | c)
+                log_p_sem_given_c = target.log_prob(z_sem)
+                
+                # Total log p(x | c) = log p(noise) + log p(sem | c) + log_det
+                # Note: log_p_noise and log_det are shared across classes
+                log_p_x_given_c = log_p_noise + log_p_sem_given_c + log_det
+                log_probs_conditional.append(log_p_x_given_c)
+            
+            log_probs_conditional = torch.stack(log_probs_conditional, dim=1)
+            
+            # 6. Marginalize: log p(x) = log sum_c p(x|c)p(c)
+            # Assuming uniform prior p(c) = 1/K
+            # log p(x) = log sum exp(log p(x|c)) - log(K)
+            log_prob_marginal = torch.logsumexp(log_probs_conditional, dim=1) - np.log(num_classes)
+            
+            # 7. Convert to Bits Per Dimension (BPD)
+            # Formula: BPD = -log_2(p(x)) / D + 8
+            n_pixels = x.shape[1] * x.shape[2] * x.shape[3]
+            
+            # Convert nats to bits (divide by ln 2)
+            nll_bits = -log_prob_marginal / np.log(2)
+            
+            # Normalize by dimensions and add 8-bit offset
+            bpd = (nll_bits / n_pixels) + 8.0
+            
+            total_bpd += bpd.sum().item()
+            total_pixels += x.size(0)
+            
+    return total_bpd / total_pixels
+
 
 def get_all_predictions(model, data_loader, device, target_dists):
     """
@@ -201,9 +266,9 @@ def calculate_brier_score(y_true, probabilities):
     print(f"Multi-class Brier Score: {brier_score:.4f}")
     return brier_score
 
-def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, target_dists):
+def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, target_dists):
     """
-    Get and plot confidences for in-distribution vs out-of-distribution data.
+    Get and plot ROC curve and calculate AUROC for OOD detection.
     """
     model.eval()
     
@@ -212,28 +277,67 @@ def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device,
         with torch.no_grad():
             for x_batch, _ in loader:
                 x_batch = x_batch.to(device)
-                intermediate_outputs = model(x_batch)
-                z, log_det = intermediate_outputs[-1]
-                z = z.view(z.size(0), -1)
-                logits = compute_logits(z, log_det, target_dists)
+                
+                # --- Standardized Preprocessing (Matches get_all_predictions) ---
+                zs = model(x_batch)
+                # Flatten parts
+                zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs]
+                # Concatenate all parts
+                zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]
+                # Slice: Noise = [:-feat], Semantic = [-feat:]
+                feat = cfg.training.features
+                zs = [((z[:, :-feat], z[:, -feat:]), log_det) for z, log_det in zs]
+                
+                # Get final state
+                (z_noise, z_sem), log_det = zs[-1]
+                
+                # --- Compute Logits ---
+                noise_dists = torch.distributions.Independent(
+                    torch.distributions.Normal(loc=torch.zeros_like(z_noise[0]), scale=torch.ones_like(z_noise[0])), 
+                    reinterpreted_batch_ndims=1
+                )
+                
+                log_prob_noise = noise_dists.log_prob(z_noise)
+                log_prob_semantic = torch.stack([dist.log_prob(z_sem) for dist in target_dists], dim=1)
+                
+                # Broadcast noise prob
+                log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
+                logits = log_prob + log_det.unsqueeze(1)
+                
                 probabilities = torch.softmax(logits, dim=1)
                 confidences, _ = torch.max(probabilities, 1)
                 all_confs.append(confidences.cpu())
         return torch.cat(all_confs).numpy()
 
+    print("Computing In-Distribution confidences...")
     in_dist_confs = get_confidences(in_dist_loader)
+    print("Computing Out-of-Distribution confidences...")
     out_dist_confs = get_confidences(out_dist_loader)
 
-    plt.figure(figsize=(12, 6))
-    plt.hist(in_dist_confs, bins=50, alpha=0.7, label='In-Distribution', density=True)
-    plt.hist(out_dist_confs, bins=50, alpha=0.7, label='Out-of-Distribution', density=True)
-    plt.title('Model Confidence on In-Distribution vs. Out-of-Distribution Data')
-    plt.xlabel('Confidence (Maximum Softmax Probability)')
-    plt.ylabel('Density')
-    plt.legend()
+    # --- AUROC Calculation ---
+    # Label 1: In-Distribution (Positive Class)
+    # Label 0: Out-of-Distribution (Negative Class)
+    y_true = np.concatenate([np.ones_like(in_dist_confs), np.zeros_like(out_dist_confs)])
+    y_scores = np.concatenate([in_dist_confs, out_dist_confs])
+
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    roc_auc = auc(fpr, tpr)
+
+    print(f"AUROC: {roc_auc:.4f}")
+    print(f"Avg Confidence (ID): {np.mean(in_dist_confs):.4f}")
+    print(f"Avg Confidence (OOD): {np.mean(out_dist_confs):.4f}")
+
+    # --- Plotting ---
+    plt.figure(figsize=(8, 8))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.4f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate (OOD classified as ID)')
+    plt.ylabel('True Positive Rate (ID classified as ID)')
+    plt.title('Receiver Operating Characteristic (OOD Detection)')
+    plt.legend(loc="lower right")
     plt.grid(True)
     plt.show()
 
-    print(f"Average confidence on In-Distribution data: {np.mean(in_dist_confs):.4f}")
-    print(f"Average confidence on Out-of-Distribution data: {np.mean(out_dist_confs):.4f}")
-    return in_dist_confs, out_dist_confs
+    return roc_auc
