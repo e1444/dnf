@@ -110,29 +110,34 @@ class BottleneckResNetBlock(nn.Module):
         out = self.conv3(out)
         out += residual
         return out
+    
+class GatedConvNet(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_channels, 2 * hidden_channels, 3, padding=1),
+            nn.GLU(dim=1),
+            
+            nn.Conv2d(hidden_channels, 2 * hidden_channels, 1),
+            nn.GLU(dim=1),
+            
+            nn.Conv2d(hidden_channels, out_channels, 3, padding=1)
+        )
+        
+        # Zero initialization for the last layer (Identity Init)
+        self.net[-1].weight.data.zero_() # type: ignore
+        self.net[-1].bias.data.zero_() # type: ignore
+
+    def forward(self, x):
+        return self.net(x)
 
 class CNNCouplingLayer(nn.Module):
     def __init__(self, in_channels, hidden_channels=512):
         super().__init__()
         self.in_channels = in_channels
         self.split_size = in_channels // 2
-
-        # self.coupling_net = nn.Sequential(
-        #     nn.Conv2d(self.split_size, hidden_channels, kernel_size=3, padding=1),
-        #     *[BottleneckResNetBlock(hidden_channels, bottleneck_channels) for _ in range(num_res_blocks)],
-        #     nn.Conv2d(hidden_channels, self.in_channels, kernel_size=3, padding=1)
-        # )
-        self.coupling_net = nn.Sequential(
-            nn.Conv2d(self.split_size, hidden_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_channels, self.in_channels, kernel_size=3, padding=1)
-        )
         
-        with torch.no_grad():
-            self.coupling_net[-1].weight.fill_(0) # type: ignore
-            self.coupling_net[-1].bias.fill_(0) # type: ignore
+        self.coupling_net = GatedConvNet(self.split_size, hidden_channels, self.in_channels)
                     
         self.scale_clamp = nn.Parameter(torch.tensor(1.0)) 
 
