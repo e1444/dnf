@@ -94,63 +94,79 @@ class Squeeze(nn.Module):
         log_det = torch.zeros(b, device=x.device)
         return x, log_det
     
-class BottleneckResNetBlock(nn.Module):
-    """A bottleneck residual block for the coupling network."""
-    def __init__(self, channels, bottleneck_channels):
+class GatedConv2d(nn.Module):
+    """
+    Combines Conv2d and Gated Activation.
+    Flow++ uses: Conv -> Split -> a * sigmoid(b)
+    Your stable version: Conv -> Split -> tanh(a) * sigmoid(b)
+    """
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
         super().__init__()
-        self.conv1 = nn.Conv2d(channels, bottleneck_channels, kernel_size=1, bias=False)
-        self.conv2 = nn.Conv2d(bottleneck_channels, bottleneck_channels, kernel_size=3, padding=1, bias=False)
-        self.conv3 = nn.Conv2d(bottleneck_channels, channels, kernel_size=1, bias=False)
-        self.relu = nn.ReLU(inplace=True)
+        self.conv = nn.Conv2d(in_channels, out_channels * 2, kernel_size, padding=padding)
+
+    def forward(self, x):
+        x = self.conv(x)
+        a, b = x.chunk(2, dim=1)
+        return torch.tanh(a) * torch.sigmoid(b)
+
+class GatedResNetBlock(nn.Module):
+    """
+    Flow++ Residual Block:
+    x -> Conv(1x1) -> GatedAct -> Conv(3x3) -> GatedAct -> Conv(1x1) -> Dropout -> + x
+    """
+    def __init__(self, channels, dropout=0.0):
+        super().__init__()
+        self.conv1 = GatedConv2d(channels, channels, kernel_size=1, padding=0)
+        self.conv2 = GatedConv2d(channels, channels, kernel_size=3, padding=1)
+        self.conv3 = GatedConv2d(channels, channels, kernel_size=1, padding=0)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         residual = x
-        out = self.conv1(self.relu(x))
-        out = self.conv2(self.relu(out))
+        out = self.conv1(x)
+        out = self.conv2(out)
         out = self.conv3(out)
-        out += residual
-        return out
-    
-class GatedTanh(nn.Module):
-    """
-    PixelCNN-style Gated Activation: y = tanh(a) * sigmoid(b)
-    This is much more stable than standard GLU because 'a' is bounded.
-    """
-    def __init__(self):
-        super().__init__()
+        out = self.dropout(out)
+        return residual + out
 
-    def forward(self, x):
-        # Split input into value (a) and gate (b)
-        a, b = x.chunk(2, dim=1)
-        return torch.tanh(a) * torch.sigmoid(b)
-    
-class GatedConvNet(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
+class FlowPlusPlusCouplingNet(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(in_channels, 2 * hidden_channels, 3, padding=1),
-            GatedTanh(),
-            
-            nn.Conv2d(hidden_channels, 2 * hidden_channels, 1),
-            GatedTanh(),
-            
-            nn.Conv2d(hidden_channels, out_channels, 3, padding=1)
-        )
+        # Initial projection
+        self.in_conv = nn.Conv2d(in_channels, hidden_channels, 3, padding=1)
+        
+        # Stack of Residual Blocks
+        self.blocks = nn.ModuleList([
+            GatedResNetBlock(hidden_channels, dropout=dropout) 
+            for _ in range(num_blocks)
+        ])
+        
+        # Final projection to output parameters (s, t)
+        self.out_conv = nn.Conv2d(hidden_channels, out_channels, 3, padding=1)
         
         # Zero initialization for the last layer (Identity Init)
-        self.net[-1].weight.data.zero_() # type: ignore
-        self.net[-1].bias.data.zero_() # type: ignore
+        self.out_conv.weight.data.zero_()
+        self.out_conv.bias.data.zero_()
 
     def forward(self, x):
-        return self.net(x)
+        x = self.in_conv(x)
+        for block in self.blocks:
+            x = block(x)
+        return self.out_conv(x)
 
 class CNNCouplingLayer(nn.Module):
-    def __init__(self, in_channels, hidden_channels=512):
+    def __init__(self, in_channels, hidden_channels=512, num_blocks=2, dropout=0.0):
         super().__init__()
         self.in_channels = in_channels
         self.split_size = in_channels // 2
         
-        self.coupling_net = GatedConvNet(self.split_size, hidden_channels, self.in_channels)
+        self.coupling_net = FlowPlusPlusCouplingNet(
+            self.split_size, 
+            hidden_channels, 
+            self.in_channels,
+            num_blocks=num_blocks,
+            dropout=dropout
+        )
                     
         self.scale_clamp = nn.Parameter(torch.tensor(1.0)) 
 

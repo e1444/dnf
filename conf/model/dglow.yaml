@@ -2,7 +2,9 @@ _target_: src.models.dglow.DGLOWNetwork
 
 in_channels: 1
 num_levels: 3
-steps_per_level: [16, 16, 32]
-hidden_channels: 512
+steps_per_level: [24, 24, 48]
+hidden_channels: 128
+num_blocks: 2
+dropout: 0.2
 actnorm_initialization: "identity"
 invconv_initialization: "identity"
