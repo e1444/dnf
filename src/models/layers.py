@@ -111,15 +111,28 @@ class BottleneckResNetBlock(nn.Module):
         out += residual
         return out
     
+class GatedTanh(nn.Module):
+    """
+    PixelCNN-style Gated Activation: y = tanh(a) * sigmoid(b)
+    This is much more stable than standard GLU because 'a' is bounded.
+    """
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        # Split input into value (a) and gate (b)
+        a, b = x.chunk(2, dim=1)
+        return torch.tanh(a) * torch.sigmoid(b)
+    
 class GatedConvNet(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(in_channels, 2 * hidden_channels, 3, padding=1),
-            nn.GLU(dim=1),
+            GatedTanh(),
             
             nn.Conv2d(hidden_channels, 2 * hidden_channels, 1),
-            nn.GLU(dim=1),
+            GatedTanh(),
             
             nn.Conv2d(hidden_channels, out_channels, 3, padding=1)
         )
