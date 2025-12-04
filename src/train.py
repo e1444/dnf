@@ -72,7 +72,7 @@ def train(cfg: DictConfig):
     optimizer.add_param_group({'params': [latent_mu], 'lr': cfg.training.lr_mu or 0, 'weight_decay': 0.0})
     optimizer.add_param_group({'params': [latent_v], 'lr': cfg.training.lr_v or 0, 'weight_decay': 0.0})
     optimizer.add_param_group({'params': [latent_U], 'lr': cfg.training.lr_U or 0, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': [latent_df], 'lr': cfg.training.lr_df or 0, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': [latent_df], 'lr': cfg.training.lr_df or 0, 'weight_decay': 1e-4})
     
     # --- Augmented Lagrangian Setup ---
     # Initialize dual variable (log_alpha)
