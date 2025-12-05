@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
 from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
@@ -27,7 +28,7 @@ class FlowStep(nn.Module):
         return z, log_det_act + log_det_conv + log_det_coup
 
 class DGLOWNetwork(nn.Module):
-    def __init__(self, in_channels: int, num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal"):
+    def __init__(self, in_channels: int, num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal", checkpoint_grads: bool = False):
         super(DGLOWNetwork, self).__init__()
         assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
         
@@ -36,6 +37,7 @@ class DGLOWNetwork(nn.Module):
         self.split_levels = nn.ModuleList()
         self.num_levels = num_levels
         self.steps_per_level = steps_per_level  
+        self.checkpoint_grads = checkpoint_grads
         
         current_channels = in_channels
         for level_idx in range(num_levels):
@@ -65,18 +67,18 @@ class DGLOWNetwork(nn.Module):
         
         z = []
         zs = []
-        i = 0
         for level in self.split_levels:
             if isinstance(level, nn.ModuleList): # Flow steps
                 x, log_det_squeeze = self.squeeze(x)
                 total_log_det += log_det_squeeze
                 
                 for flow_step in level:
-                    x, log_det = flow_step(x)
+                    if self.checkpoint_grads and x.requires_grad:
+                        x, log_det = checkpoint.checkpoint(flow_step, x, use_reentrant=False)
+                    else:
+                        x, log_det = flow_step(x)
                     total_log_det += log_det
                     zs.append((z + [x], total_log_det.clone()))
-
-                    i += 1
             elif isinstance(level, Split): # Split
                 x, z_part = level(x)
                 z.append(z_part)
