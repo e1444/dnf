@@ -170,7 +170,7 @@ class CNNCouplingLayer(nn.Module):
             dropout=dropout
         )
         
-        self.register_buffer("scale_clamp", torch.tensor(2.5))
+        self.register_buffer("scale_clamp", torch.tensor(1.0))
 
 
     def forward(self, x):
