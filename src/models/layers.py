@@ -42,7 +42,7 @@ class LogitTransform(nn.Module):
 class ActNorm(nn.Module):
     def __init__(self, num_channels, initialization="identity"):
         super().__init__()
-        self.scale = nn.Parameter(torch.ones(1, num_channels, 1, 1))
+        self.logs = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
         
         if initialization == "data-dependent":
@@ -57,19 +57,23 @@ class ActNorm(nn.Module):
             with torch.no_grad():
                 mean = x.mean(dim=[0, 2, 3], keepdim=True)
                 std = x.std(dim=[0, 2, 3], keepdim=True)
-                self.scale.data.copy_(1.0 / (std + 1e-6))
+                # Initialize logs = log(1/std) = -log(std)
+                self.logs.data.copy_(-torch.log(std + 1e-6))
                 self.bias.data.copy_(-mean)
                 self.initialized.fill_(1)
 
-        y = self.scale * x + self.bias
+        # y = x * exp(logs) + bias
+        y = torch.exp(self.logs) * x + self.bias
         _, _, h, w = x.size()
-        log_det = torch.sum(torch.log(torch.abs(self.scale))) * h * w
+        # log_det = sum(logs) * h * w
+        log_det = torch.sum(self.logs) * h * w
         return y, log_det
 
     def inverse(self, y):
-        x = (y - self.bias) / self.scale
+        # x = (y - bias) * exp(-logs)
+        x = (y - self.bias) * torch.exp(-self.logs)
         _, _, h, w = y.size()
-        log_det = -torch.sum(torch.log(torch.abs(self.scale))) * h * w
+        log_det = -torch.sum(self.logs) * h * w
         return x, log_det
 
 class Squeeze(nn.Module):
@@ -198,7 +202,7 @@ class CNNCouplingLayer(nn.Module):
         
         x_b = (y_b - t) / s
         x = torch.cat([y_a, x_b], dim=1)
-        log_det = -torch.sum(torch.log(s), dim=[1, 2, 3])
+        log_det = -torch.sum(log_s, dim=[1, 2, 3])
         return x, log_det
 
 class Invertible1x1Conv(nn.Module):
