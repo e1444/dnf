@@ -2,12 +2,14 @@ dataset:
   name: "CIFAR10"
   path: "${oc.env:SCRATCH}/dnf/data/cifar10"
   download: true
-  transform:
+  train_transform:
     - type: "RandomHorizontalFlip"
     - type: "RandomCrop"
       params:
         size: 32
         padding: 4
+    - type: "Dequantize"
+  test_transform:
     - type: "Dequantize"
   batch_size: 128
   num_workers: 4
