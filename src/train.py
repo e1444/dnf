@@ -10,11 +10,57 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
-from src.distributions.mvt import get_target_distributions
-from src.utils.losses import compute_logits, nll_loss_fn, ce_loss_fn, deep_ce_loss, total_loss_fn
+from src.utils.losses import nll_loss_fn, ce_loss_fn, deep_ce_loss, standard_normal_logprob
 from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def get_target_distributions(latent_mu, latent_v, latent_U, cfg: DictConfig, device=torch.device('cpu')):
+    K = cfg.training.num_classes
+    D = cfg.training.features
+    r = latent_U.shape[-1]
+    
+    latent_diag = torch.exp(latent_v)  # (K, D)
+
+    # Compute U^T D^{-1} U
+    D_inv = (1.0 / latent_diag).unsqueeze(-1)         # (K, D, 1)
+    U_scaled = latent_U * D_inv                      # (K, D, r)
+    UT_Dinv_U = torch.bmm(latent_U.transpose(1, 2), U_scaled)  # (K, r, r)
+
+    # M = I + U^T D^{-1} U
+    I_r = torch.eye(r, device=device).unsqueeze(0).expand(K, -1, -1)
+    M = I_r + UT_Dinv_U
+
+    # Batched slogdet
+    sign, logabsdet_M = torch.linalg.slogdet(M)
+
+    # Fallback if any sign <= 0
+    if torch.any(sign <= 0):
+        M = M + 1e-6 * I_r
+        _, logabsdet_M = torch.linalg.slogdet(M)
+
+    # log det(diag) = sum(log diag) = sum(latent_v)
+    logdet_D = torch.sum(latent_v, dim=1)
+
+    cov_log_det = logdet_D + logabsdet_M  # shape (K,)
+
+    # ----- Global scale normalization -----
+
+    avg_log_det = cov_log_det.mean()      # scalar
+    c = torch.exp(-avg_log_det / D)       # global scale
+    sqrt_c = torch.sqrt(c)
+
+    constrained_diag = latent_diag * c    # (K, D)
+    constrained_U = latent_U * sqrt_c     # (K, D, r)
+
+    return [
+        torch.distributions.LowRankMultivariateNormal(
+            loc=latent_mu[i],
+            cov_factor=constrained_U[i],
+            cov_diag=constrained_diag[i]
+        ) for i in range(K)
+    ]
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -50,9 +96,6 @@ def train(cfg: DictConfig):
         initial_U = torch.zeros(cfg.training.num_classes, cfg.training.features, cfg.training.latent_U_size, device=device)
         latent_U = nn.Parameter(initial_U)
         
-        initial_df = torch.ones(cfg.training.num_classes, device=device) * cfg.training.latent_df
-        latent_df = nn.Parameter(initial_df)
-        
     if cfg.training.lr == 0:
         model.requires_grad_(False)
     if cfg.training.lr_mu == 0:
@@ -61,8 +104,6 @@ def train(cfg: DictConfig):
         latent_v.requires_grad_(False)
     if cfg.training.lr_U == 0:
         latent_U.requires_grad_(False)
-    if cfg.training.lr_df == 0:
-        latent_df.requires_grad_(False)
 
     optimizer = optim.AdamW(
         model.parameters(),
@@ -72,7 +113,6 @@ def train(cfg: DictConfig):
     optimizer.add_param_group({'params': [latent_mu], 'lr': cfg.training.lr_mu or 0, 'weight_decay': 0.0})
     optimizer.add_param_group({'params': [latent_v], 'lr': cfg.training.lr_v or 0, 'weight_decay': 0.0})
     optimizer.add_param_group({'params': [latent_U], 'lr': cfg.training.lr_U or 0, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': [latent_df], 'lr': cfg.training.lr_df or 0, 'weight_decay': 1e-4})
     
     # --- Augmented Lagrangian Setup ---
     # Initialize dual variable (log_alpha)
@@ -98,8 +138,6 @@ def train(cfg: DictConfig):
                 latent_v.copy_(checkpoint['latent_v'])
             if "latent_U" in checkpoint:
                 latent_U.copy_(checkpoint['latent_U'])
-            if "latent_df" in checkpoint:
-                latent_df.copy_(checkpoint['latent_df'])
         
         if not cfg.training.reset_optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -125,11 +163,6 @@ def train(cfg: DictConfig):
                 optimizer.param_groups[3]['lr'] = cfg.training.lr_U
             else:
                 cfg.training.lr_U = optimizer.param_groups[3]['lr']
-                
-            if cfg.training.lr_df is not None:
-                optimizer.param_groups[4]['lr'] = cfg.training.lr_df
-            else:
-                cfg.training.lr_df = optimizer.param_groups[4]['lr']
             
             # Load dual variables if available
             if 'log_alpha' in checkpoint:
@@ -188,8 +221,6 @@ def train(cfg: DictConfig):
                         target_lr = cfg.training.lr_v
                     elif param_group['params'][0] is latent_U:
                         target_lr = cfg.training.lr_U
-                    elif param_group['params'][0] is latent_df:
-                        target_lr = cfg.training.lr_df
                     else:
                         target_lr = cfg.training.lr
                     
@@ -207,23 +238,15 @@ def train(cfg: DictConfig):
             z, log_det = zs[-1]
             
             # Get the current dynamic target distributions
-            # Note: We allow gradients to flow through latent params here
-            noise_dists = torch.distributions.Independent(
-                torch.distributions.Normal(loc=torch.zeros_like(z[0]), scale=torch.ones_like(z[0])), 
-                reinterpreted_batch_ndims=1
-            )
-            
-            mean_v = latent_v.mean()
-            constrained_v = latent_v - mean_v
-            target_dists = get_target_distributions(latent_mu, constrained_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
-            
+            target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg, device)
+                        
             # Compute logits
-            log_prob_noise = noise_dists.log_prob(z[0])
+            log_prob_noise = standard_normal_logprob(z[0])
             log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
             log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
             logits = log_prob + log_det.unsqueeze(1)
             
-            aux_log_prob_noise = [noise_dists.log_prob(aux_z[0][0]) for aux_z in aux_zs]
+            aux_log_prob_noise = [standard_normal_logprob(aux_z[0][0]) for aux_z in aux_zs]
             aux_log_prob_semantic = [torch.stack([dist.log_prob(aux_z[0][1]) for dist in target_dists], dim=1) for aux_z in aux_zs]
             aux_log_prob = [ln.unsqueeze(1) + ls for ln, ls in zip(aux_log_prob_noise, aux_log_prob_semantic)]
             aux_logits = [lp + log_det.unsqueeze(1) for lp, (_, log_det) in zip(aux_log_prob, aux_zs)]
@@ -264,8 +287,6 @@ def train(cfg: DictConfig):
                 torch.nn.utils.clip_grad_norm_([latent_v], max_norm=cfg.training.gradclip_v)
             if latent_U.requires_grad:
                 torch.nn.utils.clip_grad_norm_([latent_U], max_norm=cfg.training.gradclip_U)
-            if latent_df.requires_grad:
-                torch.nn.utils.clip_grad_norm_([latent_df], max_norm=cfg.training.gradclip_df)
             
             optimizer.step()
             ema_model.update_parameters(model)
@@ -302,7 +323,7 @@ def train(cfg: DictConfig):
         if (epoch + 1) % cfg.training.eval_interval == 0:
             mean_v = latent_v.mean()
             constrained_v = latent_v - mean_v
-            eval_target_dists = get_target_distributions(latent_mu, constrained_v, latent_U, latent_df, cfg.training.num_classes, cfg.training.latent_v_eps, device=device)
+            eval_target_dists = get_target_distributions(latent_mu, constrained_v, latent_U, cfg, device=device)
             test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
             log_dict.update({
                 "test_loss": test_loss,
@@ -335,7 +356,6 @@ def train(cfg: DictConfig):
                 'latent_mu': latent_mu.detach().cpu().clone(),
                 'latent_v': latent_v.detach().cpu().clone(),
                 'latent_U': latent_U.detach().cpu().clone(),
-                'latent_df': latent_df.detach().cpu().clone(),
                 'log_alpha': log_alpha.detach().cpu().clone(),
             }, checkpoint_path)
             # wandb.save(checkpoint_path)

@@ -1,5 +1,9 @@
+import numpy as np
 import torch
 from torch import nn
+
+def standard_normal_logprob(z_tensor):
+    return -0.5 * (z_tensor.pow(2) + np.log(2 * np.pi)).sum(dim=1)
 
 def compute_logits(z, total_log_det, target_dists):
     log_phi_c = torch.stack([dist.log_prob(z) for dist in target_dists], dim=1)

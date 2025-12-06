@@ -2,13 +2,11 @@ lr: 1e-3
 lr_mu: 0
 lr_v: 0
 lr_U: 0
-lr_df: 0
 
 gradclip: 1.0
 gradclip_mu: 1.0
 gradclip_v: 1.0
 gradclip_U: 1.0
-gradclip_df: 1.0
 
 weight_decay: 1e-4
 epochs: 20
@@ -38,7 +36,6 @@ latent_separation: 1
 latent_v: -5
 latent_v_eps: 1e-4
 latent_U_size: 20
-latent_df: 20
 latent_noise: 0.0
 features: 256
 num_classes: 10

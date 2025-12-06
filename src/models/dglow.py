@@ -134,6 +134,8 @@ if __name__ == "__main__":
     step = FlowStep(
         in_channels=2,
         hidden_channels=64,
+        num_blocks=1,
+        dropout=0.0,
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"
     )
@@ -158,6 +160,8 @@ if __name__ == "__main__":
         num_levels=3,
         steps_per_level=[4, 4, 4],
         hidden_channels=64,
+        num_blocks=1,
+        dropout=0.0,
         actnorm_initialization="identity",
         invconv_initialization="identity"
     )
