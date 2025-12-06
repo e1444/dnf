@@ -6,6 +6,7 @@ steps_per_level: [24, 24, 48]
 hidden_channels: 128
 num_blocks: 2
 dropout: 0.2
+scale_clamp: 1.0
 actnorm_initialization: "data-dependent"
 invconv_initialization: "orthogonal"
 checkpoint_grads: false

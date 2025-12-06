@@ -163,7 +163,7 @@ class FlowPlusPlusCouplingNet(nn.Module):
 class CNNCouplingLayer(nn.Module):
     scale_clamp: torch.Tensor
     
-    def __init__(self, in_channels, hidden_channels=512, num_blocks=2, dropout=0.0):
+    def __init__(self, in_channels, hidden_channels=512, num_blocks=2, dropout=0.0, scale_clamp=1.0):
         super().__init__()
         self.in_channels = in_channels
         self.split_size = in_channels // 2
@@ -176,7 +176,7 @@ class CNNCouplingLayer(nn.Module):
             dropout=dropout
         )
         
-        self.register_buffer("scale_clamp", torch.tensor(1.0))
+        self.register_buffer("scale_clamp", torch.tensor(scale_clamp))
 
 
     def forward(self, x):

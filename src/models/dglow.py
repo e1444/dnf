@@ -4,7 +4,7 @@ import torch.utils.checkpoint as checkpoint
 from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
-    def __init__(self, in_channels, hidden_channels, num_blocks: int, dropout: float, actnorm_initialization="identity", invconv_initialization="orthogonal"):
+    def __init__(self, in_channels, hidden_channels, num_blocks: int, dropout: float, scale_clamp: float, actnorm_initialization="identity", invconv_initialization="orthogonal"):
         super().__init__()
         self.actnorm = ActNorm(in_channels, initialization=actnorm_initialization)
         self.inv_conv = Invertible1x1Conv(in_channels, initialization=invconv_initialization)
@@ -12,7 +12,8 @@ class FlowStep(nn.Module):
             in_channels, 
             hidden_channels,
             num_blocks=num_blocks,
-            dropout=dropout
+            dropout=dropout,
+            scale_clamp=scale_clamp
         )
 
     def forward(self, x):
@@ -28,7 +29,7 @@ class FlowStep(nn.Module):
         return z, log_det_act + log_det_conv + log_det_coup
 
 class DGLOWNetwork(nn.Module):
-    def __init__(self, in_channels: int, num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal", checkpoint_grads: bool = False):
+    def __init__(self, in_channels: int, num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, scale_clamp: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal", checkpoint_grads: bool = False):
         super(DGLOWNetwork, self).__init__()
         assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
         
@@ -48,6 +49,7 @@ class DGLOWNetwork(nn.Module):
                     hidden_channels, 
                     num_blocks=num_blocks,
                     dropout=dropout,
+                    scale_clamp=scale_clamp,
                     actnorm_initialization=actnorm_initialization,
                     invconv_initialization=invconv_initialization
                 ) for _ in range(self.steps_per_level[level_idx])
@@ -162,8 +164,8 @@ if __name__ == "__main__":
         hidden_channels=64,
         num_blocks=1,
         dropout=0.0,
-        actnorm_initialization="identity",
-        invconv_initialization="identity"
+        actnorm_initialization="data-dependent",
+        invconv_initialization="orthogonal"
     )
     x = torch.randn(8, 1, 32, 32).clamp(min=0.0, max=1.0)
     outputs = model(x)
