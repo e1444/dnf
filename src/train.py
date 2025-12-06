@@ -14,7 +14,6 @@ from src.utils.losses import nll_loss_fn, ce_loss_fn, deep_ce_loss, standard_nor
 from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.autograd.set_detect_anomaly(True) 
 
 
 def get_target_distributions(latent_mu, latent_v, latent_U, cfg: DictConfig, device=torch.device('cpu')):
