@@ -14,6 +14,7 @@ from src.utils.losses import nll_loss_fn, ce_loss_fn, deep_ce_loss, standard_nor
 from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.autograd.set_detect_anomaly(True) 
 
 
 def get_target_distributions(latent_mu, latent_v, latent_U, cfg: DictConfig, device=torch.device('cpu')):
@@ -21,7 +22,7 @@ def get_target_distributions(latent_mu, latent_v, latent_U, cfg: DictConfig, dev
     D = cfg.training.features
     r = latent_U.shape[-1]
     
-    latent_diag = torch.exp(latent_v)  # (K, D)
+    latent_diag = torch.exp(latent_v) + cfg.training.latent_v_eps # (K, D)
 
     # Compute U^T D^{-1} U
     D_inv = (1.0 / latent_diag).unsqueeze(-1)         # (K, D, 1)
@@ -51,8 +52,8 @@ def get_target_distributions(latent_mu, latent_v, latent_U, cfg: DictConfig, dev
     c = torch.exp(-avg_log_det / D)       # global scale
     sqrt_c = torch.sqrt(c)
 
-    constrained_diag = latent_diag * c    # (K, D)
-    constrained_U = latent_U * sqrt_c     # (K, D, r)
+    constrained_diag = latent_diag * c + cfg.training.latent_v_eps      # (K, D)
+    constrained_U = latent_U * sqrt_c                                   # (K, D, r)
 
     return [
         torch.distributions.LowRankMultivariateNormal(
@@ -268,6 +269,12 @@ def train(cfg: DictConfig):
             # Primal Objective
             primal_loss = task_loss
             primal_loss += reg_loss
+            
+            if torch.isnan(primal_loss) or torch.isinf(primal_loss):
+                print(f"CRITICAL ERROR: NaN/Inf loss detected at epoch {epoch} batch {batch_idx}.")
+                print("Terminating training to save resources.")
+                # Optional: Save a 'crash' checkpoint for debugging
+                return
             
             alpha = F.softplus(log_alpha)
             nll_violation = nll_loss - nll_constraint
