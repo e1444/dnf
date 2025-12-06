@@ -7,5 +7,5 @@ hidden_channels: 128
 num_blocks: 2
 dropout: 0.2
 actnorm_initialization: "data-dependent"
-invconv_initialization: "identity"
+invconv_initialization: "orthogonal"
 checkpoint_grads: false

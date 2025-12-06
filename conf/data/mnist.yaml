@@ -2,7 +2,7 @@ dataset:
   name: "MNIST"
   path: "${oc.env:SCRATCH}/dnf/data/mnist"
   download: true
-  transform:
+  train_transform:
     - type: "Pad"
       params:
         padding: 2
@@ -15,6 +15,11 @@ dataset:
       params:
         alpha: 20.0         # Controls the intensity of the elastic deformation
         sigma: 4.0          # Controls the smoothness of the deformation
+    - type: "Dequantize"
+  test_transform:
+    - type: "Pad"
+      params:
+        padding: 2
     - type: "Dequantize"
   batch_size: 256
   num_workers: 4

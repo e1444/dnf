@@ -34,11 +34,13 @@ def load_dataset(cfg: DictConfig):
     """
     
     # Build the transformation pipeline from the config
-    transform_list = []
-    if cfg.dataset.transform:
-        for t_cfg in cfg.dataset.transform:
+    train_transform_list = []
+    test_transform_list = []
+    
+    if cfg.dataset.train_transform:
+        for t_cfg in cfg.dataset.train_transform:
             if t_cfg["type"] == "Dequantize":
-                transform_list.append(Dequantize())
+                train_transform_list.append(Dequantize())
                 continue
             
             transform_config = {'_target_': f'torchvision.transforms.{t_cfg["type"]}'}
@@ -47,9 +49,24 @@ def load_dataset(cfg: DictConfig):
             if 'mean' in t_cfg and 'std' in t_cfg:
                 transform_config['mean'] = t_cfg['mean']
                 transform_config['std'] = t_cfg['std']
-            transform_list.append(hydra.utils.instantiate(transform_config))
-
-    transform = transforms.Compose(transform_list)
+            train_transform_list.append(hydra.utils.instantiate(transform_config))
+    
+    if cfg.dataset.test_transform:
+        for t_cfg in cfg.dataset.test_transform:
+            if t_cfg["type"] == "Dequantize":
+                test_transform_list.append(Dequantize())
+                continue
+            
+            transform_config = {'_target_': f'torchvision.transforms.{t_cfg["type"]}'}
+            if 'params' in t_cfg and t_cfg.params:
+                transform_config.update(t_cfg.params)
+            if 'mean' in t_cfg and 'std' in t_cfg:
+                transform_config['mean'] = t_cfg['mean']
+                transform_config['std'] = t_cfg['std']
+            test_transform_list.append(hydra.utils.instantiate(transform_config))
+            
+    train_transform = transforms.Compose(train_transform_list)
+    test_transform = transforms.Compose(test_transform_list)
     
     # Select Dataset Class
     if cfg.dataset.name == "MNIST":
@@ -63,7 +80,7 @@ def load_dataset(cfg: DictConfig):
     train_dataset = dataset_cls(
         root=cfg.dataset.path,
         train=True,
-        transform=transform,
+        transform=train_transform,
         download=cfg.dataset.download
     )
     
@@ -71,7 +88,7 @@ def load_dataset(cfg: DictConfig):
     test_dataset = dataset_cls(
         root=cfg.dataset.path,
         train=False,
-        transform=transform,
+        transform=test_transform,
         download=cfg.dataset.download
     )
     
