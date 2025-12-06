@@ -208,31 +208,61 @@ class CNNCouplingLayer(nn.Module):
         return x, log_det
 
 class Invertible1x1Conv(nn.Module):
+    p: torch.Tensor
+    sign_s: torch.Tensor
+    l_mask: torch.Tensor
+    u_mask: torch.Tensor
+    
     def __init__(self, num_channels, initialization="orthogonal"):
         super().__init__()
-        self.conv = nn.Conv2d(num_channels, num_channels, kernel_size=1, bias=False)
+        w_shape = [num_channels, num_channels]
         
         if initialization == "orthogonal":
-            W = la.qr(torch.randn(num_channels, num_channels))[0]
+            w_init = torch.linalg.qr(torch.randn(*w_shape))[0]
         elif initialization == "identity":
-            W = torch.eye(num_channels)
+            w_init = torch.eye(num_channels)
         else:
             raise ValueError(f"Unknown initialization: {initialization}")
 
-        self.conv.weight.data.copy_(W.view(num_channels, num_channels, 1, 1))
-        self.register_buffer("initialized", torch.tensor(1, dtype=torch.uint8))
+        # LU Decomposition using PyTorch
+        # torch.linalg.lu returns P, L, U
+        # Note: P is returned as a permutation matrix in recent versions, 
+        # or pivots in older ones. Let's assume recent torch.
+        P, L, U = torch.linalg.lu(w_init)
+        
+        s = torch.diag(U)
+        sign_s = torch.sign(s)
+        log_s = torch.log(torch.abs(s))
+        U = torch.triu(U, diagonal=1)
+        
+        self.register_buffer("p", P)
+        self.register_buffer("sign_s", sign_s)
+        self.l = nn.Parameter(L)
+        self.log_s = nn.Parameter(log_s)
+        self.u = nn.Parameter(U)
+        
+        self.register_buffer("l_mask", torch.tril(torch.ones(w_shape), diagonal=-1))
+        self.register_buffer("u_mask", torch.triu(torch.ones(w_shape), diagonal=1))
+
+    def get_weight(self):
+        l = self.l * self.l_mask + torch.eye(self.l.size(0), device=self.l.device)
+        u = self.u * self.u_mask + torch.diag(self.sign_s * torch.exp(self.log_s))
+        w = torch.matmul(self.p, torch.matmul(l, u))
+        return w.view(w.size(0), w.size(1), 1, 1)
 
     def forward(self, x):
-        y = self.conv(x)
-        _, _, h, w = x.size()
-        log_det = torch.slogdet(self.conv.weight.squeeze())[1] * h * w
+        w = self.get_weight()
+        y = nn.functional.conv2d(x, w)
+        _, _, h, w_dim = x.size()
+        log_det = torch.sum(self.log_s) * h * w_dim
         return y, log_det
 
     def inverse(self, y):
-        W_inv = torch.inverse(self.conv.weight.squeeze()).view(self.conv.in_channels, self.conv.in_channels, 1, 1)
-        x = nn.functional.conv2d(y, W_inv)
-        _, _, h, w = y.size()
-        log_det = -torch.slogdet(self.conv.weight.squeeze())[1] * h * w
+        w = self.get_weight()
+        w_inv = torch.inverse(w.squeeze()).view(w.size(0), w.size(1), 1, 1)
+        x = nn.functional.conv2d(y, w_inv)
+        _, _, h, w_dim = y.size()
+        log_det = -torch.sum(self.log_s) * h * w_dim
         return x, log_det
 
 class Split(nn.Module):
