@@ -158,8 +158,6 @@ def train(cfg: DictConfig):
                 primal_loss += alpha * nll_violation 
                 primal_loss += 0.5 * rho * violation_pos.pow(2)
 
-            print("forward pass completed, starting backward pass...")
-            quit()
             primal_loss.backward()
             
             # Clipping
