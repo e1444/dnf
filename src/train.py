@@ -64,8 +64,8 @@ def train(cfg: DictConfig):
         lr=cfg.training.lr or 0,
         weight_decay=cfg.training.weight_decay or 0
     )
-    optimizer.add_param_group({'params': [latent_mus], 'lr': cfg.training.lr_mu or 0, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': [latent_Ls], 'lr': cfg.training.lr_L or 0, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': latent_mus, 'lr': cfg.training.lr_mu or 0, 'weight_decay': 0.0})
+    optimizer.add_param_group({'params': latent_Ls, 'lr': cfg.training.lr_L or 0, 'weight_decay': 0.0})
     
     # --- Augmented Lagrangian Setup ---
     log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
@@ -158,6 +158,8 @@ def train(cfg: DictConfig):
                 primal_loss += alpha * nll_violation 
                 primal_loss += 0.5 * rho * violation_pos.pow(2)
 
+            print("forward pass completed, starting backward pass...")
+            quit()
             primal_loss.backward()
             
             # Clipping
