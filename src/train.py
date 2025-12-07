@@ -211,7 +211,7 @@ def train(cfg: DictConfig):
                 "train_eval_nll": train_nll
             })
             
-            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_accuracy:.2f}%/{test_accuracy:.2f}% | NLL: {avg_nll:.2f} (Target {nll_constraint:.1f}) | Alpha: {avg_alpha:.4f}")
+            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_accuracy:.2f}%/{test_accuracy:.2f}% | NLL (Tr/Te): {avg_nll:.2f}/{test_nll:.2f} | Alpha: {avg_alpha:.4f}")
 
 
         wandb.log(log_dict)
