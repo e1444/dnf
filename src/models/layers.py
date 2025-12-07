@@ -118,32 +118,30 @@ class GatedConv2d(nn.Module):
 class GatedResNetBlock(nn.Module):
     """
     Flow++ Residual Block:
-    x -> Conv(1x1) -> GatedAct -> Conv(3x3) -> GatedAct -> Conv(1x1) -> Dropout -> + x
+    x -> Conv(1x1) -> GatedAct -> Conv(3x3) -> GatedAct -> Conv(1x1) -> + x
     """
-    def __init__(self, channels, dropout=0.0):
+    def __init__(self, channels):
         super().__init__()
         self.conv1 = GatedConv2d(channels, channels, kernel_size=1, padding=0)
         self.conv2 = GatedConv2d(channels, channels, kernel_size=3, padding=1)
         self.conv3 = GatedConv2d(channels, channels, kernel_size=1, padding=0)
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         residual = x
         out = self.conv1(x)
         out = self.conv2(out)
         out = self.conv3(out)
-        out = self.dropout(out)
         return residual + out
 
 class FlowPlusPlusCouplingNet(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2):
         super().__init__()
         # Initial projection
         self.in_conv = nn.Conv2d(in_channels, hidden_channels, 3, padding=1)
         
         # Stack of Residual Blocks
         self.blocks = nn.ModuleList([
-            GatedResNetBlock(hidden_channels, dropout=dropout) 
+            GatedResNetBlock(hidden_channels) 
             for _ in range(num_blocks)
         ])
         
@@ -163,7 +161,7 @@ class FlowPlusPlusCouplingNet(nn.Module):
 class CNNCouplingLayer(nn.Module):
     scale_clamp: torch.Tensor
     
-    def __init__(self, in_channels, hidden_channels=512, num_blocks=2, dropout=0.0, scale_clamp=1.0):
+    def __init__(self, in_channels, hidden_channels=512, num_blocks=2, scale_clamp=1.0):
         super().__init__()
         self.in_channels = in_channels
         self.split_size = in_channels // 2
@@ -172,8 +170,7 @@ class CNNCouplingLayer(nn.Module):
             self.split_size, 
             hidden_channels, 
             self.in_channels,
-            num_blocks=num_blocks,
-            dropout=dropout
+            num_blocks=num_blocks
         )
         
         self.register_buffer("scale_clamp", torch.tensor(scale_clamp))
