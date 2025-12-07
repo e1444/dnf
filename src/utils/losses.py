@@ -1,42 +1,101 @@
 import numpy as np
 import torch
-from torch import nn
+import torch.nn as nn
+import torch.nn.functional as F
+
 
 def standard_normal_logprob(z_tensor):
     return -0.5 * (z_tensor.pow(2) + np.log(2 * np.pi)).sum(dim=1)
 
-def compute_logits(z, total_log_det, target_dists):
-    log_phi_c = torch.stack([dist.log_prob(z) for dist in target_dists], dim=1)
-    logits = log_phi_c + total_log_det.unsqueeze(1)
+
+def get_target_distributions(latent_mus, latent_Ls):
+    """
+    Returns a list of MultivariateNormal distributions, one for each level.
+    latent_mus: List of (K, D) tensors
+    latent_Ls: List of (K, D, D) tensors (unconstrained)
+    """
+    dists = []
+    for mu, L_param in zip(latent_mus, latent_Ls):
+        # 1. Construct valid Cholesky factor
+        # L_param is unconstrained
+        # Diagonal must be positive
+        diag = F.softplus(torch.diagonal(L_param, dim1=-2, dim2=-1)) + 1e-5
+        L = torch.tril(L_param, diagonal=-1) + torch.diag_embed(diag)
+        
+        # 2. Enforce Unit Determinant (Volume Preservation)
+        # log_det(L) = sum(log(diag))
+        log_det_L = torch.sum(torch.log(diag), dim=-1, keepdim=True).unsqueeze(-1) # (K, 1, 1)
+        D = L.shape[-1]
+        scale = torch.exp(-log_det_L / D) # scalar factor
+        
+        L_normalized = L * scale
+        
+        # Create distribution
+        dist = torch.distributions.MultivariateNormal(loc=mu, scale_tril=L_normalized)
+        dists.append(dist)
+    return dists
+
+
+def compute_hierarchical_logits(z, log_det, target_dists, semantic_counts):
+    """
+    Computes logits for the soft hierarchical bottleneck.
+    z_list: List of tensors [z0, z1, ...] from the model
+    log_det: Tensor (B,)
+    target_dists: List of MultivariateNormal batches
+    semantic_counts: List of integers [C0, C1, ...]
+    """
+    logits = 0.0
+    
+    for i, z_part in enumerate(z):
+        # Determine level. If we are at an intermediate step (aux loss), 
+        # we treat the last part as the current level's latent.
+        level = i
+        if level >= len(semantic_counts):
+            break
+            
+        n_semantic = semantic_counts[level]
+        B, C, H, W = z_part.shape
+        
+        # Split into Noise and Texture
+        # z_noise: (B, C - n_semantic, H, W)
+        # z_texture: (B, n_semantic, H, W)
+        z_noise = z_part[:, :-n_semantic]
+        z_sem = z_part[:, -n_semantic:]
+        
+        # 1. Noise Log Prob (Standard Normal)
+        # Sum over all dimensions (C, H, W)
+        lp_noise = standard_normal_logprob(z_noise.reshape(B, -1)) # (B,)
+        
+        # 2. Texture Log Prob (Spatial Invariant Class Conditional)
+        # Flatten spatial dims: (B, n_sem, H, W) -> (B*H*W, n_sem)
+        z_sem_flat = z_sem.permute(0, 2, 3, 1).reshape(-1, n_semantic)
+        
+        # Compute log_prob per pixel for each class
+        # dist has batch_shape (K,), event_shape (n_sem,)
+        # input (N, 1, n_sem) broadcasts to (N, K)
+        dist = target_dists[level]
+        lp_sem_pixel = dist.log_prob(z_sem_flat.unsqueeze(1)) # (B*H*W, K)
+        
+        # Reshape back and sum over spatial dimensions
+        lp_sem_img = lp_sem_pixel.view(B, H, W, -1).sum(dim=(1, 2)) # (B, K)
+        
+        # Accumulate
+        # Add noise (broadcasts to all classes) + texture (class-specific)
+        logits = logits + lp_sem_img + lp_noise.unsqueeze(1)
+        
+    # Add Jacobian determinant
+    logits = logits + log_det.unsqueeze(1)
+    
     return logits
 
-def entropy_loss_fn(logits):
-    probs = nn.functional.softmax(logits, dim=1)
-    log_probs = nn.functional.log_softmax(logits, dim=1)
-    entropy = -torch.sum(probs * log_probs, dim=1).mean()
-    return entropy
 
 def ce_loss_fn(logits, y_true, label_smoothing=0.0):
     ce_loss = nn.functional.cross_entropy(logits, y_true, label_smoothing=label_smoothing)
     return ce_loss
+
 
 def nll_loss_fn(logits, y_true):
     batch_size = logits.shape[0]
     true_class_logits = logits[torch.arange(batch_size), y_true]
     gen_loss = -true_class_logits.mean()
     return gen_loss
-
-def total_loss_fn(logits, y_true, lambda_, label_smoothing=0.0):
-    disc_loss = ce_loss_fn(logits, y_true, label_smoothing=label_smoothing)
-    gen_loss = nll_loss_fn(logits, y_true)
-    total_loss = (1 - lambda_) * disc_loss + lambda_ * gen_loss
-    return total_loss
-
-def deep_ce_loss(intermediate_logits, y_true, betas, label_smoothing=0.0):
-    total_loss = torch.tensor(0.0, device=y_true.device)
-
-    for j, logits_j in enumerate(intermediate_logits):
-        ce_loss_j = ce_loss_fn(logits_j, y_true, label_smoothing=label_smoothing)
-        total_loss += betas[j] * ce_loss_j
-
-    return total_loss

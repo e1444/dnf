@@ -1,12 +1,10 @@
 lr: 1e-3
 lr_mu: 0
-lr_v: 0
-lr_U: 0
+lr_L:: 0
 
 gradclip: 1.0
 gradclip_mu: 1.0
-gradclip_v: 1.0
-gradclip_U: 1.0
+gradclip_L: 1.0
 
 weight_decay: 1e-4
 epochs: 20
@@ -16,11 +14,6 @@ eval_interval: 1
 checkpoint_interval: 5
 
 # Loss and regularization weights
-lambda_: 0.8
-gamma_beta: 0.5
-aux_start: 32
-aux_freq: 1
-aux_end: 40
 r_logdet: 1e-2
 label_smoothing: 0.1
 
@@ -32,11 +25,9 @@ scheduler:
   eta_min: 1e-6
 
 # Initialization
-latent_separation: 1
-latent_v: -5
-latent_v_eps: 1e-4
-latent_U_size: 20
-latent_noise: 0.0
+semantic_counts: [2, 6, 48]
+latent_separation: 1.0
+latent_L_scale: 1.0
 features: 256
 num_classes: 10
 

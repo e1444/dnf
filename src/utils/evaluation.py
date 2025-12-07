@@ -4,10 +4,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import classification_report, confusion_matrix, log_loss, roc_curve, auc
-from .losses import deep_ce_loss, total_loss_fn, compute_logits, nll_loss_fn, ce_loss_fn, entropy_loss_fn
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+from .losses import nll_loss_fn, ce_loss_fn, compute_hierarchical_logits
 
-def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_layers):
+
+def evaluate(model, data_loader, device, cfg, target_dists):
     """
     Evaluate the model on a given dataset.
     """
@@ -15,128 +16,85 @@ def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_
     total_test_loss = 0.0
     total_nll = 0.0
     correct = 0
-    total = 0
+    total_samples = 0
     
     with torch.no_grad():
         for x_batch, y_batch in data_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            batch_size = x_batch.size(0)
             
-            zs = model(x_batch)
-            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs] # Flatten each part of z
-            zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]  # Concatenate all parts
-            zs = [((z[:, :-cfg.training.features], z[:, -cfg.training.features:]), log_det) for z, log_det in zs]  # Split into noise + semantic parts
-            aux_zs = [zs[i] for i in aux_layers]
-            z, log_det = zs[-1]
+            z, log_det = model(x_batch)
+            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
             
-            noise_dists = torch.distributions.Independent(
-                torch.distributions.Normal(loc=torch.zeros_like(z[0]), scale=torch.ones_like(z[0])), 
-                reinterpreted_batch_ndims=1
-            )
+            ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
+            nll_loss = nll_loss_fn(logits, y_batch)
             
-            log_prob_noise = noise_dists.log_prob(z[0])
-            log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
-            log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
-            logits = log_prob + log_det.unsqueeze(1)
+            # reg_loss should be mean over batch to match ce_loss
+            reg_loss = cfg.training.r_logdet * (log_det ** 2).mean()
             
-            aux_log_prob_noise = [noise_dists.log_prob(aux_z[0][0]) for aux_z in aux_zs]
-            aux_log_prob_semantic = [torch.stack([dist.log_prob(aux_z[0][1]) for dist in target_dists], dim=1) for aux_z in aux_zs]
-            aux_log_prob = [ln.unsqueeze(1) + ls for ln, ls in zip(aux_log_prob_noise, aux_log_prob_semantic)]
-            aux_logits = [lp + log_det.unsqueeze(1) for lp, (_, log_det) in zip(aux_log_prob, aux_zs)]
+            primal_loss = ce_loss + reg_loss
             
-            # Calculate loss
-            aux_loss = deep_ce_loss(aux_logits, y_batch, betas)
-            final_loss = total_loss_fn(logits, y_batch, lambda_=lambda_)
-            loss = aux_loss + final_loss
-            
-            # Regularization terms
-            log_dets = [log_det for _, log_det in zs]
-            for i in reversed(range(1, len(log_dets))):
-                log_dets[i] = log_dets[i] - log_dets[i - 1]
-                
-            loss += cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
-            total_test_loss += loss.item()
-            
-            # Calculate NLL for a clean evaluation metric
-            nll_batch = nll_loss_fn(logits, y_batch) * y_batch.size(0)
-            total_nll += nll_batch.item()
+            # Accumulate weighted by batch size
+            total_test_loss += primal_loss.item() * batch_size
+            total_nll += nll_loss.item() * batch_size
             
             # Calculate accuracy
             _, predicted = torch.max(logits.data, 1)
-            total += y_batch.size(0)
+            total_samples += batch_size
             correct += (predicted == y_batch).sum().item()
             
-    avg_test_loss = total_test_loss / len(data_loader)
-    avg_nll = total_nll / total
-    accuracy = 100 * correct / total
+    avg_test_loss = total_test_loss / total_samples
+    avg_nll = total_nll / total_samples
+    accuracy = 100 * correct / total_samples
     
     return avg_test_loss, accuracy, avg_nll
 
 
 def compute_marginal_bpd(model, target_dists, loader, device, cfg):
-    total_bpd = 0
-    total_pixels = 0
+    """
+    Computes the Bits Per Dimension (BPD) by marginalizing over classes.
+    log p(x) = log sum_c p(x|c)p(c)
+    """
+    total_nll_bits = 0.0
+    total_dims = 0
     
+    model.eval()
     with torch.no_grad():
         for x, _ in loader:
             x = x.to(device)
             
-            # 2. Forward Pass on Dequantized Data
-            zs = model(x)
+            # Forward Pass
+            z, log_det = model(x)
             
-            # 3. Preprocess (Flatten, Concat, Split)
-            # Flatten each part of z: [B, C, H, W] -> [B, D_part]
-            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs]
-            # Concatenate: [Noise1 | Noise2 | ... | Semantic]
-            zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]
-            # Slice: Noise = [:-feat], Semantic = [-feat:]
-            feat = cfg.training.features
-            zs = [((z[:, :-feat], z[:, -feat:]), log_det) for z, log_det in zs]
+            # logits: (B, K) = log p(x|c) + const
+            # compute_hierarchical_logits returns exactly log p(x|c) (including log_det)
+            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
             
-            # Get final state
-            (z_noise, z_sem), log_det = zs[-1]
-            
-            # 4. Calculate Noise Probability: log p(z_noise) ~ N(0, I)
-            # -0.5 * (z^2 + log(2pi)) summed over dimensions
-            log_p_noise = -0.5 * (z_noise ** 2 + np.log(2 * np.pi)).sum(dim=1)
-            
-            # 5. Calculate log p(x|c) for ALL classes
-            log_probs_conditional = []
-            num_classes = len(target_dists)
-            
-            for c in range(num_classes):
-                target = target_dists[c]
-                # log p(z_sem | c)
-                log_p_sem_given_c = target.log_prob(z_sem)
-                
-                # Total log p(x | c) = log p(noise) + log p(sem | c) + log_det
-                # Note: log_p_noise and log_det are shared across classes
-                log_p_x_given_c = log_p_noise + log_p_sem_given_c + log_det
-                log_probs_conditional.append(log_p_x_given_c)
-            
-            log_probs_conditional = torch.stack(log_probs_conditional, dim=1)
-            
-            # 6. Marginalize: log p(x) = log sum_c p(x|c)p(c)
+            # Marginalize: log p(x) = log sum_c p(x|c)p(c)
             # Assuming uniform prior p(c) = 1/K
-            # log p(x) = log sum exp(log p(x|c)) - log(K)
-            log_prob_marginal = torch.logsumexp(log_probs_conditional, dim=1) - np.log(num_classes)
+            # log p(x) = logsumexp(logits) - log(K)
+            num_classes = len(target_dists[0]) if isinstance(target_dists, list) else target_dists.batch_shape[0]
+            # Actually target_dists is a list of distributions, one per level.
+            # But compute_hierarchical_logits uses them.
+            # We need K. The distributions in target_dists[0] have batch_shape (K,).
+            num_classes = target_dists[0].batch_shape[0]
             
-            # 7. Convert to Bits Per Dimension (BPD)
-            # Formula: BPD = -log_2(p(x)) / D + 8
-            n_pixels = x.shape[1] * x.shape[2] * x.shape[3]
+            log_prob_marginal = torch.logsumexp(logits, dim=1) - np.log(num_classes)
             
-            # Convert nats to bits (divide by ln 2)
+            # NLL in bits
+            # nll_bits = -log_prob_marginal / log(2)
             nll_bits = -log_prob_marginal / np.log(2)
             
-            # Normalize by dimensions and add 8-bit offset
-            bpd = (nll_bits / n_pixels) + 8.0
+            total_nll_bits += nll_bits.sum().item()
+            total_dims += x.numel() # B * C * H * W
             
-            total_bpd += bpd.sum().item()
-            total_pixels += x.size(0)
-            
-    return total_bpd / total_pixels
+    # BPD = (Total NLL Bits / Total Dims) + 8 (for 8-bit data)
+    bpd = (total_nll_bits / total_dims) + 8.0
+    
+    return bpd
 
 
-def get_all_predictions(model, data_loader, device, target_dists):
+def get_all_predictions(model, data_loader, device, cfg, target_dists):
     """
     Get model predictions for an entire dataset.
     """
@@ -150,20 +108,9 @@ def get_all_predictions(model, data_loader, device, target_dists):
         for x_batch, y_batch in data_loader:
             x_batch = x_batch.to(device)
             
-            zs = model(x_batch)
-            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs] # Flatten each part of z
-            z, log_det = zs[-1]
-            z = (torch.cat(z[:-1], dim=1), z[-1])  # Concatenate all but semantic part
+            z, log_det = model(x_batch)
+            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
             
-            noise_dists = torch.distributions.Independent(
-                torch.distributions.Normal(loc=torch.zeros_like(z[0]), scale=torch.ones_like(z[0])), 
-                reinterpreted_batch_ndims=1
-            )
-            
-            log_prob_noise = noise_dists.log_prob(z[0])
-            log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
-            log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
-            logits = log_prob + log_det.unsqueeze(1)
             probabilities = torch.softmax(logits, dim=1)
             confidences, y_pred = torch.max(probabilities, 1)
 
@@ -278,31 +225,8 @@ def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device,
             for x_batch, _ in loader:
                 x_batch = x_batch.to(device)
                 
-                # --- Standardized Preprocessing (Matches get_all_predictions) ---
-                zs = model(x_batch)
-                # Flatten parts
-                zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs]
-                # Concatenate all parts
-                zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]
-                # Slice: Noise = [:-feat], Semantic = [-feat:]
-                feat = cfg.training.features
-                zs = [((z[:, :-feat], z[:, -feat:]), log_det) for z, log_det in zs]
-                
-                # Get final state
-                (z_noise, z_sem), log_det = zs[-1]
-                
-                # --- Compute Logits ---
-                noise_dists = torch.distributions.Independent(
-                    torch.distributions.Normal(loc=torch.zeros_like(z_noise[0]), scale=torch.ones_like(z_noise[0])), 
-                    reinterpreted_batch_ndims=1
-                )
-                
-                log_prob_noise = noise_dists.log_prob(z_noise)
-                log_prob_semantic = torch.stack([dist.log_prob(z_sem) for dist in target_dists], dim=1)
-                
-                # Broadcast noise prob
-                log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
-                logits = log_prob + log_det.unsqueeze(1)
+                z, log_det = model(x_batch)
+                logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
                 
                 probabilities = torch.softmax(logits, dim=1)
                 confidences, _ = torch.max(probabilities, 1)

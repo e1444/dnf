@@ -68,7 +68,6 @@ class DGLOWNetwork(nn.Module):
         total_log_det += log_det
         
         z = []
-        zs = []
         for level in self.split_levels:
             if isinstance(level, nn.ModuleList): # Flow steps
                 x, log_det_squeeze = self.squeeze(x)
@@ -80,12 +79,12 @@ class DGLOWNetwork(nn.Module):
                     else:
                         x, log_det = flow_step(x)
                     total_log_det += log_det
-                    zs.append((z + [x], total_log_det.clone()))
             elif isinstance(level, Split): # Split
                 x, z_part = level(x)
                 z.append(z_part)
 
-        return zs
+        z.append(x)
+        return z, total_log_det
     
     def inverse(self, z):
         total_log_det = torch.zeros(z[0].shape[0], device=z[0].device)
@@ -138,6 +137,7 @@ if __name__ == "__main__":
         hidden_channels=64,
         num_blocks=1,
         dropout=0.0,
+        scale_clamp=1.0,
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"
     )
@@ -158,23 +158,33 @@ if __name__ == "__main__":
     # --- Test DGLOWNetwork Invertibility ---
     print("\n--- Testing DGLOWNetwork Invertibility ---")
     model = DGLOWNetwork(
-        in_channels=1,
+        in_channels=3,
         num_levels=3,
         steps_per_level=[4, 4, 4],
         hidden_channels=64,
         num_blocks=1,
         dropout=0.0,
+        scale_clamp=1.0,
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"
     )
-    x = torch.randn(8, 1, 32, 32).clamp(min=0.0, max=1.0)
-    outputs = model(x)
+    x = torch.randn(8, 3, 32, 32).clamp(min=0.0, max=1.0)
+    z, log_det = model(x)
+    z = [z_part.view(z_part.size(0), z_part.size(1), -1) for z_part in z]
+    sem_sizes = [2, 6, 48]
+    sem_z = [z_part[:, :sem_sizes[i], :] for i, z_part in enumerate(z)]
+    noise_z = [z_part[:, sem_sizes[i]:, :] for i, z_part in enumerate(z)]
+    
+    print([z_part.shape for z_part in z])
+    print([z_part.shape for z_part in sem_z])
+    print([z_part.shape for z_part in noise_z])
+    quit()
     
     # The final output of the forward pass is the reconstructed image
-    z_parts, log_det = outputs[-1]
+    z, log_det = zs[-1]
     
     # The inverse method should also reconstruct the image
-    x_recon, log_det_inv = model.inverse(z_parts)
+    x_recon, log_det_inv = model.inverse(z)
 
     recon_error_net = torch.abs(x - x_recon).mean().item()
     print(f"DGLOWNetwork Reconstruction Error: {recon_error_net:.2e}")
