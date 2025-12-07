@@ -8,6 +8,7 @@ dataset:
       params:
         size: 32
         padding: 4
+        padding_mode: "reflect"
     - type: "Dequantize"
   test_transform:
     - type: "Dequantize"
