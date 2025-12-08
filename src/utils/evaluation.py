@@ -8,7 +8,7 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_curve, 
 from .losses import nll_loss_fn, ce_loss_fn, compute_hierarchical_logits
 
 
-def evaluate(model, data_loader, device, cfg, target_dists):
+def evaluate(model, data_loader, device, cfg, target_dists, latent_pis):
     """
     Evaluate the model on a given dataset.
     """
@@ -24,7 +24,7 @@ def evaluate(model, data_loader, device, cfg, target_dists):
             batch_size = x_batch.size(0)
             
             z, log_det = model(x_batch)
-            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
+            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
             
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             nll_loss = nll_loss_fn(logits, y_batch)
@@ -50,7 +50,7 @@ def evaluate(model, data_loader, device, cfg, target_dists):
     return avg_test_loss, accuracy, avg_nll
 
 
-def compute_marginal_bpd(model, target_dists, loader, device, cfg):
+def compute_marginal_bpd(model, target_dists, latent_pis, loader, device, cfg):
     """
     Computes the Bits Per Dimension (BPD) by marginalizing over classes.
     log p(x) = log sum_c p(x|c)p(c)
@@ -68,16 +68,17 @@ def compute_marginal_bpd(model, target_dists, loader, device, cfg):
             
             # logits: (B, K) = log p(x|c) + const
             # compute_hierarchical_logits returns exactly log p(x|c) (including log_det)
-            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
+            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
             
             # Marginalize: log p(x) = log sum_c p(x|c)p(c)
             # Assuming uniform prior p(c) = 1/K
             # log p(x) = logsumexp(logits) - log(K)
-            num_classes = len(target_dists[0]) if isinstance(target_dists, list) else target_dists.batch_shape[0]
+            # num_classes = len(target_dists[0]) if isinstance(target_dists, list) else target_dists.batch_shape[0]
             # Actually target_dists is a list of distributions, one per level.
             # But compute_hierarchical_logits uses them.
-            # We need K. The distributions in target_dists[0] have batch_shape (K,).
-            num_classes = target_dists[0].batch_shape[0]
+            # We need K. The distributions in target_dists[0] have batch_shape (M,).
+            # We can get K from latent_pis[0].shape[0]
+            num_classes = latent_pis[0].shape[0]
             
             log_prob_marginal = torch.logsumexp(logits, dim=1) - np.log(num_classes)
             

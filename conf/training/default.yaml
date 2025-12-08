@@ -26,7 +26,9 @@ scheduler:
 
 # Initialization
 semantic_counts: [2, 6, 48]
+attribute_counts: [30, 60, 100]
 latent_separation: 1.0
+latent_mu_spread: 0.2
 latent_L_scale: 1.0
 latent_noise: 1e-4
 num_classes: 10

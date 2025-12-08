@@ -11,8 +11,8 @@ def standard_normal_logprob(z_tensor):
 def get_target_distributions(latent_mus, latent_Ls):
     """
     Returns a list of MultivariateNormal distributions, one for each level.
-    latent_mus: List of (K, D) tensors
-    latent_Ls: List of (K, D, D) tensors (unconstrained)
+    latent_mus: List of (M_i, D) tensors (Shared Attribute Means)
+    latent_Ls: List of (M_i, D, D) tensors (Shared Attribute Covariances)
     """
     dists = []
     for mu, L_param in zip(latent_mus, latent_Ls):
@@ -27,11 +27,20 @@ def get_target_distributions(latent_mus, latent_Ls):
         diag = F.softplus(torch.diagonal(L_param, dim1=-2, dim2=-1)) + 1e-5
         L = torch.tril(L_param, diagonal=-1) + torch.diag_embed(diag)
         
-        # 2. Enforce Unit Determinant (Volume Preservation)
-        # log_det(L) = sum(log(diag))
-        log_det_L = torch.sum(torch.log(diag), dim=-1, keepdim=True).unsqueeze(-1) # (K, 1, 1)
-        scale = torch.exp(-log_det_L / D) # scalar factor
+        # 2. Enforce Average Unit Determinant (Global Volume Preservation)
+        # We want the geometric mean of determinants to be 1.
+        # This is equivalent to the arithmetic mean of log-determinants being 0.
         
+        # log_det per cluster: (M,)
+        log_det_per_cluster = torch.sum(torch.log(diag), dim=-1) 
+        
+        # Average log_det across clusters: scalar
+        avg_log_det = log_det_per_cluster.mean()
+        
+        # We need to scale L such that the new avg_log_det is 0.
+        scale = torch.exp(-avg_log_det / D)
+        
+        # Apply global scale to all clusters
         L_normalized = L * scale
         
         # Create distribution
@@ -40,13 +49,14 @@ def get_target_distributions(latent_mus, latent_Ls):
     return dists
 
 
-def compute_hierarchical_logits(z, log_det, target_dists, semantic_counts):
+def compute_hierarchical_logits(z, log_det, target_dists, semantic_counts, latent_pis):
     """
-    Computes logits for the soft hierarchical bottleneck.
+    Computes logits for the soft hierarchical bottleneck using Shared GMM.
     z_list: List of tensors [z0, z1, ...] from the model
     log_det: Tensor (B,)
-    target_dists: List of MultivariateNormal batches
+    target_dists: List of MultivariateNormal batches (Shared Attributes)
     semantic_counts: List of integers [C0, C1, ...]
+    latent_pis: List of (K, M_i) tensors (Class Mixture Weights)
     """
     logits = 0.0
     
@@ -68,18 +78,40 @@ def compute_hierarchical_logits(z, log_det, target_dists, semantic_counts):
             z_sem = z_part[:, -n_semantic:]
             
             # 1. Noise Log Prob (Standard Normal)
-            lp_noise = standard_normal_logprob(z_noise.reshape(B, -1)) # (B,)
+            if z_noise.numel() > 0:
+                lp_noise = standard_normal_logprob(z_noise.reshape(B, -1)) # (B,)
+            else:
+                lp_noise = torch.zeros(B, device=z_part.device)
             
-            # 2. Texture Log Prob (Spatial Invariant Class Conditional)
+            # 2. Texture Log Prob (Shared GMM)
             # Flatten spatial dims: (B, n_sem, H, W) -> (B*H*W, n_sem)
             z_sem_flat = z_sem.permute(0, 2, 3, 1).reshape(-1, n_semantic)
             
-            # Compute log_prob per pixel for each class
+            # Compute log_prob per pixel for each ATTRIBUTE cluster
+            # dist has batch_shape (M,), event_shape (n_sem,)
+            # input (N, 1, n_sem) broadcasts to (N, M)
             dist = target_dists[level]
-            lp_sem_pixel = dist.log_prob(z_sem_flat.unsqueeze(1)) # (B*H*W, K)
+            lp_sem_pixel_m = dist.log_prob(z_sem_flat.unsqueeze(1)) # (B*H*W, M)
             
             # Reshape back and sum over spatial dimensions
-            lp_sem_img = lp_sem_pixel.view(B, H, W, -1).sum(dim=(1, 2)) # (B, K)
+            # lp_sem_img_m: (B, M) - Log prob of image being in cluster m
+            lp_sem_img_m = lp_sem_pixel_m.view(B, H, W, -1).sum(dim=(1, 2)) 
+            
+            # Combine with Class Mixture Weights
+            # latent_pis[level]: (K, M)
+            # We need to compute log p(z | y=k) = log sum_m pi_{k,m} p(z | m)
+            # This results in a (B, K) matrix of logits
+            
+            # Expand for broadcasting:
+            # lp_sem_img_m: (B, 1, M)
+            # log_pis: (1, K, M)
+            log_pis = torch.log_softmax(latent_pis[level], dim=-1)
+            
+            # weighted_log_prob: (B, K, M)
+            weighted_log_prob = lp_sem_img_m.unsqueeze(1) + log_pis.unsqueeze(0)
+            
+            # LogSumExp over clusters (dim 2) -> (B, K)
+            lp_sem_img = torch.logsumexp(weighted_log_prob, dim=2)
             
             # Accumulate
             logits = logits + lp_sem_img + lp_noise.unsqueeze(1)
