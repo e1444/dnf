@@ -6,6 +6,7 @@ lr_pi: 0
 gradclip: 1.0
 gradclip_mu: 1.0
 gradclip_L: 1.0
+gradclip_pi: 1.0
 
 weight_decay: 1e-4
 epochs: 30
