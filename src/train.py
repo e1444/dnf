@@ -108,9 +108,10 @@ def train(cfg: DictConfig):
         model.requires_grad_(False)
     if cfg.training.lr_mu == 0:
         attribute_means.requires_grad_(False)
-        latent_pis.requires_grad_(False) # Tie pi learning to mu learning rate for now
     if cfg.training.lr_L == 0:
         attribute_covs.requires_grad_(False)
+    if cfg.training.lr_pi == 0:
+        latent_pis.requires_grad_(False)
 
     optimizer = optim.AdamW(
         model.parameters(),
