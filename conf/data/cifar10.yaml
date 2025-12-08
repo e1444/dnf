@@ -3,12 +3,11 @@ dataset:
   path: "${oc.env:SCRATCH}/dnf/data/cifar10"
   download: true
   train_transform:
-    - type: "RandomHorizontalFlip"
-    - type: "RandomCrop"
+    - type: "RandomAffine"
       params:
-        size: 32
-        padding: 4
-        padding_mode: "reflect"
+        degrees: 0
+        translate: [0.1, 0.1]
+    - type: "RandomHorizontalFlip"
     - type: "Dequantize"
   test_transform:
     - type: "Dequantize"
