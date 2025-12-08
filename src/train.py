@@ -112,8 +112,14 @@ def train(cfg: DictConfig):
         attribute_covs.requires_grad_(False)
     if cfg.training.lr_pi == 0:
         latent_pis.requires_grad_(False)
+        
+    if cfg.training.optimizer == "Adamax":
+        optimizer_cls = optim.Adamax
+    else:
+        optimizer_cls = optim.AdamW
 
-    optimizer = optim.AdamW(
+
+    optimizer = optimizer_cls(
         model.parameters(),
         lr=cfg.training.lr or 0,
         weight_decay=cfg.training.weight_decay or 0

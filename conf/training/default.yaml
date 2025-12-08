@@ -19,6 +19,9 @@ checkpoint_interval: 5
 r_logdet: 1e-5
 label_smoothing: 0.1
 
+# Optimizer settings
+optimizer: "Adamax" # Options: "AdamW", "Adamax"
+
 # Scheduler settings
 scheduler:
   _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
