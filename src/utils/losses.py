@@ -124,6 +124,10 @@ def compute_hierarchical_logits(z, log_det, target_dists, semantic_counts, laten
     # Add Jacobian determinant
     logits = logits + log_det.unsqueeze(1)
     
+    if logits.shape[1] == 1 and len(latent_pis) > 0:
+        num_classes = latent_pis[0].shape[0]
+        logits = logits.expand(-1, num_classes)
+    
     return logits
 
 
