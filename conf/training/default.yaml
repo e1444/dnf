@@ -29,7 +29,6 @@ semantic_counts: [2, 6, 48]
 latent_separation: 1.0
 latent_L_scale: 1.0
 latent_noise: 1e-4
-features: 768
 num_classes: 10
 
 # Lagrange multipliers settings

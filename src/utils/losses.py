@@ -16,6 +16,11 @@ def get_target_distributions(latent_mus, latent_Ls):
     """
     dists = []
     for mu, L_param in zip(latent_mus, latent_Ls):
+        D = L_param.shape[-1]
+        if D == 0:
+            dists.append(None)
+            continue
+
         # 1. Construct valid Cholesky factor
         # L_param is unconstrained
         # Diagonal must be positive
@@ -25,7 +30,6 @@ def get_target_distributions(latent_mus, latent_Ls):
         # 2. Enforce Unit Determinant (Volume Preservation)
         # log_det(L) = sum(log(diag))
         log_det_L = torch.sum(torch.log(diag), dim=-1, keepdim=True).unsqueeze(-1) # (K, 1, 1)
-        D = L.shape[-1]
         scale = torch.exp(-log_det_L / D) # scalar factor
         
         L_normalized = L * scale
@@ -56,32 +60,34 @@ def compute_hierarchical_logits(z, log_det, target_dists, semantic_counts):
         n_semantic = semantic_counts[level]
         B, C, H, W = z_part.shape
         
-        # Split into Noise and Texture
-        # z_noise: (B, C - n_semantic, H, W)
-        # z_texture: (B, n_semantic, H, W)
-        z_noise = z_part[:, :-n_semantic]
-        z_sem = z_part[:, -n_semantic:]
-        
-        # 1. Noise Log Prob (Standard Normal)
-        # Sum over all dimensions (C, H, W)
-        lp_noise = standard_normal_logprob(z_noise.reshape(B, -1)) # (B,)
-        
-        # 2. Texture Log Prob (Spatial Invariant Class Conditional)
-        # Flatten spatial dims: (B, n_sem, H, W) -> (B*H*W, n_sem)
-        z_sem_flat = z_sem.permute(0, 2, 3, 1).reshape(-1, n_semantic)
-        
-        # Compute log_prob per pixel for each class
-        # dist has batch_shape (K,), event_shape (n_sem,)
-        # input (N, 1, n_sem) broadcasts to (N, K)
-        dist = target_dists[level]
-        lp_sem_pixel = dist.log_prob(z_sem_flat.unsqueeze(1)) # (B*H*W, K)
-        
-        # Reshape back and sum over spatial dimensions
-        lp_sem_img = lp_sem_pixel.view(B, H, W, -1).sum(dim=(1, 2)) # (B, K)
-        
-        # Accumulate
-        # Add noise (broadcasts to all classes) + texture (class-specific)
-        logits = logits + lp_sem_img + lp_noise.unsqueeze(1)
+        if n_semantic > 0:
+            # Split into Noise and Texture
+            # z_noise: (B, C - n_semantic, H, W)
+            # z_texture: (B, n_semantic, H, W)
+            z_noise = z_part[:, :-n_semantic]
+            z_sem = z_part[:, -n_semantic:]
+            
+            # 1. Noise Log Prob (Standard Normal)
+            lp_noise = standard_normal_logprob(z_noise.reshape(B, -1)) # (B,)
+            
+            # 2. Texture Log Prob (Spatial Invariant Class Conditional)
+            # Flatten spatial dims: (B, n_sem, H, W) -> (B*H*W, n_sem)
+            z_sem_flat = z_sem.permute(0, 2, 3, 1).reshape(-1, n_semantic)
+            
+            # Compute log_prob per pixel for each class
+            dist = target_dists[level]
+            lp_sem_pixel = dist.log_prob(z_sem_flat.unsqueeze(1)) # (B*H*W, K)
+            
+            # Reshape back and sum over spatial dimensions
+            lp_sem_img = lp_sem_pixel.view(B, H, W, -1).sum(dim=(1, 2)) # (B, K)
+            
+            # Accumulate
+            logits = logits + lp_sem_img + lp_noise.unsqueeze(1)
+        else:
+            # Entire level is Noise
+            z_noise = z_part
+            lp_noise = standard_normal_logprob(z_noise.reshape(B, -1)) # (B,)
+            logits = logits + lp_noise.unsqueeze(1)
         
     # Add Jacobian determinant
     logits = logits + log_det.unsqueeze(1)

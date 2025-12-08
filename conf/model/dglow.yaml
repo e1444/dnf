@@ -4,7 +4,7 @@ in_channels: 3
 num_levels: 3
 steps_per_level: [16, 32, 48]
 hidden_channels: 512
-num_blocks: 2
+num_blocks: 1
 scale_clamp: 0.5
 actnorm_initialization: "data-dependent"
 invconv_initialization: "orthogonal"
