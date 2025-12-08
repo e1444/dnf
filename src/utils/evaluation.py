@@ -31,7 +31,7 @@ def evaluate(model, data_loader, device, cfg, target_dists, latent_pis):
             nll_loss = nll_loss_fn(logits, y_batch)
             
             # reg_loss should be mean over batch to match ce_loss
-            reg_loss = cfg.training.r_logdet * (log_det ** 2).mean()
+            reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
             
             primal_loss = ce_loss + reg_loss
             
