@@ -23,7 +23,8 @@ def evaluate(model, data_loader, device, cfg, target_dists, latent_pis):
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             batch_size = x_batch.size(0)
             
-            z, log_det = model(x_batch)
+            z, log_dets = model(x_batch)
+            log_det = torch.sum(log_dets, dim=0)
             logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
             
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
@@ -64,7 +65,8 @@ def compute_marginal_bpd(model, target_dists, latent_pis, loader, device, cfg):
             x = x.to(device)
             
             # Forward Pass
-            z, log_det = model(x)
+            z, log_dets = model(x)
+            log_det = torch.sum(log_dets, dim=0)
             
             # logits: (B, K) = log p(x|c) + const
             # compute_hierarchical_logits returns exactly log p(x|c) (including log_det)
@@ -95,7 +97,7 @@ def compute_marginal_bpd(model, target_dists, latent_pis, loader, device, cfg):
     return bpd
 
 
-def get_all_predictions(model, data_loader, device, cfg, target_dists):
+def get_all_predictions(model, data_loader, device, cfg, target_dists, latent_pis):
     """
     Get model predictions for an entire dataset.
     """
@@ -109,8 +111,9 @@ def get_all_predictions(model, data_loader, device, cfg, target_dists):
         for x_batch, y_batch in data_loader:
             x_batch = x_batch.to(device)
             
-            z, log_det = model(x_batch)
-            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
+            z, log_dets = model(x_batch)
+            log_det = torch.sum(log_dets, dim=0)
+            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
             
             probabilities = torch.softmax(logits, dim=1)
             confidences, y_pred = torch.max(probabilities, 1)
@@ -214,7 +217,7 @@ def calculate_brier_score(y_true, probabilities):
     print(f"Multi-class Brier Score: {brier_score:.4f}")
     return brier_score
 
-def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, target_dists):
+def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, target_dists, latent_pis):
     """
     Get and plot ROC curve and calculate AUROC for OOD detection.
     """
@@ -226,8 +229,9 @@ def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device,
             for x_batch, _ in loader:
                 x_batch = x_batch.to(device)
                 
-                z, log_det = model(x_batch)
-                logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
+                z, log_dets = model(x_batch)
+                log_det = torch.sum(log_dets, dim=0)
+                logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
                 
                 probabilities = torch.softmax(logits, dim=1)
                 confidences, _ = torch.max(probabilities, 1)

@@ -61,28 +61,29 @@ class DGLOWNetwork(nn.Module):
         self.split_levels = self.split_levels[:-1]  # Remove last split
 
     def forward(self, x):
-        total_log_det = torch.zeros(x.shape[0], device=x.device)
+        log_dets = []
         x, log_det = self.logit_transform(x)
-        total_log_det += log_det
+        log_dets.append(log_det)
         
         z = []
         for level in self.split_levels:
             if isinstance(level, nn.ModuleList): # Flow steps
-                x, log_det_squeeze = self.squeeze(x)
-                total_log_det += log_det_squeeze
+                x, log_det = self.squeeze(x)
+                log_dets.append(log_det)
                 
                 for flow_step in level:
                     if self.checkpoint_grads and x.requires_grad:
                         x, log_det = checkpoint.checkpoint(flow_step, x, use_reentrant=False)
                     else:
                         x, log_det = flow_step(x)
-                    total_log_det += log_det
+                    log_dets.append(log_det)
             elif isinstance(level, Split): # Split
                 x, z_part = level(x)
                 z.append(z_part)
 
         z.append(x)
-        return z, total_log_det
+        log_dets = torch.stack(log_dets, dim=0)
+        return z, log_dets
     
     def inverse(self, z):
         total_log_det = torch.zeros(z[0].shape[0], device=z[0].device)
@@ -134,7 +135,6 @@ if __name__ == "__main__":
         in_channels=2,
         hidden_channels=64,
         num_blocks=1,
-        dropout=0.0,
         scale_clamp=1.0,
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"
@@ -161,7 +161,6 @@ if __name__ == "__main__":
         steps_per_level=[4, 4, 4],
         hidden_channels=64,
         num_blocks=1,
-        dropout=0.0,
         scale_clamp=1.0,
         actnorm_initialization="data-dependent",
         invconv_initialization="orthogonal"

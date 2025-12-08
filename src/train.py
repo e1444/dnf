@@ -194,7 +194,8 @@ def train(cfg: DictConfig):
             optimizer.zero_grad()
 
             # Forward pass
-            z, log_det = model(x_batch)
+            z, log_dets = model(x_batch)
+            log_det = torch.sum(log_dets, dim=0)
             
             # Check for NaNs in model output immediately
             if torch.isnan(log_det).any() or torch.isinf(log_det).any():
@@ -211,7 +212,7 @@ def train(cfg: DictConfig):
             
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             nll_loss = nll_loss_fn(logits, y_batch)
-            reg_loss = cfg.training.r_logdet * (log_det ** 2).mean()
+            reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
             
             # Primal Objective
             primal_loss = ce_loss + reg_loss
@@ -235,7 +236,7 @@ def train(cfg: DictConfig):
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
             torch.nn.utils.clip_grad_norm_(attribute_means, max_norm=cfg.training.gradclip_mu)
             torch.nn.utils.clip_grad_norm_(attribute_covs, max_norm=cfg.training.gradclip_L)
-            torch.nn.utils.clip_grad_norm_(latent_pis, max_norm=cfg.training.gradclip_mu)
+            torch.nn.utils.clip_grad_norm_(latent_pis, max_norm=cfg.training.gradclip_pi)
             
             optimizer.step()
             ema_model.update_parameters(model)
