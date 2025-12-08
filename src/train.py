@@ -51,7 +51,7 @@ def train(cfg: DictConfig):
             L *= cfg.training.latent_L_scale
             L += torch.randn_like(L) * 0.01
             latent_Ls.append(nn.Parameter(L))
-        
+            
     if cfg.training.lr == 0:
         model.requires_grad_(False)
     if cfg.training.lr_mu == 0:
@@ -125,8 +125,8 @@ def train(cfg: DictConfig):
                 current_step = epoch * steps_per_epoch + batch_idx
                 warmup_factor = (current_step + 1) / total_warmup_steps
                 for param_group in optimizer.param_groups:
-                    base_lr = cfg.training.lr_mu if param_group['params'][0] in latent_mus else \
-                              cfg.training.lr_L if param_group['params'][0] in latent_Ls else \
+                    base_lr = cfg.training.lr_mu if any(param_group['params'][0] is t for t in latent_mus) else \
+                              cfg.training.lr_L if any(param_group['params'][0] is t for t in latent_Ls) else \
                               cfg.training.lr
                     param_group['lr'] = base_lr * warmup_factor
             
