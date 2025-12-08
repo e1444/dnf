@@ -135,6 +135,17 @@ def train(cfg: DictConfig):
 
             # Forward pass
             z, log_det = model(x_batch)
+            
+            # Check for NaNs in model output immediately
+            if torch.isnan(log_det).any() or torch.isinf(log_det).any():
+                print(f"CRITICAL ERROR: NaN/Inf detected in log_det at epoch {epoch} batch {batch_idx}.")
+                return
+
+            for i, z_part in enumerate(z):
+                if torch.isnan(z_part).any() or torch.isinf(z_part).any():
+                    print(f"CRITICAL ERROR: NaN/Inf detected in z[{i}] at epoch {epoch} batch {batch_idx}.")
+                    return
+            
             target_dists = get_target_distributions(latent_mus, latent_Ls)
             logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts)
             
