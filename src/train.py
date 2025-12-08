@@ -119,7 +119,7 @@ def train(cfg: DictConfig):
     )
     optimizer.add_param_group({'params': attribute_means, 'lr': cfg.training.lr_mu, 'weight_decay': 0.0})
     optimizer.add_param_group({'params': attribute_covs, 'lr': cfg.training.lr_L, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': latent_pis, 'lr': cfg.training.lr_mu, 'weight_decay': 0.0}) # Use lr_mu for weights
+    optimizer.add_param_group({'params': latent_pis, 'lr': cfg.training.lr_pi, 'weight_decay': 0.0}) # Use lr_mu for weights
     
     # --- Augmented Lagrangian Setup ---
     log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
