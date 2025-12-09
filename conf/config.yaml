@@ -2,7 +2,7 @@
 defaults:
   - _self_
   - data: mnist
-  - model: dglow
+  - model: glow
   - training: default
 
 project:
@@ -26,6 +26,7 @@ wandb:
   project: DNF
   entity: e1444-university-of-toronto
   name: "dnf-run-${now:%Y-%m-%d-%H-%M-%S}"
+  group: "MNIST"
 
 logging:
   level: INFO

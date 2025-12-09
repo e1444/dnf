@@ -5,10 +5,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
-from .losses import nll_loss_fn, ce_loss_fn, compute_hierarchical_logits
+from .losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 
 
-def evaluate(model, data_loader, device, cfg, target_dists, latent_pis):
+def evaluate(model, data_loader, device, cfg, priors):
     """
     Evaluate the model on a given dataset.
     """
@@ -18,17 +18,31 @@ def evaluate(model, data_loader, device, cfg, target_dists, latent_pis):
     correct = 0
     total_samples = 0
     
+    semantic_counts = cfg.training.semantic_counts
+
     with torch.no_grad():
         for x_batch, y_batch in data_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             batch_size = x_batch.size(0)
             
-            z, log_dets = model(x_batch)
+            outs, log_dets = model(x_batch)
+            
+            # Compute Logits
+            logits = 0
+            for i in range(cfg.model.num_levels):
+                spriors, nprior = priors[i]
+                sc = semantic_counts[i]
+                z_prev, h = outs[i]
+                
+                level_logits = compute_level_logits(z_prev, h, spriors, nprior, sc)
+                logits = logits + level_logits
+                    
+            assert not isinstance(logits, int), "Logits computation failed; logits is None."
+            
             log_det = torch.sum(log_dets, dim=0)
-            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
             
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
-            nll_loss = nll_loss_fn(logits, y_batch)
+            nll_loss = nll_loss_fn(logits + log_det.unsqueeze(1), y_batch)
             
             # reg_loss should be mean over batch to match ce_loss
             reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
@@ -51,7 +65,7 @@ def evaluate(model, data_loader, device, cfg, target_dists, latent_pis):
     return avg_test_loss, accuracy, avg_nll
 
 
-def compute_marginal_bpd(model, target_dists, latent_pis, loader, device, cfg):
+def compute_marginal_bpd(model, priors, loader, device, cfg):
     """
     Computes the Bits Per Dimension (BPD) by marginalizing over classes.
     log p(x) = log sum_c p(x|c)p(c)
@@ -59,29 +73,34 @@ def compute_marginal_bpd(model, target_dists, latent_pis, loader, device, cfg):
     total_nll_bits = 0.0
     total_dims = 0
     
+    semantic_counts = cfg.training.semantic_counts
+    num_classes = cfg.training.num_classes
+    
     model.eval()
     with torch.no_grad():
         for x, _ in loader:
             x = x.to(device)
             
             # Forward Pass
-            z, log_dets = model(x)
-            log_det = torch.sum(log_dets, dim=0)
+            outs, log_dets = model(x)
             
-            # logits: (B, K) = log p(x|c) + const
-            # compute_hierarchical_logits returns exactly log p(x|c) (including log_det)
-            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
+            # Compute Logits
+            logits = 0
+            for i in range(cfg.model.num_levels):
+                spriors, nprior = priors[i]
+                sc = semantic_counts[i]
+                z, h = outs[i]
+                
+                level_logits = compute_level_logits(z, h, spriors, nprior, sc)
+                logits = logits + level_logits
+                    
+            assert not isinstance(logits, int), "Logits computation failed; logits is None."
+            
+            log_det = torch.sum(log_dets, dim=0)
+            logits = logits + log_det.unsqueeze(1)
             
             # Marginalize: log p(x) = log sum_c p(x|c)p(c)
             # Assuming uniform prior p(c) = 1/K
-            # log p(x) = logsumexp(logits) - log(K)
-            # num_classes = len(target_dists[0]) if isinstance(target_dists, list) else target_dists.batch_shape[0]
-            # Actually target_dists is a list of distributions, one per level.
-            # But compute_hierarchical_logits uses them.
-            # We need K. The distributions in target_dists[0] have batch_shape (M,).
-            # We can get K from latent_pis[0].shape[0]
-            num_classes = latent_pis[0].shape[0]
-            
             log_prob_marginal = torch.logsumexp(logits, dim=1) - np.log(num_classes)
             
             # NLL in bits
@@ -97,7 +116,7 @@ def compute_marginal_bpd(model, target_dists, latent_pis, loader, device, cfg):
     return bpd
 
 
-def get_all_predictions(model, data_loader, device, cfg, target_dists, latent_pis):
+def get_all_predictions(model, data_loader, device, cfg, priors):
     """
     Get model predictions for an entire dataset.
     """
@@ -106,14 +125,29 @@ def get_all_predictions(model, data_loader, device, cfg, target_dists, latent_pi
     all_y_pred = []
     all_probs = []
     all_confs = []
+    
+    semantic_counts = cfg.training.semantic_counts
 
     with torch.no_grad():
         for x_batch, y_batch in data_loader:
             x_batch = x_batch.to(device)
             
-            z, log_dets = model(x_batch)
+            outs, log_dets = model(x_batch)
+            
+            # Compute Logits
+            logits = 0
+            for i in range(cfg.model.num_levels):
+                spriors, nprior = priors[i]
+                sc = semantic_counts[i]
+                z, h = outs[i]
+                
+                level_logits = compute_level_logits(z, h, spriors, nprior, sc)
+                logits = logits + level_logits
+                    
+            assert not isinstance(logits, int), "Logits computation failed; logits is None."
+            
             log_det = torch.sum(log_dets, dim=0)
-            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
+            logits = logits + log_det.unsqueeze(1)
             
             probabilities = torch.softmax(logits, dim=1)
             confidences, y_pred = torch.max(probabilities, 1)
@@ -217,11 +251,13 @@ def calculate_brier_score(y_true, probabilities):
     print(f"Multi-class Brier Score: {brier_score:.4f}")
     return brier_score
 
-def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, target_dists, latent_pis):
+def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, priors):
     """
     Get and plot ROC curve and calculate AUROC for OOD detection.
     """
     model.eval()
+    
+    semantic_counts = cfg.training.semantic_counts
     
     def get_confidences(loader):
         all_confs = []
@@ -229,9 +265,22 @@ def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device,
             for x_batch, _ in loader:
                 x_batch = x_batch.to(device)
                 
-                z, log_dets = model(x_batch)
+                outs, log_dets = model(x_batch)
+                
+                # Compute Logits
+                logits = 0
+                for i in range(cfg.model.num_levels):
+                    spriors, nprior = priors[i]
+                    sc = semantic_counts[i]
+                    z, h = outs[i]
+                    
+                    level_logits = compute_level_logits(z, h, spriors, nprior, sc)
+                    logits = logits + level_logits
+                        
+                assert not isinstance(logits, int), "Logits computation failed; logits is None."
+                
                 log_det = torch.sum(log_dets, dim=0)
-                logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
+                logits = logits + log_det.unsqueeze(1)
                 
                 probabilities = torch.softmax(logits, dim=1)
                 confidences, _ = torch.max(probabilities, 1)

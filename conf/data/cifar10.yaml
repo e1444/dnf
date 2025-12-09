@@ -1,6 +1,6 @@
 dataset:
   name: "CIFAR10"
-  path: "${oc.env:SCRATCH}/dnf/data/cifar10"
+  path: "${paths.data}/cifar10"
   download: true
   train_transform:
     - type: "RandomAffine"

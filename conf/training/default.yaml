@@ -1,12 +1,8 @@
 lr: 1e-3
-lr_mu: 0
-lr_L: 0
-lr_pi: 0
+lr_prior: 0.0
 
 gradclip: 1.0
-gradclip_mu: 1.0
-gradclip_L: 1.0
-gradclip_pi: 1.0
+gradclip_prior: 1.0
 
 weight_decay: 1e-4
 epochs: 30
@@ -31,11 +27,6 @@ scheduler:
 
 # Initialization
 semantic_counts: [2, 6, 48]
-attribute_counts: [30, 60, 100]
-latent_separation: 1.0
-latent_mu_spread: 0.2
-latent_L_scale: 1.0
-latent_noise: 1e-4
 num_classes: 10
 
 # Lagrange multipliers settings
@@ -47,7 +38,3 @@ nll_constraint: 0.0
 
 resume_from_checkpoint: null
 reset_optimizer: false
-reset_freeze: true
-freeze_steps:
-  start: null
-  end: null

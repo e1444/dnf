@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.linalg as la
 
+
 class LogitTransform(nn.Module):
     """
     Maps data from [0, 1] to (-inf, inf) using logit(alpha + (1 - 2*alpha) * x).
@@ -39,7 +40,8 @@ class LogitTransform(nn.Module):
         )
         return x, log_det
 
-class ActNorm(nn.Module):
+
+class ActNorm2d(nn.Module):
     def __init__(self, num_channels, initialization="identity"):
         super().__init__()
         self.logs = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
@@ -76,110 +78,105 @@ class ActNorm(nn.Module):
         log_det = -torch.sum(self.logs) * h * w
         return x, log_det
 
-class Squeeze(nn.Module):
-    def __init__(self):
-        super().__init__()
 
-    def forward(self, x):
-        b, c, h, w = x.size()
-        x = x.view(b, c, h // 2, 2, w // 2, 2)
-        x = x.permute(0, 1, 3, 5, 2, 4).contiguous()
-        x = x.view(b, c * 4, h // 2, w // 2)
-        # Return a zero tensor with shape (batch_size,) on the correct device
-        log_det = torch.zeros(b, device=x.device)
-        return x, log_det
-    
-    def inverse(self, x):
-        b, c, h, w = x.size()
-        x = x.view(b, c // 4, 2, 2, h, w)
-        x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
-        x = x.view(b, c // 4, h * 2, w * 2)
-        # Return a zero tensor with shape (batch_size,) on the correct device
-        log_det = torch.zeros(b, device=x.device)
-        return x, log_det
-    
-class GatedConv2d(nn.Module):
-    """
-    Combines Conv2d and Gated Activation.
-    Flow++ uses: Conv -> Split -> a * sigmoid(b)
-    Your stable version: Conv -> Split -> tanh(a) * sigmoid(b)
-    """
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
+class Conv2d(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=(3, 3),
+        stride=(1, 1),
+        padding=1,
+        do_actnorm=True,
+        weight_std=0.0
+    ):
         super().__init__()
-        self.conv = nn.utils.parametrizations.weight_norm(
-            nn.Conv2d(in_channels, out_channels * 2, kernel_size, padding=padding)
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            bias=(not do_actnorm),
         )
+        
+        self.conv.weight.data.normal_(mean=0.0, std=weight_std)
+        if not do_actnorm:
+            self.conv.bias.data.zero_()
+        else:
+            self.actnorm = ActNorm2d(out_channels)
+
+        self.do_actnorm = do_actnorm
+
 
     def forward(self, x):
         x = self.conv(x)
-        a, b = x.chunk(2, dim=1)
-        return torch.tanh(a) * torch.sigmoid(b)
+        if self.do_actnorm:
+            x, _ = self.actnorm(x)
+        return x
 
-class GatedResNetBlock(nn.Module):
-    """
-    Flow++ Residual Block:
-    x -> Conv(1x1) -> GatedAct -> Conv(3x3) -> GatedAct -> Conv(1x1) -> + x
-    """
-    def __init__(self, channels):
+
+class Conv2dZeros(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=(3, 3),
+        stride=(1, 1),
+        padding=1,
+        logscale_factor=3,
+    ):
         super().__init__()
-        self.conv1 = GatedConv2d(channels, channels, kernel_size=1, padding=0)
-        self.conv2 = GatedConv2d(channels, channels, kernel_size=3, padding=1)
-        self.conv3 = GatedConv2d(channels, channels, kernel_size=1, padding=0)
 
-    def forward(self, x):
-        residual = x
-        out = self.conv1(x)
-        out = self.conv2(out)
-        out = self.conv3(out)
-        return residual + out
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+        )
 
-class FlowPlusPlusCouplingNet(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2):
-        super().__init__()
-        # Initial projection
-        self.in_conv = nn.Conv2d(in_channels, hidden_channels, 3, padding=1)
-        
-        # Stack of Residual Blocks
-        self.blocks = nn.ModuleList([
-            GatedResNetBlock(hidden_channels) 
-            for _ in range(num_blocks)
-        ])
-        
-        # Final projection to output parameters (s, t)
-        self.out_conv = nn.Conv2d(hidden_channels, out_channels, 3, padding=1)
-        
-        # Zero initialization for the last layer (Identity Init)
-        self.out_conv.weight.data.zero_()
-        self.out_conv.bias.data.zero_()
+        self.conv.weight.data.zero_()
+        self.conv.bias.data.zero_()
 
-    def forward(self, x):
-        x = self.in_conv(x)
-        for block in self.blocks:
-            x = block(x)
-        return self.out_conv(x)
+        self.logscale_factor = logscale_factor
+        self.logs = nn.Parameter(torch.zeros(out_channels, 1, 1))
 
-class CNNCouplingLayer(nn.Module):
+    def forward(self, input):
+        output = self.conv(input)
+        return output * torch.exp(self.logs * self.logscale_factor)
+
+
+class AffineCouplingLayer(nn.Module):
     scale_clamp: torch.Tensor
     
-    def __init__(self, in_channels, hidden_channels=512, num_blocks=2, scale_clamp=1.0):
+    def __init__(self, in_channels, hidden_channels=512, scale_clamp=1.0):
         super().__init__()
+        assert in_channels % 2 == 0, "in_channels must be even"
         self.in_channels = in_channels
         self.split_size = in_channels // 2
         
-        self.coupling_net = FlowPlusPlusCouplingNet(
-            self.split_size, 
-            hidden_channels, 
-            self.in_channels,
-            num_blocks=num_blocks
+        self.actnorm = ActNorm2d(in_channels)
+        self.permute = Invertible1x1Conv(in_channels)
+        self.coupling_net = nn.Sequential(
+            Conv2d(self.split_size, hidden_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            Conv2d(hidden_channels, hidden_channels, kernel_size=1, padding=0),
+            nn.ReLU(),
+            Conv2dZeros(hidden_channels, self.split_size * 2, kernel_size=3, padding=1)
         )
+        self.split = Split()
         
         self.register_buffer("scale_clamp", torch.tensor(scale_clamp))
 
-
     def forward(self, x):
-        x_a, x_b = x.split(self.split_size, dim=1)
+        x, total_log_det = self.actnorm(x)
+        x, log_det = self.permute(x)
+        total_log_det = total_log_det + log_det
+        
+        x_a, x_b = self.split(x, method="split")
         s_and_t = self.coupling_net(x_a)
-        log_s, t = s_and_t.split(self.split_size, dim=1)
+        log_s, t = self.split(s_and_t, method="cross")
         
         scale = self.scale_clamp
         log_s = (2.0 * scale / torch.pi) * torch.atan(log_s / scale)
@@ -191,9 +188,9 @@ class CNNCouplingLayer(nn.Module):
         return y, log_det
 
     def inverse(self, y):
-        y_a, y_b = y.split(self.split_size, dim=1)
+        y_a, y_b = self.split(y, method="split")
         s_and_t = self.coupling_net(y_a)
-        log_s, t = s_and_t.split(self.split_size, dim=1)
+        log_s, t = self.split(s_and_t, method="cross")
         
         scale = self.scale_clamp
         log_s = (2.0 * scale / torch.pi) * torch.atan(log_s / scale)
@@ -202,7 +199,71 @@ class CNNCouplingLayer(nn.Module):
         x_b = (y_b - t) / s
         x = torch.cat([y_a, x_b], dim=1)
         log_det = -torch.sum(log_s, dim=[1, 2, 3])
+        
+        x, log_det_perm = self.permute.inverse(x)
+        log_det = log_det + log_det_perm
+        
+        x, log_det_act = self.actnorm.inverse(x)
+        log_det = log_det + log_det_act
+
         return x, log_det
+
+
+class Split(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, method="split"):
+        if method == "split":
+            x1, x2 = x.chunk(2, dim=1)
+            return x1, x2
+        elif method == "cross":
+            x1 = x[:, 0::2, ...]
+            x2 = x[:, 1::2, ...]
+            return x1, x2
+        else:
+            raise ValueError(f"Unknown split method: {method}")
+
+    def inverse(self, x1, x2, method="split"):
+        if method == "split":
+            x = torch.cat((x1, x2), dim=1)
+            return x, 0
+        elif method == "cross":
+            b, c1, h, w = x1.size()
+            c2 = x2.size(1)
+            c = c1 + c2
+            x = torch.zeros(b, c, h, w, device=x1.device, dtype=x1.dtype)
+            x[:, 0::2, ...] = x1
+            x[:, 1::2, ...] = x2
+            return x, 0
+        else:
+            raise ValueError(f"Unknown split method: {method}")
+
+
+class Squeeze(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, factor=2):
+        b, c, h, w = x.size()
+        assert h % factor == 0 and w % factor == 0, "Height and Width must be divisible by factor"
+        
+        x = x.view(b, c, h // factor, factor, w // factor, factor)
+        x = x.permute(0, 1, 3, 5, 2, 4).contiguous()
+        x = x.view(b, c * (factor ** 2), h // factor, w // factor)
+        log_det = torch.zeros(b, device=x.device)
+        return x, log_det
+    
+    def inverse(self, x, factor=2):
+        b, c, h, w = x.size()
+        assert c % (factor ** 2) == 0, "Number of channels must be divisible by factor squared"
+        
+        x = x.view(b, c // (factor ** 2), factor, factor, h, w)
+        x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
+        x = x.view(b, c // (factor ** 2), h * factor, w * factor)
+        log_det = torch.zeros(b, device=x.device)
+        return x, log_det
+    
 
 class Invertible1x1Conv(nn.Module):
     p: torch.Tensor
@@ -262,17 +323,25 @@ class Invertible1x1Conv(nn.Module):
         log_det = -torch.sum(self.log_s) * h * w_dim
         return x, log_det
 
-class Split(nn.Module):
-    def __init__(self, num_channels):
-        super().__init__()
-
-    def forward(self, x):
-        x1, x2 = x.chunk(2, dim=1)
-        return x1, x2
-
-    def inverse(self, x1, x2):
-        x = torch.cat((x1, x2), dim=1)
-        return x, 0
     
 if __name__ == "__main__":
-    pass
+    # --- Test FlowStep Invertibility ---
+    print("--- Testing FlowStep Invertibility ---")
+    x = torch.randn(8, 4, 4, 4).clamp(min=0.0, max=1.0)
+    layer = AffineCouplingLayer(
+        in_channels=4,
+        hidden_channels=64,
+        scale_clamp=1.0,
+    )
+    z, log_det = layer(x)
+    x_recon, log_det_inv = layer.inverse(z)
+    
+    recon_error_step = torch.abs(x - x_recon).mean().item()
+    log_det_error_step = torch.abs(log_det + log_det_inv).mean().item()
+
+    print(f"FlowStep Reconstruction Error: {recon_error_step:.2e}")
+    print(f"FlowStep Log-Determinant Sum: {log_det_error_step:.2e}")
+    if recon_error_step < 1e-5 and log_det_error_step < 1e-5:
+        print("[STATUS] PASSED")
+    else:
+        print("[STATUS] FAILED")

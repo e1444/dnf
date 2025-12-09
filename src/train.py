@@ -10,7 +10,8 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
-from src.utils.losses import nll_loss_fn, ce_loss_fn, get_target_distributions, compute_hierarchical_logits
+from src.models.prior import ConditionalPrior, LearnedPrior
+from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -26,7 +27,8 @@ def train(cfg: DictConfig):
         project=cfg.wandb.project, 
         entity=cfg.wandb.entity, 
         config=config_dict, # type: ignore
-        name=cfg.wandb.name
+        name=cfg.wandb.name,
+        group=cfg.wandb.group
     )
     
     # Load data
@@ -38,95 +40,67 @@ def train(cfg: DictConfig):
     # Shared GMM Parameters
     num_classes = cfg.training.num_classes
     semantic_counts = cfg.training.semantic_counts
-    attribute_counts = cfg.training.attribute_counts
     
     assert len(semantic_counts) == cfg.model.num_levels, \
         "Length of semantic_counts must match number of levels in the model."
-    assert len(attribute_counts) == cfg.model.num_levels, \
-        "Length of attribute_counts must match number of levels in the model."
     
-    with torch.no_grad():
-        attribute_means = nn.ParameterList()
-        attribute_covs = nn.ParameterList()
-        latent_pis = nn.ParameterList() # Class weights per level
+    priors = []
+    prior_params = nn.ModuleList()
+    for i in range(cfg.model.num_levels):
+        shape, sc = model.output_shapes[i], semantic_counts[i]
+        C, H, W = shape
+        assert 0 <= sc <= C, "Semantic count must be between 0 and total channels."
+        nc = C - sc # Non-semantic channels
         
-        for num_attr, dim in zip(attribute_counts, semantic_counts):
-            # Initialize Attribute Means (M, D)
-            # Strategy: Assign roughly num_attr / K components to each class initially
-            
-            mu = torch.zeros(num_attr, dim, device=device)
-            pis = torch.zeros(num_classes, num_attr, device=device)
-            
-            # 1. Generate Class Centers (K, D)
-            class_centers = torch.randn(num_classes, dim, device=device)
-            class_centers = class_centers / (class_centers.norm(dim=1, keepdim=True) + 1e-8)
-            class_centers *= cfg.training.latent_separation
-            
-            # 2. Assign attributes to classes
-            components_per_class = num_attr // num_classes
-            remainder = num_attr % num_classes
-            
-            current_idx = 0
-            for k in range(num_classes):
-                n_comps = components_per_class + (1 if k < remainder else 0)
+        if i < cfg.model.num_levels - 1:
+            spriors, nprior = [], None
+            for _ in range(num_classes):
+                sprior = None
+                if sc > 0:
+                    sprior = ConditionalPrior(in_channels=C, out_channels=sc, cov_method="diag")
+                    prior_params.append(sprior)
+                spriors.append(sprior)
+            if nc > 0:
+                nprior = ConditionalPrior(in_channels=C, out_channels=nc, cov_method="diag")
+                prior_params.append(nprior)
                 
-                # Initialize these components around the class center
-                # Add noise to spread them out slightly around the center
-                center = class_centers[k] # (D,)
-                
-                # (n_comps, D)
-                # We use a smaller spread (0.2) so they stay relatively local to the class center
-                cluster_means = center.unsqueeze(0) + torch.randn(n_comps, dim, device=device) * cfg.training.latent_mu_spread
-                
-                mu[current_idx : current_idx + n_comps] = cluster_means
-                
-                # Initialize weights: Strong preference for these components
-                # We use logits for pi, so a large positive value means high probability
-                pis[k, current_idx : current_idx + n_comps] = 3.0 # High logit
-                # The rest remain 0.0 (neutral/low)
-                
-                current_idx += n_comps
-            
-            # Add global noise to break symmetries
-            mu += torch.randn_like(mu) * 0.01
-            
-            # Set the parameters
-            attribute_means.append(nn.Parameter(mu))
-            
-            # Covariances (Standard)
-            L = torch.eye(dim, device=device).unsqueeze(0).repeat(num_attr, 1, 1)
-            L *= cfg.training.latent_L_scale
-            L += torch.randn_like(L) * 0.01
-            attribute_covs.append(nn.Parameter(L))
-            
-            # Weights (with the bias we created)
-            # Add noise to pis to allow gradient to flow even for "off" components
-            pis += torch.randn_like(pis) * 0.1
-            latent_pis.append(nn.Parameter(pis))
-            
+            priors.append((spriors, nprior))
+        else:
+            # Learned Prior at the last level
+            spriors, nprior = [], None
+            for _ in range(num_classes):
+                sprior = None
+                if sc > 0:
+                    sprior = LearnedPrior(shape=(sc, H, W), cov_method="diag")
+                    prior_params.append(sprior)
+                spriors.append(sprior)
+            if nc > 0:
+                nprior = LearnedPrior(shape=(nc, H, W), cov_method="diag")
+                prior_params.append(nprior)
+            priors.append((spriors, nprior))
+    
+    prior_params.to(device)
+    
     if cfg.training.lr == 0:
         model.requires_grad_(False)
-    if cfg.training.lr_mu == 0:
-        attribute_means.requires_grad_(False)
-    if cfg.training.lr_L == 0:
-        attribute_covs.requires_grad_(False)
-    if cfg.training.lr_pi == 0:
-        latent_pis.requires_grad_(False)
+    if cfg.training.lr_prior == 0:
+        prior_params.requires_grad_(False)
         
     if cfg.training.optimizer == "Adamax":
         optimizer_cls = optim.Adamax
     else:
         optimizer_cls = optim.AdamW
 
-
     optimizer = optimizer_cls(
         model.parameters(),
         lr=cfg.training.lr or 0,
         weight_decay=cfg.training.weight_decay or 0
     )
-    optimizer.add_param_group({'params': attribute_means, 'lr': cfg.training.lr_mu, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': attribute_covs, 'lr': cfg.training.lr_L, 'weight_decay': 0.0})
-    optimizer.add_param_group({'params': latent_pis, 'lr': cfg.training.lr_pi, 'weight_decay': 0.0}) # Use lr_mu for weights
+    optimizer.add_param_group({
+        'params': prior_params.parameters(),
+        'lr': cfg.training.lr_prior,
+        'weight_decay': cfg.training.weight_decay
+    })
     
     # --- Augmented Lagrangian Setup ---
     log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
@@ -139,33 +113,13 @@ def train(cfg: DictConfig):
         print(f"Resuming training from {cfg.training.resume_from_checkpoint}")
         checkpoint = torch.load(cfg.training.resume_from_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
-        
-        # Load latent params
-        if "attribute_means" in checkpoint:
-            for i, p in enumerate(attribute_means): p.data.copy_(checkpoint['attribute_means'][i])
-        elif "latent_mus" in checkpoint:
-            for i, p in enumerate(attribute_means): p.data.copy_(checkpoint['latent_mus'][i])
-        if "attribute_covs" in checkpoint:
-            for i, p in enumerate(attribute_covs): p.data.copy_(checkpoint['attribute_covs'][i])
-        
-        if "latent_pis" in checkpoint:
-            for i, p in enumerate(latent_pis): p.data.copy_(checkpoint['latent_pis'][i])
+        prior_params.load_state_dict(checkpoint['priors_state_dict'])
         
         if not cfg.training.reset_optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'log_alpha' in checkpoint: log_alpha.data.copy_(checkpoint['log_alpha'])
             if 'alpha_optimizer_state_dict' in checkpoint: alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
-        
-    if cfg.training.reset_freeze:
-        model.set_freeze_steps(freeze=False, start=0, end=-1)
-    
-    if cfg.training.freeze_steps.start is not None or cfg.training.freeze_steps.end is not None:
-        model.set_freeze_steps(
-            freeze=True,
-            start=cfg.training.freeze_steps.start,
-            end=cfg.training.freeze_steps.end
-        )
         
     # Initialize EMA model
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
@@ -190,17 +144,18 @@ def train(cfg: DictConfig):
             if epoch < cfg.training.warmup_epochs:
                 current_step = epoch * steps_per_epoch + batch_idx
                 warmup_factor = (current_step + 1) / total_warmup_steps
+                
                 for param_group in optimizer.param_groups:
-                    base_lr = cfg.training.lr_mu if any(param_group['params'][0] is t for t in attribute_means) else \
-                              cfg.training.lr_L if any(param_group['params'][0] is t for t in attribute_covs) else \
-                              cfg.training.lr
-                    param_group['lr'] = base_lr * warmup_factor
+                    if 'target_lr' not in param_group:
+                        param_group['target_lr'] = param_group['lr']
+                    
+                    param_group['lr'] = param_group['target_lr'] * warmup_factor
             
             # --- Primal Step ---
             optimizer.zero_grad()
 
             # Forward pass
-            z, log_dets = model(x_batch)
+            outs, log_dets = model(x_batch)
             log_det = torch.sum(log_dets, dim=0)
             
             # Check for NaNs in model output immediately
@@ -208,16 +163,29 @@ def train(cfg: DictConfig):
                 print(f"CRITICAL ERROR: NaN/Inf detected in log_det at epoch {epoch} batch {batch_idx}.")
                 return
 
-            for i, z_part in enumerate(z):
-                if torch.isnan(z_part).any() or torch.isinf(z_part).any():
+            for i, out in enumerate(outs):
+                z, h = out
+                if z is not None and (torch.isnan(z).any() or torch.isinf(z).any()):
                     print(f"CRITICAL ERROR: NaN/Inf detected in z[{i}] at epoch {epoch} batch {batch_idx}.")
                     return
+                
+                if torch.isnan(h).any() or torch.isinf(h).any():
+                    print(f"CRITICAL ERROR: NaN/Inf detected in h[{i}] at epoch {epoch} batch {batch_idx}.")
+                    return
             
-            target_dists = get_target_distributions(attribute_means, attribute_covs)
-            logits = compute_hierarchical_logits(z, log_det, target_dists, cfg.training.semantic_counts, latent_pis)
+            logits = 0
+            for i in range(cfg.model.num_levels):
+                spriors, nprior = priors[i]
+                sc = semantic_counts[i]
+                z, h = outs[i]
+                
+                level_logits = compute_level_logits(z, h, spriors, nprior, sc)
+                logits = logits + level_logits
+                    
+            assert not isinstance(logits, int), "Logits computation failed; logits is None."
             
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
-            nll_loss = nll_loss_fn(logits, y_batch)
+            nll_loss = nll_loss_fn(logits + log_det.unsqueeze(1), y_batch)
             reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
             
             # Primal Objective
@@ -240,9 +208,7 @@ def train(cfg: DictConfig):
             
             # Clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
-            torch.nn.utils.clip_grad_norm_(attribute_means, max_norm=cfg.training.gradclip_mu)
-            torch.nn.utils.clip_grad_norm_(attribute_covs, max_norm=cfg.training.gradclip_L)
-            torch.nn.utils.clip_grad_norm_(latent_pis, max_norm=cfg.training.gradclip_pi)
+            torch.nn.utils.clip_grad_norm_(prior_params.parameters(), max_norm=cfg.training.gradclip_prior)
             
             optimizer.step()
             ema_model.update_parameters(model)
@@ -275,15 +241,14 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            eval_target_dists = get_target_distributions(attribute_means, attribute_covs)
-            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, eval_target_dists, latent_pis)
+            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, priors)
             log_dict.update({
                 "test_loss": test_loss,
                 "test_accuracy": test_accuracy,
                 "test_nll": test_nll
             })
             
-            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, eval_target_dists, latent_pis)
+            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, priors)
             log_dict.update({
                 "train_eval_loss": train_loss,
                 "train_eval_accuracy": train_accuracy,
@@ -300,15 +265,13 @@ def train(cfg: DictConfig):
             checkpoint_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir # type: ignore
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch + 1}.pth")
             torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'ema_model_state_dict': ema_model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),
-                'attribute_means': [p.detach().cpu() for p in attribute_means],
-                'attribute_covs': [p.detach().cpu() for p in attribute_covs],
-                'latent_pis': [p.detach().cpu() for p in latent_pis],
-                'log_alpha': log_alpha.detach().cpu().clone(),
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "priors_state_dict": prior_params.state_dict(),
+                "ema_model_state_dict": ema_model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "alpha_optimizer_state_dict": alpha_optimizer.state_dict(),
+                "log_alpha": log_alpha.detach().cpu().clone(),
             }, checkpoint_path)
             # wandb.save(checkpoint_path)
             
