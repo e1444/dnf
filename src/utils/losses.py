@@ -21,13 +21,16 @@ def compute_level_logits(z, h, spriors, nprior, sc):
     nh = h[:, sc:, :, :]
     
     # --- Non-Semantic Log-Prob ---
-    if z is not None:
-        mu, logs = nprior(z) # Conditional
+    if nprior is not None:
+        if z is not None:
+            mu, logs = nprior(z) # Conditional
+        else:
+            mu, logs = nprior()  # Learned (Unconditional)
+            
+        nprior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
+        nlp = nprior_dist.log_prob(nh).sum(dim=[1, 2, 3])   # (B,)
     else:
-        mu, logs = nprior()  # Learned (Unconditional)
-        
-    nprior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
-    nlp = nprior_dist.log_prob(nh).sum(dim=[1, 2, 3]) # (B,)
+        nlp = torch.zeros(h.shape[0], device=h.device)      # (B,)
     
     if sc == 0:
         K = len(spriors)
