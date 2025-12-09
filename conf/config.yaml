@@ -9,23 +9,21 @@ project:
   name: Discriminative Normalizing Flow
   description: Training a DNF model.
 
+run:
+  name: "dnf-run-${now:%Y-%m-%d-%H-%M-%S}"
+
 paths:
   data: ./data
-  model: ./models
   logs: ./logs
-  checkpoints: ./checkpoints
 
 hydra:
   run:
-    dir: ${paths.logs}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-  sweep:
-    dir: ${paths.logs}/sweeps/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.num}
+    dir: ${paths.logs}/${run.name}
 
 wandb:
   project: DNF
   entity: e1444-university-of-toronto
-  name: "dnf-run-${now:%Y-%m-%d-%H-%M-%S}"
+  name: "${run.name}"
   group: "MNIST"
 
 logging:
