@@ -36,7 +36,8 @@ class LearnedPrior(nn.Module):
             
     def forward(self):
         if self.cov_method == "diag":
-            return self.mu, self.logs
+            constrained_logs = self.logs - self.logs.mean()
+            return self.mu, constrained_logs
         else:
             return self.mu, self.L_flat
     
@@ -64,7 +65,8 @@ class ConditionalPrior(nn.Module):
         
         if self._cov_method == "diag":
             mu, logs = self.split(theta, method="cross")
-            return mu, logs
+            constrained_logs = logs - logs.mean()
+            return mu, constrained_logs
         elif self._cov_method == "block_diag":
             mu = theta[:, :self.out_channels, ...]
             L_flat = theta[:, self.out_channels:, ...]
