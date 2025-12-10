@@ -5,12 +5,12 @@ from src.models.modules import Conv2dZeros, Split
 
 
 class LearnedPrior(nn.Module):
-    def __init__(self, shape, eps=1e-2, cov_method="diag"):
+    def __init__(self, shape, scale=3.0, cov_method="diag"):
         """
         shape: (C, H, W) - Shape of the latent variable z
         """
         super().__init__()
-        self.eps = eps
+        self.scale = scale
         self.shape = shape
         self.cov_method = cov_method
         C, H, W = shape
@@ -31,20 +31,19 @@ class LearnedPrior(nn.Module):
             
     def forward(self):
         if self.cov_method == "diag":
-            sigma = F.softplus(self.s) + self.eps
-            self.logs = torch.log(sigma)
-            constrained_logs = self.logs - self.logs.mean(dim=[0,1,2], keepdim=True)
+            logs = self.scale * torch.tanh(self.s)
+            constrained_logs = logs - logs.mean(dim=[0,1,2], keepdim=True)
             return self.mu, constrained_logs
         else:
             return self.mu, self.L_flat
     
     
 class ConditionalPrior(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, eps=1e-2, cov_method: str = "diag"):
+    def __init__(self, in_channels: int, out_channels: int, scale=3.0, cov_method: str = "diag"):
         super(ConditionalPrior, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.eps = eps
+        self.scale = scale
         self._cov_method = cov_method
         
         if cov_method == "diag":
@@ -63,8 +62,7 @@ class ConditionalPrior(nn.Module):
         
         if self._cov_method == "diag":
             mu, s = self.split(theta, method="cross")
-            sigma = F.softplus(s) + self.eps
-            logs = torch.log(sigma)
+            logs = self.scale * torch.tanh(s)
             constrained_logs = logs - logs.mean(dim=[1,2,3], keepdim=True)
             return mu, constrained_logs
         elif self._cov_method == "block_diag":
