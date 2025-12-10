@@ -1,14 +1,16 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from src.models.modules import Conv2dZeros, Split
 
 
 class LearnedPrior(nn.Module):
-    def __init__(self, shape, cov_method="diag"):
+    def __init__(self, shape, eps=1e-2, cov_method="diag"):
         """
         shape: (C, H, W) - Shape of the latent variable z
         """
         super().__init__()
+        self.eps = eps
         self.shape = shape
         self.cov_method = cov_method
         C, H, W = shape
@@ -18,35 +20,31 @@ class LearnedPrior(nn.Module):
         
         if cov_method == "diag":
             # Diagonal Log-Variance
-            self.logs = nn.Parameter(torch.zeros(shape))
+            self.s = nn.Parameter(torch.zeros(shape))
         elif cov_method == "block_diag":
             # Lower Triangular Parameters for each spatial location
             # Number of params per pixel = C * (C + 1) / 2
             num_cov_params = C * (C + 1) // 2
             self.L_flat = nn.Parameter(torch.zeros(num_cov_params, H, W))
-            
-            # Initialize diagonal of L to 1 (log-diagonal to 0) for identity covariance
-            # We need to figure out which indices correspond to the diagonal
-            # But since we init with zeros, L will be zero matrix. 
-            # We usually want L to be Identity (or close to it).
-            # A common trick is to add Identity to the constructed L matrix later,
-            # or initialize the diagonal parts of L_flat to a value that gives 1.
         else:
             raise ValueError(f"Unknown cov_method: {cov_method}")
             
     def forward(self):
         if self.cov_method == "diag":
-            constrained_logs = self.logs - self.logs.mean()
+            sigma = F.softplus(self.s) + self.eps
+            self.logs = torch.log(sigma)
+            constrained_logs = self.logs - self.logs.mean(dim=[0,1,2], keepdim=True)
             return self.mu, constrained_logs
         else:
             return self.mu, self.L_flat
     
     
 class ConditionalPrior(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, cov_method: str = "diag"):
+    def __init__(self, in_channels: int, out_channels: int, eps=1e-2, cov_method: str = "diag"):
         super(ConditionalPrior, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.eps = eps
         self._cov_method = cov_method
         
         if cov_method == "diag":
@@ -64,8 +62,10 @@ class ConditionalPrior(nn.Module):
         theta = self.conv(h)
         
         if self._cov_method == "diag":
-            mu, logs = self.split(theta, method="cross")
-            constrained_logs = logs - logs.mean()
+            mu, s = self.split(theta, method="cross")
+            sigma = F.softplus(s) + self.eps
+            logs = torch.log(sigma)
+            constrained_logs = logs - logs.mean(dim=[1,2,3], keepdim=True)
             return mu, constrained_logs
         elif self._cov_method == "block_diag":
             mu = theta[:, :self.out_channels, ...]
