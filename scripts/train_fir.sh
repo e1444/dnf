@@ -3,20 +3,22 @@
 #SBATCH --job-name=DNF_train
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=64000M
+#SBATCH --mem=280000M
 #SBATCH --time=6:00:00
 #SBATCH --mail-user=er.liang@mail.utoronto.ca
 #SBATCH --mail-type=ALL
 
-TIMESTAMP=$(date +"%Y-%m-%d/%H-%M-%S")
-LOG_DIR="${SCRATCH}/dnf/logs/${TIMESTAMP}"
+TIMESTAMP=$(date +"%Y-%m-%d-%H-%M-%S")
+DATE=$(date +"%Y-%m-%d")
+LOG_DIR="${SCRATCH}/dnf/logs/${DATE}"
+RUN_NAME="dnf-${SLURM_JOB_ID}"
+DATA_DIR="${SCRATCH}/dnf/data"
 export WANDB_DIR="${SCRATCH}/dnf/wandb"
 
-mkdir -p ${LOG_DIR}
+mkdir -p ${LOG_DIR}/${RUN_NAME}
 
-exec > ${LOG_DIR}/slurm-${SLURM_JOB_ID}.out 2> ${LOG_DIR}/slurm-${SLURM_JOB_ID}.err
+exec > ${LOG_DIR}/${RUN_NAME}/slurm-${SLURM_JOB_ID}.out 2> ${LOG_DIR}/${RUN_NAME}/slurm-${SLURM_JOB_ID}.err
 
-module purge
 module load StdEnv/2023
 module load python/3.11.5
 module load cuda/12.6
@@ -41,6 +43,8 @@ echo "-------------------------"
 
 # Run the training script, overriding the Hydra run directory
 python -m src.train \
-    hydra.run.dir=${LOG_DIR} \
+    run.name=${RUN_NAME} \
+    paths.logs=${LOG_DIR} \
+    paths.data=${DATA_DIR} \
     data.dataset.num_workers=${SLURM_CPUS_PER_TASK} \
     "$@" # Pass command line arguments to the script

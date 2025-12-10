@@ -1,4 +1,4 @@
-_target_: src.models.dglow.DGLOWNetwork
+_target_: src.models.glow.DGLOWNetwork
 
 in_channels: 1
 num_levels: 3
