@@ -32,8 +32,6 @@ def compute_level_logits(z, h, level_priors, level_split):
     struct_h = h[:, noise_count:noise_count+struct_count, :, :]
     sem_h = h[:, noise_count+struct_count:noise_count+struct_count+sem_count, :, :]
     
-    total_lp = 0.0
-    
     # --- Noise Log-Prob ---
     if noise_prior is not None:
         if z is not None:
@@ -44,10 +42,10 @@ def compute_level_logits(z, h, level_priors, level_split):
         noise_prior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
         noise_lp = noise_prior_dist.log_prob(noise_h).sum(dim=[1, 2, 3])    # (B,)
     else:
-        K = len(sem_priors)
-        noise_lp = torch.zeros((h.shape[0], K), device=h.device)            # (B, K)
+        noise_lp = torch.zeros(h.shape[0], device=h.device)                 # (B,)
         
-    total_lp = noise_lp
+    K = len(sem_priors)
+    total_lp = noise_lp.unsqueeze(1).expand(-1, K)  # (B, K)
     
     # --- Structural Log-Prob ---
     if struct_prior is not None:
@@ -59,7 +57,7 @@ def compute_level_logits(z, h, level_priors, level_split):
         struct_prior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
         struct_lp = struct_prior_dist.log_prob(struct_h).sum(dim=[1, 2, 3]) # (B,)
         
-        total_lp += struct_lp
+        total_lp = total_lp + struct_lp.unsqueeze(1)
         
     # --- Semantic Log-Probs (per class) ---
     sem_lps = []
@@ -78,7 +76,7 @@ def compute_level_logits(z, h, level_priors, level_split):
     
     if len(sem_lps) > 0:
         sem_lps = torch.stack(sem_lps, dim=1) # (B, K)
-        total_lp += sem_lps
+        total_lp = total_lp + sem_lps
         
     return total_lp
 
