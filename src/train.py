@@ -65,32 +65,32 @@ def train(cfg: DictConfig):
         noise_prior, struct_prior, sem_priors = None, None, [None] * num_classes
         if i < cfg.model.num_levels - 1:
             if noise_count > 0:
-                noise_prior = LearnedPrior(shape=(noise_count, H, W), cov_method="diag")
+                noise_prior = LearnedPrior(shape=(noise_count, H, W), scale=cfg.training.variance_scale, cov_method="diag")
                 prior_params.append(noise_prior)
             if struct_count > 0:
-                struct_prior = ConditionalPrior(in_channels=C, out_channels=struct_count, cov_method="diag")
+                struct_prior = ConditionalPrior(in_channels=C, out_channels=struct_count, scale=cfg.training.variance_scale, cov_method="diag")
                 prior_params.append(struct_prior)
                 
             if sem_count > 0:
                 init_mus = mu_simplex_init(num_classes, sem_count, scale=cfg.training.simplex_scale)
                 sem_priors = []
                 for k in range(num_classes):
-                    sem_prior = ConditionalPrior(in_channels=C, out_channels=sem_count, init_mu=init_mus[k], cov_method="diag")
+                    sem_prior = ConditionalPrior(in_channels=C, out_channels=sem_count, init_mu=init_mus[k], scale=cfg.training.variance_scale, cov_method="diag")
                     prior_params.append(sem_prior)
                     sem_priors.append(sem_prior)
         else:
             if noise_count > 0:
-                noise_prior = LearnedPrior(shape=(noise_count, H, W), cov_method="diag")
+                noise_prior = LearnedPrior(shape=(noise_count, H, W), scale=cfg.training.variance_scale, cov_method="diag")
                 prior_params.append(noise_prior)
             if struct_count > 0:
                 assert sem_count > 0, "Final level with structural channels must also have semantic channels."
-                struct_prior = ConditionalPrior(in_channels=sem_count, out_channels=struct_count, cov_method="diag")
+                struct_prior = ConditionalPrior(in_channels=sem_count, out_channels=struct_count, scale=cfg.training.variance_scale, cov_method="diag")
                 prior_params.append(struct_prior)
             if sem_count > 0:
                 init_mus = mu_simplex_init(num_classes, sem_count, scale=cfg.training.simplex_scale)
                 sem_priors = []
                 for k in range(num_classes):
-                    sem_prior = LearnedPrior(shape=(sem_count, H, W), init_mu=init_mus[k], cov_method="diag")
+                    sem_prior = LearnedPrior(shape=(sem_count, H, W), init_mu=init_mus[k], scale=cfg.training.variance_scale, cov_method="diag")
                     prior_params.append(sem_prior)
                     sem_priors.append(sem_prior)
                 
