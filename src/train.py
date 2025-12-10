@@ -72,7 +72,7 @@ def train(cfg: DictConfig):
                 prior_params.append(struct_prior)
                 
             if sem_count > 0:
-                init_mus = mu_simplex_init(sem_count, num_classes, scale=cfg.training.simplex_scale)
+                init_mus = mu_simplex_init(num_classes, sem_count, scale=cfg.training.simplex_scale)
                 for k in range(num_classes):
                     sem_prior = ConditionalPrior(in_channels=C, out_channels=sem_count, init_mu=init_mus[k], cov_method="diag")
                     prior_params.append(sem_prior)
@@ -86,7 +86,7 @@ def train(cfg: DictConfig):
                 struct_prior = ConditionalPrior(in_channels=sem_count, out_channels=struct_count, cov_method="diag")
                 prior_params.append(struct_prior)
             if sem_count > 0:
-                init_mus = mu_simplex_init(sem_count, num_classes, scale=cfg.training.simplex_scale)
+                init_mus = mu_simplex_init(num_classes, sem_count, scale=cfg.training.simplex_scale)
                 for k in range(num_classes):
                     sem_prior = LearnedPrior(shape=(sem_count, H, W), init_mu=init_mus[k], cov_method="diag")
                     prior_params.append(sem_prior)
