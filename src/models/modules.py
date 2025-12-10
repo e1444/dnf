@@ -170,7 +170,9 @@ class AffineCouplingLayer(nn.Module):
         self.register_buffer("scale_clamp", torch.tensor(scale_clamp))
 
     def forward(self, x):
-        x, total_log_det = self.actnorm(x)
+        total_log_det = torch.zeros(x.size(0), device=x.device)
+        x, log_det = self.actnorm(x)
+        total_log_det = total_log_det + log_det
         x, log_det = self.permute(x)
         total_log_det = total_log_det + log_det
         
@@ -185,7 +187,8 @@ class AffineCouplingLayer(nn.Module):
         y_b = x_b * s + t
         y = torch.cat([x_a, y_b], dim=1)
         log_det = torch.sum(torch.log(s), dim=[1, 2, 3])
-        return y, log_det
+        total_log_det = total_log_det + log_det
+        return y, total_log_det
 
     def inverse(self, y):
         y_a, y_b = self.split(y, method="split")

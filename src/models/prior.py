@@ -5,7 +5,7 @@ from src.models.modules import Conv2dZeros, Split
 
 
 class LearnedPrior(nn.Module):
-    def __init__(self, shape, scale=3.0, cov_method="diag"):
+    def __init__(self, shape, scale=1.0, cov_method="diag"):
         """
         shape: (C, H, W) - Shape of the latent variable z
         """
@@ -39,7 +39,7 @@ class LearnedPrior(nn.Module):
     
     
 class ConditionalPrior(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, scale=3.0, cov_method: str = "diag"):
+    def __init__(self, in_channels: int, out_channels: int, scale=1.0, cov_method: str = "diag"):
         super(ConditionalPrior, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
