@@ -29,6 +29,7 @@ scheduler:
 noise_counts: [2, 4, 16]
 struct_counts: [0, 0, 0]
 semantic_counts: [0, 0, 0]
+simplex_scale: 1.0
 num_classes: 10
 
 # Lagrange multipliers settings

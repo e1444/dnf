@@ -10,7 +10,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
-from src.models.prior import ConditionalPrior, LearnedPrior
+from src.models.prior import ConditionalPrior, LearnedPrior, mu_simplex_init
 from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 from src.utils.evaluation import evaluate
 
@@ -62,7 +62,7 @@ def train(cfg: DictConfig):
         assert noise_count >= 0 and struct_count >= 0 and sem_count >= 0, \
             f"At level {i}, counts must be non-negative."
         
-        noise_prior, struct_prior, sem_priors = None, None, []
+        noise_prior, struct_prior, sem_priors = None, None, [None] * num_classes
         if i < cfg.model.num_levels - 1:
             if noise_count > 0:
                 noise_prior = LearnedPrior(shape=(noise_count, H, W), cov_method="diag")
@@ -70,12 +70,13 @@ def train(cfg: DictConfig):
             if struct_count > 0:
                 struct_prior = ConditionalPrior(in_channels=C, out_channels=struct_count, cov_method="diag")
                 prior_params.append(struct_prior)
-            for _ in range(num_classes):
-                sprior = None
-                if sem_count > 0:
-                    sprior = ConditionalPrior(in_channels=C, out_channels=sem_count, cov_method="diag")
-                    prior_params.append(sprior)
-                sem_priors.append(sprior)
+                
+            if sem_count > 0:
+                init_mus = mu_simplex_init(sem_count, num_classes, scale=cfg.training.simplex_scale)
+                for k in range(num_classes):
+                    sem_prior = ConditionalPrior(in_channels=C, out_channels=sem_count, init_mu=init_mus[k], cov_method="diag")
+                    prior_params.append(sem_prior)
+                    sem_priors.append(sem_prior)
         else:
             if noise_count > 0:
                 noise_prior = LearnedPrior(shape=(noise_count, H, W), cov_method="diag")
@@ -84,12 +85,12 @@ def train(cfg: DictConfig):
                 assert sem_count > 0, "Final level with structural channels must also have semantic channels."
                 struct_prior = ConditionalPrior(in_channels=sem_count, out_channels=struct_count, cov_method="diag")
                 prior_params.append(struct_prior)
-            for _ in range(num_classes):
-                sem_prior = None
-                if sem_count > 0:
-                    sem_prior = LearnedPrior(shape=(sem_count, H, W), cov_method="diag")
+            if sem_count > 0:
+                init_mus = mu_simplex_init(sem_count, num_classes, scale=cfg.training.simplex_scale)
+                for k in range(num_classes):
+                    sem_prior = LearnedPrior(shape=(sem_count, H, W), init_mu=init_mus[k], cov_method="diag")
                     prior_params.append(sem_prior)
-                sem_priors.append(sem_prior)
+                    sem_priors.append(sem_prior)
                 
         priors.append((noise_prior, struct_prior, sem_priors))
     
