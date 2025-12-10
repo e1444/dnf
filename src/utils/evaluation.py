@@ -8,7 +8,7 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_curve, 
 from .losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 
 
-def evaluate(model, data_loader, device, cfg, priors):
+def evaluate(model, data_loader, device, cfg, priors, splits):
     """
     Evaluate the model on a given dataset.
     """
@@ -30,11 +30,9 @@ def evaluate(model, data_loader, device, cfg, priors):
             # Compute Logits
             logits = 0
             for i in range(cfg.model.num_levels):
-                spriors, nprior = priors[i]
-                sc = semantic_counts[i]
-                z_prev, h = outs[i]
+                z, h = outs[i]
                 
-                level_logits = compute_level_logits(z_prev, h, spriors, nprior, sc)
+                level_logits = compute_level_logits(z, h, priors[i], splits[i])
                 logits = logits + level_logits
                     
             assert not isinstance(logits, int), "Logits computation failed; logits is None."
@@ -65,7 +63,7 @@ def evaluate(model, data_loader, device, cfg, priors):
     return avg_test_loss, accuracy, avg_nll
 
 
-def compute_marginal_bpd(model, priors, loader, device, cfg):
+def compute_marginal_bpd(model, loader, device, cfg, priors, splits):
     """
     Computes the Bits Per Dimension (BPD) by marginalizing over classes.
     log p(x) = log sum_c p(x|c)p(c)
@@ -87,11 +85,9 @@ def compute_marginal_bpd(model, priors, loader, device, cfg):
             # Compute Logits
             logits = 0
             for i in range(cfg.model.num_levels):
-                spriors, nprior = priors[i]
-                sc = semantic_counts[i]
                 z, h = outs[i]
                 
-                level_logits = compute_level_logits(z, h, spriors, nprior, sc)
+                level_logits = compute_level_logits(z, h, priors[i], splits[i])
                 logits = logits + level_logits
                     
             assert not isinstance(logits, int), "Logits computation failed; logits is None."
@@ -116,7 +112,7 @@ def compute_marginal_bpd(model, priors, loader, device, cfg):
     return bpd
 
 
-def get_all_predictions(model, data_loader, device, cfg, priors):
+def get_all_predictions(model, data_loader, device, cfg, priors, splits):
     """
     Get model predictions for an entire dataset.
     """
@@ -137,11 +133,9 @@ def get_all_predictions(model, data_loader, device, cfg, priors):
             # Compute Logits
             logits = 0
             for i in range(cfg.model.num_levels):
-                spriors, nprior = priors[i]
-                sc = semantic_counts[i]
                 z, h = outs[i]
                 
-                level_logits = compute_level_logits(z, h, spriors, nprior, sc)
+                level_logits = compute_level_logits(z, h, priors[i], splits[i])
                 logits = logits + level_logits
                     
             assert not isinstance(logits, int), "Logits computation failed; logits is None."
@@ -251,7 +245,7 @@ def calculate_brier_score(y_true, probabilities):
     print(f"Multi-class Brier Score: {brier_score:.4f}")
     return brier_score
 
-def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, priors):
+def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, priors, splits):
     """
     Get and plot ROC curve and calculate AUROC for OOD detection.
     """
@@ -270,11 +264,9 @@ def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device,
                 # Compute Logits
                 logits = 0
                 for i in range(cfg.model.num_levels):
-                    spriors, nprior = priors[i]
-                    sc = semantic_counts[i]
                     z, h = outs[i]
                     
-                    level_logits = compute_level_logits(z, h, spriors, nprior, sc)
+                    level_logits = compute_level_logits(z, h, priors[i], splits[i])
                     logits = logits + level_logits
                         
                 assert not isinstance(logits, int), "Logits computation failed; logits is None."

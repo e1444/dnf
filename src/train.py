@@ -36,48 +36,62 @@ def train(cfg: DictConfig):
     
     # Initialize model
     model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
-    
-    # Shared GMM Parameters
     num_classes = cfg.training.num_classes
-    semantic_counts = cfg.training.semantic_counts
     
-    assert len(semantic_counts) == cfg.model.num_levels, \
+    assert len(cfg.training.noise_counts) == cfg.model.num_levels, \
+        "Length of noise_counts must match number of levels in the model."
+    assert len(cfg.training.struct_counts) == cfg.model.num_levels, \
+        "Length of struct_counts must match number of levels in the model."
+    assert len(cfg.training.semantic_counts) == cfg.model.num_levels, \
         "Length of semantic_counts must match number of levels in the model."
     
+    splits = [(noise, struct, sem) for noise, struct, sem in zip(
+        cfg.training.noise_counts, 
+        cfg.training.struct_counts, 
+        cfg.training.semantic_counts
+    )]
     priors = []
     prior_params = nn.ModuleList()
     for i in range(cfg.model.num_levels):
-        shape, sc = model.output_shapes[i], semantic_counts[i]
+        shape = model.output_shapes[i]
+        noise_count, struct_count, sem_count = splits[i]
         C, H, W = shape
-        assert 0 <= sc <= C, "Semantic count must be between 0 and total channels."
-        nc = C - sc # Non-semantic channels
         
+        assert noise_count + struct_count + sem_count == C, \
+            f"At level {i}, sum of noise_counts, struct_counts, and semantic_counts must equal {C}."
+        assert noise_count >= 0 and struct_count >= 0 and sem_count >= 0, \
+            f"At level {i}, counts must be non-negative."
+        
+        noise_prior, struct_prior, sem_priors = None, None, []
         if i < cfg.model.num_levels - 1:
-            spriors, nprior = [], None
+            if noise_count > 0:
+                noise_prior = LearnedPrior(shape=(noise_count, H, W), cov_method="diag")
+                prior_params.append(noise_prior)
+            if struct_count > 0:
+                struct_prior = ConditionalPrior(in_channels=C, out_channels=struct_count, cov_method="diag")
+                prior_params.append(struct_prior)
             for _ in range(num_classes):
                 sprior = None
-                if sc > 0:
-                    sprior = ConditionalPrior(in_channels=C, out_channels=sc, cov_method="diag")
+                if sem_count > 0:
+                    sprior = ConditionalPrior(in_channels=C, out_channels=sem_count, cov_method="diag")
                     prior_params.append(sprior)
-                spriors.append(sprior)
-            if nc > 0:
-                nprior = ConditionalPrior(in_channels=C, out_channels=nc, cov_method="diag")
-                prior_params.append(nprior)
-                
-            priors.append((spriors, nprior))
+                sem_priors.append(sprior)
         else:
-            # Learned Prior at the last level
-            spriors, nprior = [], None
+            if noise_count > 0:
+                noise_prior = LearnedPrior(shape=(noise_count, H, W), cov_method="diag")
+                prior_params.append(noise_prior)
+            if struct_count > 0:
+                assert sem_count > 0, "Final level with structural channels must also have semantic channels."
+                struct_prior = ConditionalPrior(in_channels=sem_count, out_channels=struct_count, cov_method="diag")
+                prior_params.append(struct_prior)
             for _ in range(num_classes):
-                sprior = None
-                if sc > 0:
-                    sprior = LearnedPrior(shape=(sc, H, W), cov_method="diag")
-                    prior_params.append(sprior)
-                spriors.append(sprior)
-            if nc > 0:
-                nprior = LearnedPrior(shape=(nc, H, W), cov_method="diag")
-                prior_params.append(nprior)
-            priors.append((spriors, nprior))
+                sem_prior = None
+                if sem_count > 0:
+                    sem_prior = LearnedPrior(shape=(sem_count, H, W), cov_method="diag")
+                    prior_params.append(sem_prior)
+                sem_priors.append(sem_prior)
+                
+        priors.append((noise_prior, struct_prior, sem_priors))
     
     prior_params.to(device)
     
@@ -175,11 +189,9 @@ def train(cfg: DictConfig):
             
             logits = 0
             for i in range(cfg.model.num_levels):
-                spriors, nprior = priors[i]
-                sc = semantic_counts[i]
                 z, h = outs[i]
                 
-                level_logits = compute_level_logits(z, h, spriors, nprior, sc)
+                level_logits = compute_level_logits(z, h, priors[i], splits[i])
                 logits = logits + level_logits
                     
             assert not isinstance(logits, int), "Logits computation failed; logits is None."
@@ -241,14 +253,14 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, priors)
+            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, priors, splits)
             log_dict.update({
                 "test_loss": test_loss,
                 "test_accuracy": test_accuracy,
                 "test_nll": test_nll
             })
             
-            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, priors)
+            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, priors, splits)
             log_dict.update({
                 "train_eval_loss": train_loss,
                 "train_eval_accuracy": train_accuracy,

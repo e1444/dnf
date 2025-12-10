@@ -4,60 +4,83 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def compute_level_logits(z, h, spriors, nprior, sc):
+def compute_level_logits(z, h, level_priors, level_split):
     """
-    Computes the logits for a single level of the hierarchy.
+    Computes the logits for a single level of the hierarchy, using the formula:
+    
+    p(h^(i) | z^(i), y) = p(h^(i)_sem | z^(i), y) p(h^(i)_struct | z^(i)) p(h^(i)_noise)
+    
+    and
+
+    p(z^(L)) = p(z^(L)_struct | z^(L)_sem) p(z^(L)_sem) p(z^(L)_noise)
     
     Args:
-        z: Conditioning variable (or None for final level).
-        h: Target variable (split into semantic/noise).
-        spriors: List of semantic priors (one per class).
-        nprior: Non-semantic prior.
-        sc: Number of semantic channels.
+        z: Tensor of shape (B, D, H, W) or None
+        h: Tensor of shape (B, M, H, W)
+        noise_prior: Callable or None
+        struct_prior: Callable or None
+        sem_priors: List of Callables or None
+        noise_count: int
+        struct_count: int
+        sem_count: int
     """
-    # Split target variable h into semantic (sh) and noise (nh)
-    # Semantic is first sc channels, Noise is the rest
-    sh = h[:, :sc, :, :]
-    nh = h[:, sc:, :, :]
+    noise_prior, struct_prior, sem_priors = level_priors
+    noise_count, struct_count, sem_count = level_split
     
-    # --- Non-Semantic Log-Prob ---
-    if nprior is not None:
+    # Split target variable h
+    noise_h = h[:, :noise_count, :, :]
+    struct_h = h[:, noise_count:noise_count+struct_count, :, :]
+    sem_h = h[:, noise_count+struct_count:noise_count+struct_count+sem_count, :, :]
+    
+    total_lp = 0.0
+    
+    # --- Noise Log-Prob ---
+    if noise_prior is not None:
         if z is not None:
-            mu, logs = nprior(z) # Conditional
+            mu, logs = noise_prior()
         else:
-            mu, logs = nprior()  # Learned (Unconditional)
+            mu, logs = noise_prior()
             
-        nprior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
-        nlp = nprior_dist.log_prob(nh).sum(dim=[1, 2, 3])   # (B,)
+        noise_prior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
+        noise_lp = noise_prior_dist.log_prob(noise_h).sum(dim=[1, 2, 3])    # (B,)
     else:
-        nlp = torch.zeros(h.shape[0], device=h.device)      # (B,)
+        K = len(sem_priors)
+        noise_lp = torch.zeros((h.shape[0], K), device=h.device)            # (B, K)
+        
+    total_lp = noise_lp
     
-    if sc == 0:
-        K = len(spriors)
-        return nlp.unsqueeze(1).expand(-1, K)  # (B, K)
-    
+    # --- Structural Log-Prob ---
+    if struct_prior is not None:
+        if z is not None:
+            mu, logs = struct_prior(z)
+        else:
+            mu, logs = struct_prior(sem_h)
+            
+        struct_prior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
+        struct_lp = struct_prior_dist.log_prob(struct_h).sum(dim=[1, 2, 3]) # (B,)
+        
+        total_lp += struct_lp
+        
     # --- Semantic Log-Probs (per class) ---
-    slps = []
-    for sprior in spriors:
-        if sprior is None:
-            # Should not happen if sc > 0, but safe to handle
-            continue
+    sem_lps = []
+    for sem_prior in sem_priors:
+        if sem_prior is None:
+            break
         
         if z is not None:
-            mu, logs = sprior(z) # Conditional
+            mu, logs = sem_prior(z)
         else:
-            mu, logs = sprior()  # Learned
+            mu, logs = sem_prior()
             
-        sprior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
-        slp = sprior_dist.log_prob(sh).sum(dim=[1, 2, 3]) # (B,)
-        slps.append(slp)
-        
-    slp = torch.stack(slps, dim=1) # (B, K)
+        sem_prior_dist = torch.distributions.Normal(loc=mu, scale=torch.exp(logs))
+        sem_lp = sem_prior_dist.log_prob(sem_h).sum(dim=[1, 2, 3]) # (B,)
+        sem_lps.append(sem_lp)
     
-    # Combine: Logits = Semantic_LogProb + NonSemantic_LogProb
-    # Broadcasting nlp: (B,) -> (B, 1) to add to (B, K)
-    return slp + nlp.unsqueeze(1)
-
+    if len(sem_lps) > 0:
+        sem_lps = torch.stack(sem_lps, dim=1) # (B, K)
+        total_lp += sem_lps
+        
+    return total_lp
 
 def ce_loss_fn(logits, y_true, label_smoothing=0.0):
     ce_loss = nn.functional.cross_entropy(logits, y_true, label_smoothing=label_smoothing)
