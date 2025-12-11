@@ -198,9 +198,10 @@ def train(cfg: DictConfig):
             primal_loss += reg_loss
             
             if torch.isnan(primal_loss) or torch.isinf(primal_loss):
-                print(f"CRITICAL ERROR: NaN/Inf loss detected at epoch {epoch} batch {batch_idx}.")
-                print("Terminating training to save resources.")
-                return
+                print(f"WARNING: NaN/Inf loss detected at epoch {epoch} batch {batch_idx}.")
+                print("Skipping batch.")
+                optimizer.zero_grad()
+                continue
             
             alpha = F.softplus(log_alpha)
             nll_violation = nll_loss - nll_constraint
