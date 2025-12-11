@@ -1,13 +1,7 @@
 lr: 1e-3
-lr_mu: 0
-lr_v: 0
-lr_U: 0
+lr_prior: 0
 
 gradclip: 1.0
-gradclip_mu: 1.0
-gradclip_v: 1.0
-gradclip_U: 1.0
-
 weight_decay: 1e-4
 epochs: 20
 warmup_epochs: 5
@@ -48,4 +42,3 @@ nll_constraint: -3000.0
 
 resume_from_checkpoint: null
 reset_optimizer: false
-reset_freeze: true

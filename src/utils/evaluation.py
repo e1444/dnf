@@ -4,10 +4,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import classification_report, confusion_matrix, log_loss, roc_curve, auc
-from .losses import deep_ce_loss, total_loss_fn, compute_logits, nll_loss_fn, ce_loss_fn, entropy_loss_fn, standard_normal_logprob
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+from .losses import nll_loss_fn, ce_loss_fn, standard_normal_logprob
 
-def evaluate(model, data_loader, device, cfg, target_dists):
+def evaluate(model, data_loader, device, cfg, prior):
     """
     Evaluate the model on a given dataset.
     """
@@ -33,7 +33,7 @@ def evaluate(model, data_loader, device, cfg, target_dists):
                 
             z_semantic = outs[-1][1]
             z_semantic_flat = z_semantic.view(z_semantic.size(0), -1)
-            log_prob_semantic = torch.stack([dist.log_prob(z_semantic_flat) for dist in target_dists], dim=1)
+            log_prob_semantic = torch.stack([dist.log_prob(z_semantic_flat) for dist in prior(unit_scale=True)], dim=1)
             
             log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
             logits = log_prob + log_det.unsqueeze(1)
