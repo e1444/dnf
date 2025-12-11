@@ -189,10 +189,6 @@ def train(cfg: DictConfig):
         
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
-
-    aux_layers = np.arange(start=cfg.training.aux_start + cfg.training.aux_freq - 1, stop=cfg.training.aux_end, step=cfg.training.aux_freq).tolist()
-    betas = torch.tensor(np.geomspace(start=cfg.training.gamma_beta ** len(aux_layers), stop=1, num=len(aux_layers)), device=device)
-
     steps_per_epoch = len(train_loader)
     total_warmup_steps = cfg.training.warmup_epochs * steps_per_epoch
     
@@ -320,14 +316,14 @@ def train(cfg: DictConfig):
             mean_v = latent_v.mean()
             constrained_v = latent_v - mean_v
             eval_target_dists = get_target_distributions(latent_mu, constrained_v, latent_U, cfg, device=device)
-            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
+            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, eval_target_dists)
             log_dict.update({
                 "test_loss": test_loss,
                 "test_accuracy": test_accuracy,
                 "test_nll": test_nll
             })
             
-            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, eval_target_dists, betas, cfg.training.lambda_, aux_layers)
+            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, eval_target_dists)
             log_dict.update({
                 "train_eval_loss": train_loss,
                 "train_eval_accuracy": train_accuracy,
