@@ -1,7 +1,7 @@
 import torch
 
 
-def lrmvn_simplex_init(K: int, D: int, rank: int, simplex_scale: float = 1.0):
+def lrmvn_simplex_init(K: int, D: int, rank: int, simplex_scale: float = 1.0, noise: float = 0.0) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Initialize Low-Rank Multivariate Normal Prior Parameters on Simplex
     
@@ -19,6 +19,7 @@ def lrmvn_simplex_init(K: int, D: int, rank: int, simplex_scale: float = 1.0):
     loc = torch.zeros(K, D)
     for i in range(K):
         loc[i, i] = simplex_scale
+    loc = loc + torch.randn_like(loc) * noise
     diag = torch.ones(K, D)
     U = torch.zeros(K, D, rank)
     

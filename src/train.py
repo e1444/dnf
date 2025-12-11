@@ -42,7 +42,8 @@ def train(cfg: DictConfig):
             K=cfg.training.num_classes,
             D=cfg.model.latent_dim,
             rank=cfg.training.latent_U_size,
-            simplex_scale=cfg.training.latent_separation
+            simplex_scale=cfg.training.latent_separation,
+            noise=cfg.training.latent_noise
         )
         prior = ClassConditionalPrior([
             LowRankMVNPrior(
