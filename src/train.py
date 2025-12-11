@@ -66,10 +66,14 @@ def train(cfg: DictConfig):
             noise_prior, struct_prior, sem_prior = None, None, None
             
             if noise_count > 0:
-                theta_list = hydra.utils.instantiate(cfg.prior.zero_init, K=1, C=noise_count, H=H, W=W)
+                theta_list = hydra.utils.instantiate(
+                    cfg.prior.zero_init, 
+                    K=1,
+                    C=noise_count, H=H, W=W,
+                    rank=cfg.prior.rank[k]
+                )
                 noise_prior = hydra.utils.instantiate(
                     cfg.prior.cls,
-                    rank=cfg.prior.rank[k],
                     **theta_list[0]
                 ).to(device)
                 level_priors_params.append(noise_prior)
@@ -85,10 +89,14 @@ def train(cfg: DictConfig):
                 level_priors_params.append(struct_prior)
             
             if sem_count > 0:
-                theta_list = hydra.utils.instantiate(cfg.prior.class_conditional_init, K=K, C=sem_count, H=H, W=W)
+                theta_list = hydra.utils.instantiate(
+                    cfg.prior.class_conditional_init,
+                    K=K,
+                    C=sem_count, H=H, W=W,
+                    rank=cfg.prior.rank[k]
+                )
                 sem_prior = ClassConditionalPrior([
-                    hydra.utils.instantiate(cfg.prior.cls, **theta, 
-                    rank=cfg.prior.rank[k]) for theta in theta_list
+                    hydra.utils.instantiate(cfg.prior.cls, **theta) for theta in theta_list
                 ]).to(device)
                 level_priors_params.append(sem_prior)
                 

@@ -14,3 +14,6 @@ prior:
   struct_features: [6, 12, 0]
   semantic_features: [0, 0, 48]
   rank: [[6, 8], [8, 8], [8, 8]]
+
+wandb:
+  group: "CIFAR10"

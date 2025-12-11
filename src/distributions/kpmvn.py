@@ -2,11 +2,6 @@ import torch
 from torch.distributions import Distribution
 from torch.distributions.utils import _standard_normal
 
-
-import torch
-from torch.distributions import Distribution, constraints
-from torch.distributions.utils import _standard_normal
-
 class KroneckerProductMVN(Distribution):
     """
     Multivariate Normal with covariance Sigma = Sigma_ch ⊗ Sigma_sp.
