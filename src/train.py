@@ -44,7 +44,7 @@ def train(cfg: DictConfig):
         init_fn = hydra.utils.instantiate(cfg.prior.init, _convert_="partial")
         theta_list = init_fn(K=cfg.data.dataset.num_classes, C=C, H=H, W=W)
         prior = ClassConditionalPrior([
-            hydra.utils.instantiate(cfg.prior, **theta) for theta in theta_list
+            hydra.utils.instantiate(cfg.prior.cls, **theta) for theta in theta_list
         ]).to(device)
         
     if cfg.training.lr == 0:

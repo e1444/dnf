@@ -1,10 +1,9 @@
-name: "kpmvn"
-_target_: src.models.priors.KPMVNPrior
+cls:
+  _target_: src.models.priors.KPMVNPrior
 
 init:
   _target_: src.utils.prior_init.kpmvn_simplex_init
-  params:
-    rank_ch: 8
-    rank_sp: 8
-    simplex_scale: 1.0
-    noise: 0.01
+  rank_ch: 8
+  rank_sp: 8
+  simplex_scale: 1.0
+  noise: 0.01

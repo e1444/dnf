@@ -1,9 +1,8 @@
-name: "lrmvn"
-_target_: src.models.priors.LowRankMVNPrior
+cls:
+  _target_: src.models.priors.LowRankMVNPrior
 
 init:
   _target_: src.utils.prior_init.lrmvn_simplex_init
-  params:
-    rank: 20
-    simplex_scale: 1.0
-    noise: 0.01
+  rank: 20
+  simplex_scale: 1.0
+  noise: 0.01
