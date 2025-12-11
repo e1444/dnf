@@ -8,13 +8,14 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_curve, 
 from .losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 
 
-def evaluate(model, data_loader, device, cfg, level_priors, splits):
+def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None):
     """
     Evaluate the model on a given dataset.
     """
     model.eval()
-    total_test_loss = 0.0
+    total_loss = 0.0
     total_nll = 0.0
+    total_logit_split = 0.0
     correct = 0
     total = 0
     
@@ -28,16 +29,26 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits):
             log_det = torch.sum(log_dets, dim=0)
             
             # Compute logits using the shared utility
-            logits = log_det.unsqueeze(1)
+            logits = log_det.unsqueeze(1)   # (B, 1)
+            all_level_logits = []
             for k, (z, h) in enumerate(outs):
-                level_logits = compute_level_logits(z, h, level_priors[k], splits[k], K)
-                logits = logits + level_logits
+                level_logits = compute_level_logits(z, h, level_priors[k], splits[k], K, sum=False)     # (B, K, 3)
+                all_level_logits.append(level_logits)
+                logits = logits + torch.sum(level_logits, dim=2)                                        # Sum over splits
+                
+            all_level_logits = torch.stack(all_level_logits, dim=3)  # (B, K, 3, L)
+            total_logit_split += torch.sum(all_level_logits, dim=(0, 1)).cpu().numpy()  # Sum over B and K -> (3, L)
 
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
             
             loss += cfg.training.r_logdet * (log_dets ** 2).mean()
-            total_test_loss += loss.item()
+            
+            if torch.isnan(loss) or torch.isinf(loss):
+                print("WARNING: NaN/Inf loss detected during evaluation. Skipping batch.")
+                continue
+            
+            total_loss += loss.item()
             
             # Calculate NLL for a clean evaluation metric
             nll_batch = nll_loss_fn(logits, y_batch) * y_batch.size(0)
@@ -48,11 +59,22 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits):
             total += y_batch.size(0)
             correct += (predicted == y_batch).sum().item()
 
-    avg_test_loss = total_test_loss / len(data_loader)
+    avg_loss = total_loss / len(data_loader)
     avg_nll = total_nll / total
+    avg_logit_split = total_logit_split / total
     accuracy = 100 * correct / total
     
-    return avg_test_loss, accuracy, avg_nll
+    if prefix is not None:
+        prefix = prefix + '_'
+    else:
+        prefix = ''
+    
+    return {
+        f"{prefix}loss": avg_loss,
+        f"{prefix}accuracy": accuracy,
+        f"{prefix}nll": avg_nll,
+        f"{prefix}logit_split": avg_logit_split,
+    }
 
 
 def compute_marginal_bpd(model, target_dists, loader, device, cfg):

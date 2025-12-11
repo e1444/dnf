@@ -7,7 +7,7 @@ def standard_normal_logprob(z_tensor):
     return -0.5 * (z_tensor.pow(2) + np.log(2 * np.pi)).sum(dim=1)
 
 
-def compute_level_logits(z, h, level_priors, level_split, K):
+def compute_level_logits(z, h, level_priors, level_split, K, sum=True):
     """
     Computes the logits for a single level of the hierarchy, using the formula:
     
@@ -34,25 +34,32 @@ def compute_level_logits(z, h, level_priors, level_split, K):
     struct_h = h[:, noise_count:noise_count+struct_count, :, :]
     sem_h = h[:, noise_count+struct_count:noise_count+struct_count+sem_count, :, :]
     
-    total_lp = 0.0
-    
+    B = h.shape[0]
+    device = h.device
+    dtype = h.dtype
+    noise_lp = torch.zeros(B, K, device=device, dtype=dtype)
+    struct_lp = torch.zeros(B, K, device=device, dtype=dtype)
+    sem_lp = torch.zeros(B, K, device=device, dtype=dtype)
+
     # --- Noise Log-Prob ---
-    if noise_prior is not None:
-        noise_lp = noise_prior(unit_scale=True).log_prob(noise_h).unsqueeze(1).expand(-1, K)    # (B, K)
-        total_lp = total_lp + noise_lp
-    
+    if noise_prior is not None and noise_h is not None:
+        noise_lp = noise_prior(unit_scale=True).log_prob(noise_h).unsqueeze(1).expand(-1, K)
+
     # --- Structural Log-Prob ---
-    if struct_prior is not None:
-        assert z is not None, "Structural prior requires latent variable z; you probably have struct_count > 0 on the top level"
-        struct_lp = struct_prior(z, unit_scale=True).log_prob(struct_h).unsqueeze(1).expand(-1, K) # (B, K)
-        total_lp = total_lp + struct_lp
-        
+    if struct_prior is not None and struct_h is not None:
+        assert z is not None, "Structural prior requires z; struct_count > 0 on top level is invalid"
+        struct_lp = struct_prior(z, unit_scale=True).log_prob(struct_h).unsqueeze(1).expand(-1, K)
+
     # --- Semantic Log-Probs (per class) ---
-    if sem_prior is not None:
-        sem_lps = torch.stack([dist.log_prob(sem_h) for dist in sem_prior(unit_scale=True)], dim=1)
-        total_lp = total_lp + sem_lps
-        
-    return total_lp  # (B, K)
+    if sem_prior is not None and sem_h is not None:
+        sem_lp = torch.stack([dist.unit_scale and dist.log_prob(sem_h) or dist.log_prob(sem_h)  # keep unit_scale behavior from caller
+                              for dist in sem_prior(unit_scale=True)], dim=1)
+
+    if sum:
+        return noise_lp + struct_lp + sem_lp  # (B, K)
+    else:
+        # (B, K, 3) with channels [noise, struct, sem]
+        return torch.stack([noise_lp, struct_lp, sem_lp], dim=2)
 
 
 def ce_loss_fn(logits, y_true, label_smoothing=0.0):

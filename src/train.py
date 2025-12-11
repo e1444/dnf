@@ -250,21 +250,22 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, level_priors, splits)
-            log_dict.update({
-                "test_loss": test_loss,
-                "test_accuracy": test_accuracy,
-                "test_nll": test_nll
-            })
+            train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, prefix="train_eval")
+            log_dict.update(train_stats)
+            test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, prefix="test")
+            log_dict.update(test_stats)
             
-            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, level_priors, splits)
-            log_dict.update({
-                "train_eval_loss": train_loss,
-                "train_eval_accuracy": train_accuracy,
-                "train_eval_nll": train_nll
-            })
+            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_stats['train_eval_accuracy']:.2f}%/{test_stats['test_accuracy']:.2f}% | NLL (Tr/Te): {train_stats['train_eval_nll']:.2f}/{test_stats['test_nll']:.2f} (Target {nll_constraint:.1f}) | Alpha: {avg_alpha:.4f}")
             
-            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_accuracy:.2f}%/{test_accuracy:.2f}% | NLL (Tr/Te): {avg_nll:.2f}/{test_nll:.2f} (Target {nll_constraint:.1f}) | Alpha: {avg_alpha:.4f}")
+            split_names = ["noise", "structure", "semantics"]
+            avg_logit_split = test_stats['test_logit_split']  # (3, L)
+            level_labels = [f"level_{i}" for i in range(avg_logit_split.shape[1])]
+            print("\nLogit split contributions (avg over samples):")
+            print("          " + "  ".join(f"{lvl:>10}" for lvl in level_labels))
+            for i, name in enumerate(split_names):
+                row = "  ".join(f"{avg_logit_split[i, j]:>10.4f}" for j in range(avg_logit_split.shape[1]))
+                print(f"{name:>10}  {row}")
+            print("")
 
         wandb.log(log_dict)
 
