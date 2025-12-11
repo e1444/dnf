@@ -2,12 +2,63 @@ import numpy as np
 import torch
 from torch import nn
 
+
 def standard_normal_logprob(z_tensor):
     return -0.5 * (z_tensor.pow(2) + np.log(2 * np.pi)).sum(dim=1)
+
+
+def compute_level_logits(z, h, level_priors, level_split, K):
+    """
+    Computes the logits for a single level of the hierarchy, using the formula:
+    
+    p(h^(i) | z^(i), y) = p(h^(i)_sem | y) p(h^(i)_struct | z^(i)) p(h^(i)_noise)
+    
+    and
+
+    p(z^(L) | y) = p(z^(L)_sem | y) p(z^(L)_noise)
+    
+    Args:
+        z: Tensor of shape (B, D, H, W) or None
+        h: Tensor of shape (B, M, H, W)
+        priors: tuple (noise_prior, struct_prior, sem_prior)
+            noise_prior: callable or None
+            struct_prior: callable or None
+            sem_prior: callable or None
+        level_split: tuple (noise_count, struct_count, sem_count)
+    """
+    noise_prior, struct_prior, sem_prior = level_priors
+    noise_count, struct_count, sem_count = level_split
+    
+    # Split target variable h
+    noise_h = h[:, :noise_count, :, :]
+    struct_h = h[:, noise_count:noise_count+struct_count, :, :]
+    sem_h = h[:, noise_count+struct_count:noise_count+struct_count+sem_count, :, :]
+    
+    total_lp = 0.0
+    
+    # --- Noise Log-Prob ---
+    if noise_prior is not None:
+        noise_lp = noise_prior(unit_scale=True).log_prob(noise_h).unsqueeze(1).expand(-1, K)    # (B, K)
+        total_lp = total_lp + noise_lp
+    
+    # --- Structural Log-Prob ---
+    if struct_prior is not None:
+        assert z is not None, "Structural prior requires latent variable z; you probably have struct_count > 0 on the top level"
+        struct_lp = struct_prior(z, unit_scale=True).log_prob(struct_h).unsqueeze(1).expand(-1, K) # (B, K)
+        total_lp = total_lp + struct_lp
+        
+    # --- Semantic Log-Probs (per class) ---
+    if sem_prior is not None:
+        sem_lps = torch.stack([dist.log_prob(sem_h) for dist in sem_prior(unit_scale=True)], dim=1)
+        total_lp = total_lp + sem_lps
+        
+    return total_lp  # (B, K)
+
 
 def ce_loss_fn(logits, y_true, label_smoothing=0.0):
     ce_loss = nn.functional.cross_entropy(logits, y_true, label_smoothing=label_smoothing)
     return ce_loss
+
 
 def nll_loss_fn(logits, y_true):
     batch_size = logits.shape[0]

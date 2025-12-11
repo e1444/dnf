@@ -10,9 +10,8 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
-from src.models.priors import LowRankMVNPrior, KPMVNPrior, ClassConditionalPrior
-from src.utils.prior_init import lrmvn_simplex_init, kpmvn_simplex_init
-from src.utils.losses import nll_loss_fn, ce_loss_fn, standard_normal_logprob
+from src.models.priors import ClassConditionalPrior
+from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 from src.utils.evaluation import evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -39,18 +38,64 @@ def train(cfg: DictConfig):
     # Initialize model
     model = hydra.utils.instantiate(cfg.model, input_shape=input_shape, _convert_="partial").to(device)
     
+    K = cfg.data.dataset.num_classes
+    noise_features = cfg.prior.noise_features
+    struct_features = cfg.prior.struct_features
+    semantic_features = cfg.prior.semantic_features
+    splits = list(zip(noise_features, struct_features, semantic_features))
+    
+    assert len(noise_features) == cfg.model.num_levels, "Length of noise_features must match number of model levels"
+    assert len(struct_features) == cfg.model.num_levels, "Length of struct_features must match number of model levels"
+    assert len(semantic_features) == cfg.model.num_levels, "Length of semantic_features must match number of model levels"
+    
+    level_priors = []
+    level_priors_params = nn.ModuleList()
+    
     with torch.no_grad():
-        K = cfg.data.dataset.num_classes
-        C, H, W = model.output_shapes[-1]
-        theta_list = hydra.utils.instantiate(cfg.prior.init, K=K, C=C, H=H, W=W)
-        prior = ClassConditionalPrior([
-            hydra.utils.instantiate(cfg.prior.cls, **theta) for theta in theta_list
-        ]).to(device)
-        
+        for k in range(cfg.model.num_levels):
+            C, H, W = model.output_shapes[k]
+            noise_count, struct_count, sem_count = splits[k]
+            assert noise_count >= 0, "Noise feature dimension must be non-negative"
+            assert struct_count >= 0, "Structure feature dimension must be non-negative"
+            assert sem_count >= 0, "Semantic feature dimension must be non-negative"
+            assert noise_count + struct_count + sem_count == C, "Sum of feature dimensions must equal total channels C"
+            
+            if k == cfg.model.num_levels - 1:
+                assert struct_count == 0, "Top level cannot have structural features"
+            
+            noise_prior, struct_prior, sem_prior = None, None, None
+            
+            if noise_count > 0:
+                theta_list = hydra.utils.instantiate(cfg.prior.zero_init, K=1, C=noise_count, H=H, W=W)
+                noise_prior = hydra.utils.instantiate(
+                    cfg.prior.cls,
+                    **theta_list[0]
+                ).to(device)
+                level_priors_params.append(noise_prior)
+            
+            if struct_count > 0:
+                theta_list = hydra.utils.instantiate(cfg.prior.zero_init, K=1, C=struct_count, H=H, W=W)
+                struct_prior = hydra.utils.instantiate(
+                    cfg.prior.conditional_cls,
+                    z_channels=C,
+                    h_channels=struct_count,
+                    **theta_list[0]
+                ).to(device)
+                level_priors_params.append(struct_prior)
+            
+            if sem_count > 0:
+                theta_list = hydra.utils.instantiate(cfg.prior.class_conditional_init, K=K, C=sem_count, H=H, W=W)
+                sem_prior = ClassConditionalPrior([
+                    hydra.utils.instantiate(cfg.prior.cls, **theta) for theta in theta_list
+                ]).to(device)
+                level_priors_params.append(sem_prior)
+                
+            level_priors.append((noise_prior, struct_prior, sem_prior))
+            
     if cfg.training.lr == 0:
         model.requires_grad_(False)
     if cfg.training.lr_prior == 0:
-        prior.requires_grad_(False)
+        level_priors_params.requires_grad_(False)
 
     optimizer = optim.AdamW(
         model.parameters(),
@@ -58,7 +103,7 @@ def train(cfg: DictConfig):
         weight_decay=cfg.training.weight_decay
     )
     optimizer.add_param_group({
-        'params': prior.parameters(),
+        'params': level_priors_params.parameters(),
         'lr': cfg.training.lr_prior,
         'weight_decay': cfg.training.weight_decay
     })
@@ -76,7 +121,7 @@ def train(cfg: DictConfig):
         print(f"Resuming training from {cfg.training.resume_from_checkpoint}")
         checkpoint = torch.load(cfg.training.resume_from_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
-        prior.load_state_dict(checkpoint['prior_state_dict'])
+        level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
         
         if not cfg.training.reset_optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -124,19 +169,11 @@ def train(cfg: DictConfig):
             outs, log_dets = model(x_batch)
             log_det = torch.sum(log_dets, dim=0)
             
-            # Compute logits
-            log_prob_noise = 0.0
-            for _, h in outs[:-1]:
-                h_flat = h.view(h.size(0), -1)
-                _log_prob_noise = standard_normal_logprob(h_flat)
-                log_prob_noise = log_prob_noise + _log_prob_noise
+            logits = log_det.unsqueeze(1)
+            for k, (z, h) in enumerate(outs):
+                level_logits = compute_level_logits(z, h, level_priors[k], splits[k], K)
+                logits = logits + level_logits
                 
-            z_semantic = outs[-1][1]
-            z_semantic_flat = z_semantic.view(z_semantic.size(0), -1)
-            log_prob_semantic = torch.stack([dist.log_prob(z_semantic_flat) for dist in prior(unit_scale=True)], dim=1)
-            
-            log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
-            logits = log_prob + log_det.unsqueeze(1)
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             task_loss = ce_loss
             
@@ -167,7 +204,7 @@ def train(cfg: DictConfig):
             
             # Clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
-            torch.nn.utils.clip_grad_norm_(prior.parameters(), max_norm=cfg.training.gradclip)
+            torch.nn.utils.clip_grad_norm_(level_priors_params.parameters(), max_norm=cfg.training.gradclip)
             
             optimizer.step()
             ema_model.update_parameters(model)
@@ -202,22 +239,21 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, prior)
+            test_loss, test_accuracy, test_nll = evaluate(ema_model, test_loader, device, cfg, level_priors, splits)
             log_dict.update({
                 "test_loss": test_loss,
                 "test_accuracy": test_accuracy,
                 "test_nll": test_nll
             })
             
-            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, prior)
+            train_loss, train_accuracy, train_nll = evaluate(model, train_loader, device, cfg, level_priors, splits)
             log_dict.update({
                 "train_eval_loss": train_loss,
                 "train_eval_accuracy": train_accuracy,
                 "train_eval_nll": train_nll
             })
             
-            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_accuracy:.2f}%/{test_accuracy:.2f}% | NLL: {avg_nll:.2f} (Target {nll_constraint:.1f}) | Alpha: {avg_alpha:.4f}")
-
+            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_accuracy:.2f}%/{test_accuracy:.2f}% | NLL (Tr/Te): {avg_nll:.2f}/{test_nll:.2f} (Target {nll_constraint:.1f}) | Alpha: {avg_alpha:.4f}")
 
         wandb.log(log_dict)
 
@@ -228,7 +264,7 @@ def train(cfg: DictConfig):
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'prior_state_dict': prior.state_dict(),
+                'prior_state_dict': level_priors_params.state_dict(),
                 'ema_model_state_dict': ema_model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),

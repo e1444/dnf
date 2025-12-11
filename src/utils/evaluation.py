@@ -5,9 +5,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
-from .losses import nll_loss_fn, ce_loss_fn, standard_normal_logprob
+from .losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 
-def evaluate(model, data_loader, device, cfg, prior):
+
+def evaluate(model, data_loader, device, cfg, level_priors, splits):
     """
     Evaluate the model on a given dataset.
     """
@@ -17,6 +18,8 @@ def evaluate(model, data_loader, device, cfg, prior):
     correct = 0
     total = 0
     
+    K = cfg.data.dataset.num_classes
+
     with torch.no_grad():
         for x_batch, y_batch in data_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
@@ -24,19 +27,12 @@ def evaluate(model, data_loader, device, cfg, prior):
             outs, log_dets = model(x_batch)
             log_det = torch.sum(log_dets, dim=0)
             
-            # Compute logits
-            log_prob_noise = 0.0
-            for _, h in outs[:-1]:
-                h_flat = h.view(h.size(0), -1)
-                _log_prob_noise = standard_normal_logprob(h_flat)
-                log_prob_noise = log_prob_noise + _log_prob_noise
-                
-            z_semantic = outs[-1][1]
-            z_semantic_flat = z_semantic.view(z_semantic.size(0), -1)
-            log_prob_semantic = torch.stack([dist.log_prob(z_semantic_flat) for dist in prior(unit_scale=True)], dim=1)
-            
-            log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
-            logits = log_prob + log_det.unsqueeze(1)
+            # Compute logits using the shared utility
+            logits = log_det.unsqueeze(1)
+            for k, (z, h) in enumerate(outs):
+                level_logits = compute_level_logits(z, h, level_priors[k], splits[k], K)
+                logits = logits + level_logits
+
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
             
@@ -51,7 +47,7 @@ def evaluate(model, data_loader, device, cfg, prior):
             _, predicted = torch.max(logits.data, 1)
             total += y_batch.size(0)
             correct += (predicted == y_batch).sum().item()
-            
+
     avg_test_loss = total_test_loss / len(data_loader)
     avg_nll = total_nll / total
     accuracy = 100 * correct / total

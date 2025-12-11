@@ -3,134 +3,206 @@ from torch.distributions import Distribution
 from torch.distributions.utils import _standard_normal
 
 
+import torch
+from torch.distributions import Distribution, constraints
+from torch.distributions.utils import _standard_normal
+
 class KroneckerProductMVN(Distribution):
     """
-    Multivariate Normal with covariance Sigma = Sigma_ch ⊗ Sigma_sp,
-    where Sigma_ch = D_ch + U_ch U_ch^T (C x C) and
-          Sigma_sp = D_sp + U_sp U_sp^T (S x S) with S = H*W.
-
-    Optimizations:
-      - log-determinant via matrix-determinant-lemma
-      - inverse application via Woodbury (precompute small r×r Cholesky)
-      - rsample: optimized low-rank sampler that never materializes S×S matrices
+    Multivariate Normal with covariance Sigma = Sigma_ch ⊗ Sigma_sp.
+    Supports arbitrary batch shapes for loc, ch_cov, and sp_cov.
     """
     arg_constraints = {}    # type: ignore
     has_rsample = True
 
     def __init__(self, loc, ch_cov, sp_cov, C, H, W, jitter=1e-6):
         """
-        loc: (C * S,) mean vector
-        ch_cov: tuple (U_ch, D_ch) where U_ch: (C, r_ch), D_ch: (C,)
-        sp_cov: tuple (U_sp, D_sp) where U_sp: (S, r_sp), D_sp: (S,)
+        loc: (..., C * S) mean vector
+        ch_cov: tuple (U_ch, D_ch) where U_ch: (..., C, r_ch), D_ch: (..., C)
+        sp_cov: tuple (U_sp, D_sp) where U_sp: (..., S, r_sp), D_sp: (..., S)
         """
         self.C, self.H, self.W = C, H, W
         self.D_ch = C
         self.D_sp = H * W
+        S = self.D_sp
 
-        self._loc = loc
-        self.ch_cov_factor, self.ch_cov_diag = ch_cov
-        self.sp_cov_factor, self.sp_cov_diag = sp_cov
-
+        # 1. Broadcast all parameters to a common batch shape
+        # We need to look at the batch dimensions of loc, ch params, and sp params
+        # loc: (Batch..., CS)
+        # ch_d: (Batch..., C)
+        # sp_d: (Batch..., S)
+        # We broadcast the *leading* dimensions.
+        batch_shape = torch.broadcast_shapes(
+            loc.shape[:-1],
+            ch_cov[1].shape[:-1], # ch_cov_diag
+            sp_cov[1].shape[:-1]  # sp_cov_diag
+        )
+        
+        # Reshape loc to (Batch..., C, H, W) for event_shape alignment
+        self._loc = loc.expand(batch_shape + (C * S,)).reshape(batch_shape + (C, H, W))
+        
+        # Broadcast Covariance parameters
+        # Factor U: (..., D, r) -> expand to (batch..., D, r)
+        # Diag D:   (..., D)    -> expand to (batch..., D)
+        self.ch_cov_factor = ch_cov[0].expand(batch_shape + (C, -1))
+        self.ch_cov_diag   = ch_cov[1].expand(batch_shape + (C,))
+        self.sp_cov_factor = sp_cov[0].expand(batch_shape + (S, -1))
+        self.sp_cov_diag   = sp_cov[1].expand(batch_shape + (S,))
+        
         self.jitter = jitter
 
-        # Precompute log-determinants
-        self._log_det_ch = self._compute_log_det(self.ch_cov_diag, self.ch_cov_factor)
-        self._log_det_sp = self._compute_log_det(self.sp_cov_diag, self.sp_cov_factor)
+        # 2. Precompute log-determinants (batched)
+        self._log_det_ch = self._compute_log_det(self.ch_cov_diag, self.ch_cov_factor) # (Batch...)
+        self._log_det_sp = self._compute_log_det(self.sp_cov_diag, self.sp_cov_factor) # (Batch...)
         self.log_det_total = self.D_sp * self._log_det_ch + self.D_ch * self._log_det_sp
 
-        # Precompute Woodbury caches (for inverse application)
+        # 3. Precompute Woodbury caches (batched)
         self.ch_woodbury_cache = self._precompute_woodbury(self.ch_cov_diag, self.ch_cov_factor, jitter)
         self.sp_woodbury_cache = self._precompute_woodbury(self.sp_cov_diag, self.sp_cov_factor, jitter)
 
-        super().__init__(batch_shape=torch.Size(), event_shape=loc.shape)
+        super().__init__(batch_shape=batch_shape, event_shape=torch.Size([C, H, W]))
 
     @staticmethod
     def _compute_log_det(cov_diag, cov_factor):
-        # cov_diag: (D,), cov_factor: (D, r)
-        r = cov_factor.shape[1]
+        """
+        cov_diag: (..., D)
+        cov_factor: (..., D, r)
+        """
+        r = cov_factor.shape[-1]
         D_inv = 1.0 / cov_diag
-        # M = I_r + U^T D^{-1} U
-        U_scaled = cov_factor * D_inv.unsqueeze(-1)  # (D, r)
-        M = torch.eye(r, device=cov_diag.device, dtype=cov_diag.dtype) + cov_factor.t() @ U_scaled
+        # U_scaled = U * D^-1. Broadcasting (..., D, r) * (..., D, 1)
+        U_scaled = cov_factor * D_inv.unsqueeze(-1) 
+        
+        # M = I + U^T D^-1 U
+        # matmul: (..., r, D) @ (..., D, r) -> (..., r, r)
+        M = torch.eye(r, device=cov_diag.device, dtype=cov_diag.dtype) + torch.matmul(cov_factor.transpose(-1, -2), U_scaled)
+        
         sign, logabsdet_M = torch.linalg.slogdet(M)
-        logdet_D = torch.sum(torch.log(cov_diag))
+        logdet_D = torch.sum(torch.log(cov_diag), dim=-1)
         return logdet_D + logabsdet_M
 
     def _precompute_woodbury(self, D, U, jitter):
         """
-        Precompute D_inv, Cholesky of (I + U^T D^{-1} U), and U.
-        D: (D,), U: (D, r)
-        Returns dict with: "D_inv": (D,), "L_inner": (r, r), "U": (D, r)
+        Precomputes Woodbury parts. Handles batching natively.
+        D: (..., D_dim)
+        U: (..., D_dim, r)
         """
-        r = U.shape[1]
+        r = U.shape[-1]
         D_inv = 1.0 / D
-        # M_inner = I + U^T D^{-1} U
-        M_inner = torch.eye(r, device=D.device, dtype=D.dtype) + U.t() @ (U * D_inv.unsqueeze(-1))
-        # add jitter for numerical stability
+        
+        # M_inner = I + U^T D^-1 U
+        # U * D_inv.unsqueeze(-1) -> (..., D, r)
+        # U.t() handles batching if we use transpose(-1, -2)
+        U_scaled = U * D_inv.unsqueeze(-1)
+        M_inner = torch.eye(r, device=D.device, dtype=D.dtype) + torch.matmul(U.transpose(-1, -2), U_scaled)
+        
+        # Jitter
         M_inner = M_inner + jitter * torch.eye(r, device=D.device, dtype=D.dtype)
-        L_inner = torch.linalg.cholesky(M_inner)  # (r, r), lower triangular
+        
+        # Cholesky decomposition of the r x r matrix
+        L_inner = torch.linalg.cholesky(M_inner) 
+        
         return {"D_inv": D_inv, "L_inner": L_inner, "U": U}
+
+    def _unsqueeze_cache(self, cache, dim_idx):
+        """
+        Helper to insert a singleton dimension into cached tensors to support 
+        broadcasting against 'interjected' dimensions (like S in the channel step).
+        
+        If dim_idx is -2 (insert before the last dim):
+           D_inv (..., D)    -> (..., 1, D)
+           U     (..., D, r) -> (..., 1, D, r)
+           L     (..., r, r) -> (..., 1, r, r)
+        """
+        new_cache = {}
+        for k, v in cache.items():
+            # If v is a matrix (U, L), we need to insert at dim_idx - 1 (because it has an extra dim at the end)
+            # If v is a vector (D_inv), we insert at dim_idx
+            
+            # Logic:
+            # We want to insert a '1' such that it aligns with the 'interjected' dimension in M.
+            # M shape: (..., Interjected, D)
+            # D_inv shape: (..., D). We want (..., 1, D)
+            # U shape: (..., D, r). We want (..., 1, D, r)
+            # L shape: (..., r, r). We want (..., 1, r, r)
+            
+            # So effectively we insert at -2 for D_inv, and -3 for U and L.
+            
+            if k == "D_inv":
+                new_cache[k] = v.unsqueeze(-2)
+            else:
+                new_cache[k] = v.unsqueeze(-3)
+        return new_cache
 
     def _apply_woodbury_inverse(self, M, cache):
         """
-        Applies (D + U U^T)^{-1} @ M where M's last dim has size D.
-        M can have arbitrary leading batch dims.
-        cache: from _precompute_woodbury
-        Returns tensor with same shape as M.
+        M: (..., D)  (Last dim matches covariance dim)
+        cache: Batched parameters aligned with M's leading dims.
         """
-        D_inv = cache["D_inv"]              # (D,)
-        L_inner = cache["L_inner"]          # (r, r) (cholesky)
-        U = cache["U"]                      # (D, r)
+        D_inv = cache["D_inv"]      # (..., D)
+        L_inner = cache["L_inner"]  # (..., r, r)
+        U = cache["U"]              # (..., D, r)
 
-        D = D_inv.shape[0]
-        assert M.shape[-1] == D, "Last dim of M must equal covariance dimension"
+        # 1. D^-1 M
+        # D_inv is (..., D). M is (..., D). 
+        # Standard broadcasting works if batch dims match.
+        D_inv_M = M * D_inv 
 
-        # Broadcast D_inv to multiply last dim: shape (1,1,..., D)
-        shape_for_D = [1] * (M.dim() - 1) + [-1]
-        D_inv_shaped = D_inv.view(*shape_for_D)
+        # 2. rhs = U^T @ (D^-1 M)
+        # U: (..., D, r). D_inv_M: (..., D)
+        # We want contraction over D. Result (..., r)
+        # einsum '...dr, ...d -> ...r' robustly handles batch dimensions
+        rhs = torch.einsum("...dr,...d->...r", U, D_inv_M)
 
-        # D^{-1} * M  (broadcasted)
-        D_inv_M = M * D_inv_shaped  # shape: same as M
+        # 3. Solve (I + U^T D^-1 U) X = rhs
+        # rhs: (..., r). unsqueeze to (..., r, 1) for cholesky_solve
+        inner_solved = torch.cholesky_solve(rhs.unsqueeze(-1), L_inner).squeeze(-1) # (..., r)
 
-        # rhs = U^T @ (D_inv_M) along last dim -> resulting shape (..., r)
-        # FIX: "dr" -> "rd" to match U.t() shape of (r, d)
-        rhs = torch.einsum("rd,...d->...r", U.t(), D_inv_M)
-
-        # cholesky_solve: need rhs[..., r, 1]
-        rhs_unsq = rhs.unsqueeze(-1)  # (..., r, 1)
-        # Use torch.cholesky_solve (works with lower-tri L)
-        inner_solved = torch.cholesky_solve(rhs_unsq, L_inner)  # (..., r, 1)
-        inner_solved = inner_solved.squeeze(-1)  # (..., r)
-
-        # correction = (U * D_inv[:,None]) @ inner_solved  -> (..., D)
-        correction = torch.einsum("dr,...r->...d", U * D_inv.view(-1, 1), inner_solved)
+        # 4. correction = D^-1 U @ inner_solved
+        # term: (U * D_inv_expanded) -> (..., D, r)
+        # inner_solved: (..., r)
+        # result: (..., D)
+        U_Dinv = U * D_inv.unsqueeze(-1)
+        correction = torch.einsum("...dr,...r->...d", U_Dinv, inner_solved)
 
         return D_inv_M - correction
 
     def log_prob(self, value):
         """
-        value: (B, C * S)
-        returns: (B,) log probability
+        value: (Sample_Batch..., Batch..., C, H, W)
         """
-        if value.dim() != 2:
-            raise ValueError("value must be (B, C*S)")
+        # Ensure value aligns with loc
+        diff = value - self.loc # (..., C, H, W)
+        
+        # Reshape to (..., C, S)
+        # We use shape[:-3] to preserve all leading sample/batch dimensions
+        Z = diff.reshape(diff.shape[:-3] + (self.C, self.D_sp))
 
-        B = value.shape[0]
-        diff = value - self.loc.unsqueeze(0)          # (B, C*S)
-        Z = diff.view(B, self.C, self.D_sp)          # (B, C, S)
+        # --- Step 1: Apply Sigma_ch^-1 ---
+        # Z is (..., C, S). We permute to (..., S, C) to put C last.
+        Z_perm = Z.transpose(-2, -1) # (..., S, C)
+        
+        # CRITICAL: Z_perm has shape (..., S, C). 
+        # The channel covariance params have shape (Batch..., C).
+        # They align with 'C', but 'S' is sitting in between Batch and C.
+        # We must insert a singleton dim into the cache params to bridge 'S'.
+        ch_cache_expanded = self._unsqueeze_cache(self.ch_woodbury_cache, -2)
+        
+        T1_perm = self._apply_woodbury_inverse(Z_perm, ch_cache_expanded)
+        T1 = T1_perm.transpose(-2, -1) # Swap back -> (..., C, S)
+        
+        # --- Step 2: Apply Sigma_sp^-1 ---
+        # T1 is (..., C, S). S is last.
+        # Spatial params are (Batch..., S).
+        # 'C' is sitting between Batch and S.
+        # We must insert a singleton dim into the cache params to bridge 'C'.
+        sp_cache_expanded = self._unsqueeze_cache(self.sp_woodbury_cache, -2)
+        
+        T = self._apply_woodbury_inverse(T1, sp_cache_expanded) # (..., C, S)
 
-        # 1) Apply Sigma_ch^{-1} on the channel axis:
-        # Permute so last dim = C for _apply_woodbury_inverse => shape (B, S, C)
-        Z_ch_last = Z.permute(0, 2, 1)
-        T1_ch_last = self._apply_woodbury_inverse(Z_ch_last, self.ch_woodbury_cache)
-        T1 = T1_ch_last.permute(0, 2, 1)              # (B, C, S) == Sigma_ch^{-1} @ Z
-
-        # 2) Apply Sigma_sp^{-1} on the spatial axis (last dim = S)
-        # _apply_woodbury_inverse expects last dim = D_sp, so pass T1 directly
-        T = self._apply_woodbury_inverse(T1, self.sp_woodbury_cache)  # (B, C, S)
-
-        # 3) Mahalanobis distance = sum over channel & spatial dims
-        mahalanobis_dist = torch.sum(Z * T, dim=[1, 2])  # (B,)
+        # --- Step 3: Mahalanobis ---
+        # tr(Z^T T) = sum(Z * T)
+        mahalanobis_dist = torch.sum(Z * T, dim=[-2, -1])
 
         const_term = (self.D_ch * self.D_sp) * torch.log(
             2.0 * torch.tensor(torch.pi, device=value.device, dtype=value.dtype)
@@ -140,64 +212,75 @@ class KroneckerProductMVN(Distribution):
 
     def rsample(self, sample_shape=torch.Size()):
         """
-        Fully optimized low-rank sampler (vectorized).
-        Steps:
-          - For spatial side (S large): sample Y_sp columns independently using low-rank sampler:
-                for each column j: y_sp_j = D_sp^{1/2} * eps1 + U_sp @ eps2
-            This gives Y (S x C) with independent columns sampled from N(0, Sigma_sp).
-          - Compute small dense cholesky of Sigma_ch (C x C) and apply to columns:
-                Z = (Y @ L_ch.T).T  -> shape (C, S)
-          - Flatten and add loc.
-        Returns: tensor shaped (N, C*S) where N = prod(sample_shape)
+        Generates samples: (sample_shape + batch_shape + event_shape)
         """
-        # shape handling
-        shape = self._extended_shape(sample_shape)
-        # shape is (..., event_size) in torch Distribution utils; we only care about number of samples
-        # interpret shape as (N, )
-        if len(shape) == 0:
-            N = 1
-        else:
-            N = shape[0]
-
+        # 1. Setup Shapes
+        batch_shape = self.batch_shape
+        shape = sample_shape + batch_shape  # type: ignore
+        
         device = self.loc.device
         dtype = self.loc.dtype
-        B = N
-
         S = self.D_sp
         C = self.C
 
-        # Spatial sampling: vectorized across (B, C) columns
-        r_sp = self.sp_cov_factor.shape[1]
-        # eps1_sp: (B, S, C) for diagonal part
-        eps1_sp = _standard_normal((B, S, C), dtype=dtype, device=device)
-        # eps2_sp: (B, r_sp, C) for low-rank part (per-column independent)
-        eps2_sp = _standard_normal((B, r_sp, C), dtype=dtype, device=device)
+        # 2. Spatial Sampling (Low Rank + Diagonal)
+        # We generate noise for shape: (Sample..., Batch..., S, C)
+        # Note: We treat 'C' as independent spatial samples initially.
+        
+        # eps1_sp: Standard normal noise for the spatial diagonal part
+        eps1_sp = _standard_normal(shape + (S, C), dtype=dtype, device=device)
+        
+        # eps2_sp: Standard normal noise for the spatial low-rank part
+        r_sp = self.sp_cov_factor.shape[-1]
+        eps2_sp = _standard_normal(shape + (r_sp, C), dtype=dtype, device=device)
 
-        # part1 = D_sp^{1/2} * eps1_sp  -> broadcast with shape (1, S, 1)
-        D_sp_sqrt = torch.sqrt(self.sp_cov_diag).view(1, S, 1)
-        part1 = D_sp_sqrt * eps1_sp  # (B, S, C)
+        # Apply Diagonal Variance
+        # sp_cov_diag: (Batch..., S). 
+        # We need to broadcast it against (Sample..., Batch..., S, C)
+        # Reshape to (1..., Batch..., S, 1) to align correctly.
+        # We calculate the number of sample dims to prepend '1's.
+        sample_dims = len(sample_shape)
+        D_sp_view = self.sp_cov_diag
+        for _ in range(sample_dims):
+            D_sp_view = D_sp_view.unsqueeze(0)
+        
+        # Using unsqueeze is safer than reshape as it doesn't depend on memory layout.
+        D_sp_sqrt = torch.sqrt(D_sp_view).unsqueeze(-1) # (1..., Batch..., S, 1)
+        part1 = D_sp_sqrt * eps1_sp
 
-        # part2 = U_sp @ eps2_sp  -> U_sp: (S, r_sp), eps2_sp: (B, r_sp, C) -> result (B, S, C)
-        part2 = torch.einsum("sr,brc->bsc", self.sp_cov_factor, eps2_sp)
+        # Apply Low-Rank Variance
+        # part2 = U_sp @ eps2_sp
+        # U_sp: (Batch..., S, r). eps2_sp: (Sample..., Batch..., r, C)
+        # Matmul broadcasts the batch dimensions automatically.
+        part2 = torch.matmul(self.sp_cov_factor, eps2_sp)
+        
+        # Y is the spatially correlated, channel independent intermediate
+        Y = part1 + part2 # (Sample..., Batch..., S, C)
 
-        Y = part1 + part2  # (B, S, C) : each slice [:, :, j] is one column sample of spatial side
+        # 3. Channel Correlation (Dense Cholesky)
+        # Sigma_ch = D + UU^T
+        U_ch = self.ch_cov_factor
+        D_ch = torch.diag_embed(self.ch_cov_diag)
+        Sigma_ch = D_ch + torch.matmul(U_ch, U_ch.transpose(-1, -2))
+        
+        # Add jitter for stability
+        I_C = torch.eye(C, device=device, dtype=dtype)
+        Sigma_ch = Sigma_ch + self.jitter * I_C
+        
+        # Cholesky decomp -> (Batch..., C, C)
+        L_ch = torch.linalg.cholesky(Sigma_ch)
 
-        # Now apply small dense channel sqrt: compute Sigma_ch dense (C x C), cholesky it
-        # Sigma_ch = diag(ch_cov_diag) + U_ch @ U_ch.T
-        Sigma_ch = torch.diag(self.ch_cov_diag) + (self.ch_cov_factor @ self.ch_cov_factor.t())
-        # Add jitter for numerical stability
-        Sigma_ch = Sigma_ch + self.jitter * torch.eye(C, device=device, dtype=dtype)
-        L_ch = torch.linalg.cholesky(Sigma_ch)  # (C, C) lower triangular such that L_ch @ L_ch.T = Sigma_ch
+        # We want to correlate the 'C' dimension of Y.
+        # Y is (..., S, C). We need Y @ L_ch^T.
+        # Matmul broadcasts L_ch (Batch..., C, C) against Y (Sample..., Batch..., S, C)
+        W = torch.matmul(Y, L_ch.transpose(-1, -2)) 
 
-        # Multiply: for each batch b, W_b = Y_b @ L_ch.T -> (S, C)
-        # Vectorized: W = einsum('bsc,cd->bsd', Y, L_ch.T)
-        W = torch.einsum("bsc,cd->bsd", Y, L_ch.t())  # (B, S, C)
-
-        # Convert to Z of shape (B, C, S)
-        Z = W.permute(0, 2, 1)  # (B, C, S)
-
-        sample = Z.reshape(B, C * S) + self.loc.unsqueeze(0)  # (B, C*S)
-        return sample
+        # 4. Final Reshape and Loc
+        # Transpose S and C to match flattening order (C outer, S inner) -> (..., C, S)
+        # Then reshape to (..., C, H, W)
+        Z = W.transpose(-2, -1).reshape(shape + (self.C, self.H, self.W))
+        
+        return self.loc + Z
 
     @property
     def loc(self):
@@ -208,93 +291,146 @@ if __name__ == "__main__":
     print("--- Running Test Suite for KroneckerProductMVN ---")
     
     # 1. Setup test parameters
-    C, H, W = 4, 2, 2
+    C, H, W = 4, 32, 32
     D_ch, D_sp = C, H * W
     r_ch, r_sp = 2, 2
-    B = 8 # Batch size for testing
+    
+    # Use a multi-dimensional batch shape to test broadcasting
+    batch_shape = (3, 2) 
+    sample_shape = (500,)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(42)
 
-    # 2. Generate random parameters for the distributions
-    loc = torch.randn(D_ch * D_sp, device=device)
+    # 2. Generate random BATCHED parameters for the distributions
+    print(f"\nStep 1: Generating batched parameters with batch_shape={batch_shape}")
+    loc = torch.randn(batch_shape + (D_ch * D_sp,), device=device)
     
     # Channel covariance components
-    ch_cov_diag = torch.rand(D_ch, device=device) + 0.5
-    ch_cov_factor = torch.randn(D_ch, r_ch, device=device)
+    ch_cov_diag = torch.rand(batch_shape + (D_ch,), device=device) + 0.5
+    ch_cov_factor = torch.randn(batch_shape + (D_ch, r_ch), device=device)
     
     # Spatial covariance components
-    sp_cov_diag = torch.rand(D_sp, device=device) + 0.5
-    sp_cov_factor = torch.randn(D_sp, r_sp, device=device)
+    sp_cov_diag = torch.rand(batch_shape + (D_sp,), device=device) + 0.5
+    sp_cov_factor = torch.randn(batch_shape + (D_sp, r_sp), device=device)
 
-    # 3. Build the Ground Truth Distribution
-    print("\nStep 1: Constructing ground truth distribution...")
+    # 3. Build the Ground Truth Distribution (Iteratively)
+    print("\nStep 2: Constructing ground truth distribution (iteratively)...")
     
-    # Construct full dense matrices from low-rank components
-    Sigma_ch = torch.diag(ch_cov_diag) + ch_cov_factor @ ch_cov_factor.t()
-    Sigma_sp = torch.diag(sp_cov_diag) + sp_cov_factor @ sp_cov_factor.t()
+    # Since torch.kron is not batched, we must loop.
+    lp_ground_truth_list = []
+    log_det_gt_list = []
     
-    # Construct the full (and very large) Kronecker product covariance
-    # This is computationally expensive and exactly what our class avoids.
-    print(f"Materializing full Kronecker product matrix of size ({D_ch*D_sp}, {D_ch*D_sp})...")
-    Sigma_total = torch.kron(Sigma_ch, Sigma_sp)
-    
-    # Add jitter for numerical stability, as torch.kron can lose precision
-    Sigma_total += 1e-6 * torch.eye(D_ch * D_sp, device=device)
+    # Generate test data with sample and batch dimensions
+    test_data = torch.randn(sample_shape + batch_shape + (C, H, W), device=device)
 
-    ground_truth_dist = torch.distributions.MultivariateNormal(
-        loc=loc,
-        covariance_matrix=Sigma_total
-    )
-    print("Ground truth distribution created.")
+    # This nested loop simulates iterating over the batch dimensions
+    for i in range(batch_shape[0]):
+        for j in range(batch_shape[1]):
+            # Select the parameters for this specific batch item
+            loc_ij = loc[i, j]
+            ch_diag_ij = ch_cov_diag[i, j]
+            ch_factor_ij = ch_cov_factor[i, j]
+            sp_diag_ij = sp_cov_diag[i, j]
+            sp_factor_ij = sp_cov_factor[i, j]
+            
+            # Construct the dense covariance for this single item
+            Sigma_ch = torch.diag(ch_diag_ij) + ch_factor_ij @ ch_factor_ij.t()
+            Sigma_sp = torch.diag(sp_diag_ij) + sp_factor_ij @ sp_factor_ij.t()
+            Sigma_total = torch.kron(Sigma_ch, Sigma_sp)
+            Sigma_total += 1e-5 * torch.eye(D_ch * D_sp, device=device) # Increased jitter
 
-    # 4. Build Our KroneckerProductMVN Distribution
-    print("\nStep 2: Constructing optimized KroneckerProductMVN distribution...")
+            # Create a single MVN for this batch item
+            gt_dist_ij = torch.distributions.MultivariateNormal(
+                loc=loc_ij,
+                covariance_matrix=Sigma_total
+            )
+            
+            # Calculate log_prob for the corresponding slice of test data
+            # Flatten for GT
+            test_data_ij_flat = test_data[:, i, j, ...].reshape(-1, D_ch * D_sp)
+            lp_ground_truth_list.append(gt_dist_ij.log_prob(test_data_ij_flat))
+            
+            # Store log determinant
+            _, log_det_gt_ij = torch.linalg.slogdet(Sigma_total)
+            log_det_gt_list.append(log_det_gt_ij)
+
+    # Stack results to match the expected batched output shape
+    lp_ground_truth = torch.stack([
+        torch.stack(lp_ground_truth_list[i*batch_shape[1]:(i+1)*batch_shape[1]], dim=1) 
+        for i in range(batch_shape[0])
+    ], dim=1)
+    log_det_gt = torch.tensor(log_det_gt_list, device=device).reshape(batch_shape)
+    print("Ground truth calculations complete.")
+
+
+    # 4. Build Our Batched KroneckerProductMVN Distribution
+    print("\nStep 3: Constructing single, batched KroneckerProductMVN distribution...")
     our_dist = KroneckerProductMVN(
         loc=loc,
         ch_cov=(ch_cov_factor, ch_cov_diag),
         sp_cov=(sp_cov_factor, sp_cov_diag),
-        C=C, H=H, W=W
+        C=C, H=H, W=W,
+        jitter=1e-5 # Match jitter
     )
-    print("Optimized distribution created.")
+    print("Optimized batched distribution created.")
+    assert our_dist.batch_shape == batch_shape, f"Batch shape mismatch! Expected {batch_shape}, got {our_dist.batch_shape}"
+    assert our_dist.event_shape == (C, H, W), f"Event shape mismatch! Expected {(C, H, W)}, got {our_dist.event_shape}"
 
-    # 5. Generate test data
-    test_data = torch.randn(B, D_ch * D_sp, device=device)
 
-    # 6. Compare log_prob results
-    print("\nStep 3: Comparing log_prob results...")
+    # 5. Compare log_prob results
+    print("\nStep 4: Comparing log_prob results...")
     
-    # Calculate log_prob using the ground truth
-    lp_ground_truth = ground_truth_dist.log_prob(test_data)
-    
-    # Calculate log_prob using our optimized implementation
+    # Calculate log_prob using our single batched implementation
     lp_ours = our_dist.log_prob(test_data)
     
     # --- Verification ---
-    print(f"\nGround Truth log_prob:\n{lp_ground_truth}")
-    print(f"\nOur Optimized log_prob:\n{lp_ours}")
+    print(f"Ground Truth log_prob shape: {lp_ground_truth.shape}")
+    print(f"Our Optimized log_prob shape: {lp_ours.shape}")
     
-    error = torch.abs(lp_ground_truth - lp_ours).mean()
-    print(f"\nMean Absolute Error: {error.item():.6f}")
+    assert lp_ours.shape == sample_shape + batch_shape, f"Log_prob shape error! Expected {sample_shape + batch_shape}, got {lp_ours.shape}"
 
     try:
         torch.testing.assert_close(lp_ground_truth, lp_ours, rtol=1e-3, atol=1e-3)
-        print("\n[SUCCESS] log_prob results match ground truth.")
+        print("\n[SUCCESS] Batched log_prob results match ground truth.")
     except AssertionError as e:
-        print("\n[FAILURE] log_prob results DO NOT match ground truth.")
+        print("\n[FAILURE] Batched log_prob results DO NOT match ground truth.")
         print(e)
 
-    # 7. Compare log determinant
-    print("\nStep 4: Comparing log determinant...")
-    _, log_det_gt = torch.linalg.slogdet(ground_truth_dist.covariance_matrix)
+    # 6. Compare log determinant
+    print("\nStep 5: Comparing log determinant...")
     log_det_ours = our_dist.log_det_total
 
-    print(f"Ground Truth log_det: {log_det_gt:.4f}")
-    print(f"Our Optimized log_det: {log_det_ours:.4f}")
+    print(f"Ground Truth log_det shape: {log_det_gt.shape}")
+    print(f"Our Optimized log_det shape: {log_det_ours.shape}")
+    
+    assert log_det_ours.shape == batch_shape, f"Log_det shape error! Expected {batch_shape}, got {log_det_ours.shape}"
 
     try:
         torch.testing.assert_close(log_det_gt, log_det_ours, rtol=1e-3, atol=1e-3)
-        print("\n[SUCCESS] Log determinant matches ground truth.")
+        print("\n[SUCCESS] Batched Log determinant matches ground truth.")
     except AssertionError as e:
-        print("\n[FAILURE] Log determinant DO NOT match ground truth.")
+        print("\n[FAILURE] Batched Log determinant DO NOT match ground truth.")
         print(e)
+
+    # 7. Test rsample
+    print("\nStep 6: Testing rsample()...")
+    samples = our_dist.rsample(sample_shape)
+    expected_shape = sample_shape + batch_shape + (C, H, W)
+    print(f"Expected sample shape: {expected_shape}")
+    print(f"Actual sample shape:   {samples.shape}")
+    assert samples.shape == expected_shape, "rsample() returned incorrect shape!"
+    
+    # Check basic statistics
+    sample_mean = samples.mean(dim=list(range(len(sample_shape))))
+    sample_std = samples.std(dim=list(range(len(sample_shape))))
+    
+    # The mean of samples should be close to the distribution's loc
+    # loc is (Batch..., C, H, W)
+    mean_error = torch.abs(sample_mean - our_dist.loc).mean()
+    print(f"Mean error between samples and loc: {mean_error:.4f}")
+    # This is a weak test, but confirms the loc is being used.
+    # A low error suggests correctness. For a large sample_shape, this should be very small.
+    assert mean_error < 0.1, "Sample mean deviates significantly from loc."
+
+    print("\n[SUCCESS] rsample() tests passed.")

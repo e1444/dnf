@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
-from .layers import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split, LogitTransform
+from .modules import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_blocks: int, dropout: float, actnorm_initialization="identity", invconv_initialization="orthogonal"):
@@ -77,7 +77,7 @@ class DGLOWNetwork(nn.Module):
                 
                 for flow_step in level:
                     if self.checkpoint_grads and z.requires_grad:
-                        z, log_det = checkpoint.checkpoint(flow_step, z, use_reentrant=False)
+                        z, log_det = checkpoint.checkpoint(flow_step, z, use_reentrant=False)   # type: ignore
                     else:
                         z, log_det = flow_step(z)
                     log_dets.append(log_det)
@@ -96,7 +96,7 @@ class DGLOWNetwork(nn.Module):
         for level in reversed(self.split_levels):
             if isinstance(level, nn.ModuleList): # Flow steps
                 for flow_step in reversed(level):
-                    x, log_det = flow_step.inverse(x)
+                    x, log_det = flow_step.inverse(x)   # type: ignore
                     total_log_det += log_det
                     
                 x, log_det_squeeze = self.squeeze.inverse(x)
@@ -144,7 +144,7 @@ if __name__ == "__main__":
     # --- Test DGLOWNetwork Invertibility ---
     print("\n--- Testing DGLOWNetwork Invertibility ---")
     model = DGLOWNetwork(
-        in_channels=1,
+        input_shape=(1, 32, 32),
         num_levels=3,
         steps_per_level=[4, 4, 4],
         hidden_channels=64,

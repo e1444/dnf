@@ -2,6 +2,38 @@ import torch
 import torch.nn as nn
 import torch.linalg as la
 
+
+class AttentionPooling(nn.Module):
+    """
+    Performs attention-based pooling. For each channel, it learns a spatial
+    attention map to compute a weighted average of features.
+    """
+    def __init__(self, num_features: int):
+        super().__init__()
+        self.attention_conv = nn.Conv2d(num_features, num_features, 1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor of shape (B, C, H, W)
+        Returns:
+            Pooled feature vector of shape (B, C)
+        """
+        # Compute attention logits
+        attention_logits = self.attention_conv(x) # (B, C, H, W)
+        
+        # Flatten spatial dimensions and apply softmax
+        B, C, H, W = attention_logits.shape
+        attention_logits_flat = attention_logits.view(B, C, H * W)
+        attention_weights = nn.functional.softmax(attention_logits_flat, dim=-1) # (B, C, H*W)
+        
+        # Compute weighted average
+        x_flat = x.view(B, C, H * W)
+        pooled_features = torch.sum(x_flat * attention_weights, dim=-1) # (B, C)
+        
+        return pooled_features
+    
+
 class LogitTransform(nn.Module):
     """
     Maps data from [0, 1] to (-inf, inf) using logit(alpha + (1 - 2*alpha) * x).
@@ -38,6 +70,7 @@ class LogitTransform(nn.Module):
             dim=[1, 2, 3]
         )
         return x, log_det
+
 
 class ActNorm(nn.Module):
     def __init__(self, num_channels, initialization="identity"):
@@ -76,6 +109,7 @@ class ActNorm(nn.Module):
         log_det = -torch.sum(self.logs) * h * w
         return x, log_det
 
+
 class Squeeze(nn.Module):
     def __init__(self):
         super().__init__()
@@ -97,7 +131,8 @@ class Squeeze(nn.Module):
         # Return a zero tensor with shape (batch_size,) on the correct device
         log_det = torch.zeros(b, device=x.device)
         return x, log_det
-    
+
+
 class GatedConv2d(nn.Module):
     """
     Combines Conv2d and Gated Activation.
@@ -114,6 +149,7 @@ class GatedConv2d(nn.Module):
         x = self.conv(x)
         a, b = x.chunk(2, dim=1)
         return torch.tanh(a) * torch.sigmoid(b)
+
 
 class GatedResNetBlock(nn.Module):
     """
@@ -135,6 +171,7 @@ class GatedResNetBlock(nn.Module):
         out = self.dropout(out)
         return residual + out
 
+
 class FlowPlusPlusCouplingNet(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0):
         super().__init__()
@@ -152,13 +189,14 @@ class FlowPlusPlusCouplingNet(nn.Module):
         
         # Zero initialization for the last layer (Identity Init)
         self.out_conv.weight.data.zero_()
-        self.out_conv.bias.data.zero_()
+        self.out_conv.bias.data.zero_()     # type: ignore
 
     def forward(self, x):
         x = self.in_conv(x)
         for block in self.blocks:
             x = block(x)
         return self.out_conv(x)
+
 
 class CNNCouplingLayer(nn.Module):
     scale_clamp: torch.Tensor
@@ -206,6 +244,7 @@ class CNNCouplingLayer(nn.Module):
         x = torch.cat([y_a, x_b], dim=1)
         log_det = -torch.sum(log_s, dim=[1, 2, 3])
         return x, log_det
+
 
 class Invertible1x1Conv(nn.Module):
     p: torch.Tensor
@@ -265,6 +304,7 @@ class Invertible1x1Conv(nn.Module):
         log_det = -torch.sum(self.log_s) * h * w_dim
         return x, log_det
 
+
 class Split(nn.Module):
     def __init__(self, num_channels):
         super().__init__()
@@ -276,6 +316,7 @@ class Split(nn.Module):
     def inverse(self, x1, x2):
         x = torch.cat((x1, x2), dim=1)
         return x, 0
-    
+
+
 if __name__ == "__main__":
     pass
