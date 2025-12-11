@@ -13,7 +13,7 @@ model:
 prior:
   # MNIST (1x32x32) -> L0(16x16), L1(8x8), L2(4x4)
   # Channels: 2 -> 4 -> 16
-  noise_features: [0, 0, 0]
-  struct_features: [2, 4, 0]
-  semantic_features: [0, 0, 16]
+  noise_features:     [1, 0, 0]
+  struct_features:    [1, 4, 0]
+  semantic_features:  [0, 0, 16]
   rank: [[2, 8], [4, 8], [8, 8]]
