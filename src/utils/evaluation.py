@@ -5,9 +5,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, log_loss, roc_curve, auc
-from .losses import deep_ce_loss, total_loss_fn, compute_logits, nll_loss_fn, ce_loss_fn, entropy_loss_fn
+from .losses import deep_ce_loss, total_loss_fn, compute_logits, nll_loss_fn, ce_loss_fn, entropy_loss_fn, standard_normal_logprob
 
-def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_layers):
+def evaluate(model, data_loader, device, cfg, target_dists):
     """
     Evaluate the model on a given dataset.
     """
@@ -21,38 +21,23 @@ def evaluate(model, data_loader, device, cfg, target_dists, betas, lambda_, aux_
         for x_batch, y_batch in data_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             
-            zs = model(x_batch)
-            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs] # Flatten each part of z
-            zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]  # Concatenate all parts
-            zs = [((z[:, :-cfg.training.features], z[:, -cfg.training.features:]), log_det) for z, log_det in zs]  # Split into noise + semantic parts
-            aux_zs = [zs[i] for i in aux_layers]
-            z, log_det = zs[-1]
+            outs, log_dets = model(x_batch)
+            log_det = torch.sum(log_dets, dim=0)
             
-            noise_dists = torch.distributions.Independent(
-                torch.distributions.Normal(loc=torch.zeros_like(z[0]), scale=torch.ones_like(z[0])), 
-                reinterpreted_batch_ndims=1
-            )
+            # Compute logits
+            log_prob_noise = 0.0
+            for _, h in outs[:-1]:
+                _log_prob_noise = standard_normal_logprob(h)
+                log_prob_noise = log_prob_noise + _log_prob_noise
+                
+            z_semantic = outs[-1][1]
+            log_prob_semantic = torch.stack([dist.log_prob(z_semantic) for dist in target_dists], dim=1)
             
-            log_prob_noise = noise_dists.log_prob(z[0])
-            log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
             log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
             logits = log_prob + log_det.unsqueeze(1)
+            ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
+            loss = ce_loss
             
-            aux_log_prob_noise = [noise_dists.log_prob(aux_z[0][0]) for aux_z in aux_zs]
-            aux_log_prob_semantic = [torch.stack([dist.log_prob(aux_z[0][1]) for dist in target_dists], dim=1) for aux_z in aux_zs]
-            aux_log_prob = [ln.unsqueeze(1) + ls for ln, ls in zip(aux_log_prob_noise, aux_log_prob_semantic)]
-            aux_logits = [lp + log_det.unsqueeze(1) for lp, (_, log_det) in zip(aux_log_prob, aux_zs)]
-            
-            # Calculate loss
-            aux_loss = deep_ce_loss(aux_logits, y_batch, betas)
-            final_loss = total_loss_fn(logits, y_batch, lambda_=lambda_)
-            loss = aux_loss + final_loss
-            
-            # Regularization terms
-            log_dets = [log_det for _, log_det in zs]
-            for i in reversed(range(1, len(log_dets))):
-                log_dets[i] = log_dets[i] - log_dets[i - 1]
-                
             loss += cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
             total_test_loss += loss.item()
             

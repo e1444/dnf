@@ -16,7 +16,6 @@ eval_interval: 1
 checkpoint_interval: 5
 
 # Loss and regularization weights
-lambda_: 0.8
 gamma_beta: 0.5
 aux_start: 32
 aux_freq: 1
@@ -50,6 +49,3 @@ nll_constraint: -3000.0
 resume_from_checkpoint: null
 reset_optimizer: false
 reset_freeze: true
-freeze_steps:
-  start: null
-  end: null

@@ -59,31 +59,31 @@ class DGLOWNetwork(nn.Module):
             current_channels //= 2  # After Split
 
         self.split_levels = self.split_levels[:-1]  # Remove last split
-
+    
     def forward(self, x):
-        total_log_det = torch.zeros(x.shape[0], device=x.device)
-        x, log_det = self.logit_transform(x)
-        total_log_det += log_det
+        log_dets = []
+        z, log_det = self.logit_transform(x)
+        log_dets.append(log_det)
         
-        z = []
-        zs = []
+        outs = []
         for level in self.split_levels:
             if isinstance(level, nn.ModuleList): # Flow steps
-                x, log_det_squeeze = self.squeeze(x)
-                total_log_det += log_det_squeeze
+                z, log_det = self.squeeze(z)
+                log_dets.append(log_det)
                 
                 for flow_step in level:
-                    if self.checkpoint_grads and x.requires_grad:
-                        x, log_det = checkpoint.checkpoint(flow_step, x, use_reentrant=False)
+                    if self.checkpoint_grads and z.requires_grad:
+                        z, log_det = checkpoint.checkpoint(flow_step, z, use_reentrant=False)
                     else:
-                        x, log_det = flow_step(x)
-                    total_log_det += log_det
-                    zs.append((z + [x], total_log_det.clone()))
+                        z, log_det = flow_step(z)
+                    log_dets.append(log_det)
             elif isinstance(level, Split): # Split
-                x, z_part = level(x)
-                z.append(z_part)
+                z, h = level(z, method="split")
+                outs.append((z, h))
 
-        return zs
+        outs.append((None, z))  # Final latent without split
+        log_dets = torch.stack(log_dets, dim=0)
+        return outs, log_dets
     
     def inverse(self, z):
         total_log_det = torch.zeros(z[0].shape[0], device=z[0].device)
@@ -105,22 +105,6 @@ class DGLOWNetwork(nn.Module):
         total_log_det += log_det
 
         return x, total_log_det
-    
-    def set_freeze_steps(self, freeze: bool, start: int, end: int):
-        if end == -1:
-            end = self.total_steps
-            
-        start = max(0, start)
-        end = min(self.total_steps, end)
-        
-        step_counter = 0
-        for level in self.split_levels:
-            if isinstance(level, nn.ModuleList):
-                for flow_step in level:
-                    if start <= step_counter < end:
-                        for param in flow_step.parameters():
-                            param.requires_grad = not freeze
-                    step_counter += 1
     
     @property
     def total_steps(self):

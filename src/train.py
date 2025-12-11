@@ -230,40 +230,31 @@ def train(cfg: DictConfig):
             optimizer.zero_grad()
 
             # Forward pass
-            zs = model(x_batch)
-            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs] # Flatten each part of z
-            zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]  # Concatenate all parts
-            zs = [((z[:, :-cfg.training.features], z[:, -cfg.training.features:]), log_det) for z, log_det in zs]  # Split into noise + semantic parts
-            aux_zs = [zs[i] for i in aux_layers]
-            z, log_det = zs[-1]
+            outs, log_dets = model(x_batch)
+            log_det = torch.sum(log_dets, dim=0)
             
             # Get the current dynamic target distributions
             target_dists = get_target_distributions(latent_mu, latent_v, latent_U, cfg, device)
                         
             # Compute logits
-            log_prob_noise = standard_normal_logprob(z[0])
-            log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
+            log_prob_noise = 0.0
+            for _, h in outs[:-1]:
+                _log_prob_noise = standard_normal_logprob(h)
+                log_prob_noise = log_prob_noise + _log_prob_noise
+                
+            z_semantic = outs[-1][1]
+            log_prob_semantic = torch.stack([dist.log_prob(z_semantic) for dist in target_dists], dim=1)
+            
             log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
             logits = log_prob + log_det.unsqueeze(1)
-            
-            aux_log_prob_noise = [standard_normal_logprob(aux_z[0][0]) for aux_z in aux_zs]
-            aux_log_prob_semantic = [torch.stack([dist.log_prob(aux_z[0][1]) for dist in target_dists], dim=1) for aux_z in aux_zs]
-            aux_log_prob = [ln.unsqueeze(1) + ls for ln, ls in zip(aux_log_prob_noise, aux_log_prob_semantic)]
-            aux_logits = [lp + log_det.unsqueeze(1) for lp, (_, log_det) in zip(aux_log_prob, aux_zs)]
-            
-            # 1. Task Loss (CE + Aux)
-            aux_ce_loss = deep_ce_loss(aux_logits, y_batch, betas, label_smoothing=cfg.training.label_smoothing)
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
-            task_loss = (1 - cfg.training.lambda_) * aux_ce_loss + cfg.training.lambda_ * ce_loss
+            task_loss = ce_loss
             
             # 2. NLL Loss (The Constraint)
             nll_loss = nll_loss_fn(logits, y_batch)
             
-            # 3. Regularization terms (Jacobian smoothness)
-            log_dets = [log_det for _, log_det in zs]
-            for i in reversed(range(1, len(log_dets))):
-                log_dets[i] = log_dets[i] - log_dets[i - 1]
-            reg_loss = cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
+            # 3. Regularization terms
+            reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
             
             # Primal Objective
             primal_loss = task_loss
@@ -272,7 +263,6 @@ def train(cfg: DictConfig):
             if torch.isnan(primal_loss) or torch.isinf(primal_loss):
                 print(f"CRITICAL ERROR: NaN/Inf loss detected at epoch {epoch} batch {batch_idx}.")
                 print("Terminating training to save resources.")
-                # Optional: Save a 'crash' checkpoint for debugging
                 return
             
             alpha = F.softplus(log_alpha)
