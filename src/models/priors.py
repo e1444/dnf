@@ -243,13 +243,31 @@ class ConditionalKPMVNPrior(nn.Module):
                 raise Warning("sp_cov_scale is ignored when unit_scale=True")
             
             # Scale channel and spatial covariances to have unit determinant
-            ch_cov_scale = torch.exp(-KroneckerProductMVN._compute_log_det(torch.exp(log_ch_D), ch_U) / self.h_C)   # type: ignore
-            sp_cov_scale = torch.exp(-KroneckerProductMVN._compute_log_det(torch.exp(log_sp_D), sp_U) / self.S)     # type: ignore
+            # These return (B,)
+            ld_ch = KroneckerProductMVN._compute_log_det(torch.exp(log_ch_D) + eps, ch_U)
+            ld_sp = KroneckerProductMVN._compute_log_det(torch.exp(log_sp_D) + eps, sp_U)
+            
+            # Calculate scales (B,)
+            ch_cov_scale_val = torch.exp(-ld_ch / self.h_C)
+            sp_cov_scale_val = torch.exp(-ld_sp / self.S)
+            
+            # Reshape for broadcasting against D (B, C) and U (B, C, r)
+            ch_scale_D = ch_cov_scale_val.view(-1, 1)
+            ch_scale_U = ch_cov_scale_val.view(-1, 1, 1)
+            
+            # Reshape for broadcasting against D (B, S) and U (B, S, r)
+            sp_scale_D = sp_cov_scale_val.view(-1, 1)
+            sp_scale_U = sp_cov_scale_val.view(-1, 1, 1)
+        else:
+            # Ensure they are tensors for consistent operations below
+            # If they are floats (scalars), they broadcast automatically to everything
+            ch_scale_D = ch_scale_U = ch_cov_scale
+            sp_scale_D = sp_scale_U = sp_cov_scale
 
         # Instantiate and return the batched distribution for h
         return KroneckerProductMVN(
             loc=loc,
-            ch_cov=(ch_U * (ch_cov_scale ** 0.5), torch.exp(log_ch_D) * ch_cov_scale + eps),
-            sp_cov=(sp_U * (sp_cov_scale ** 0.5), torch.exp(log_sp_D) * sp_cov_scale + eps),
+            ch_cov=(ch_U * (ch_scale_U ** 0.5), torch.exp(log_ch_D) * ch_scale_D + eps),
+            sp_cov=(sp_U * (sp_scale_U ** 0.5), torch.exp(log_sp_D) * sp_scale_D + eps),
             C=self.h_C, H=self.H, W=self.W
         )
