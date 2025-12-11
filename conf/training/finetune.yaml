@@ -1,0 +1,23 @@
+defaults:
+  - default
+
+epochs: 70
+lr: 1e-4
+lr_prior: 1e-5
+
+r_logdet: 0.0
+label_smoothing: 0.0
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
+  T_0: 10
+  T_mult: 2
+  eta_min: 1e-6
+
+use_al: True
+log_alpha: 1.0
+lr_log_alpha: 1e-3
+nll_constraint: 0.0   # Specify based on warmup results
+aug_rho: 1.0
+
+reset_optimizer: true

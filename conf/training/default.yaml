@@ -4,7 +4,6 @@ lr_prior: 0
 gradclip: 1.0
 weight_decay: 1e-4
 epochs: 20
-warmup_epochs: 5
 
 eval_interval: 1
 checkpoint_interval: 5
@@ -18,11 +17,11 @@ r_logdet: 1e-2
 label_smoothing: 0.1
 
 # Scheduler settings
+warmup_epochs: 5
 scheduler:
-  _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
-  T_0: 10
-  T_mult: 2
-  eta_min: 1e-6
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: ${..epochs}
+  eta_min: 1e-5
 
 # Lagrange multipliers settings
 use_al: false
