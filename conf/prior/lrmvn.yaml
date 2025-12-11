@@ -2,7 +2,7 @@ noise_features: [0, 0, 0]
 struct_features: [2, 4, 0]
 semantic_features: [0, 0, 16]
 
-rank: 20
+rank: [2, 4, 20]
 
 cls:
   _target_: src.models.priors.LowRankMVNPrior
@@ -12,10 +12,8 @@ conditional_cls:
 
 zero_init:
   _target_: null # TODO implement zero init for LRMVN prior
-  rank: ${..rank}
   noise: 0.01
   
 class_conditional_init:
   _target_: src.utils.prior_init.lrmvn_simplex_init
-  rank: ${..rank}
   noise: 0.01

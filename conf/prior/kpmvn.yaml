@@ -2,27 +2,24 @@ noise_features: [0, 0, 0]
 struct_features: [2, 4, 0]
 semantic_features: [0, 0, 16]
 
-rank_ch: 8
-rank_sp: 8
+rank: [
+  [2, 8],
+  [4, 8],
+  [8, 8]
+]
 
 cls:
   _target_: src.models.priors.KPMVNPrior
 
 conditional_cls:
   _target_: src.models.priors.ConditionalKPMVNPrior
-  rank_ch: ${..rank_ch}
-  rank_sp: ${..rank_sp}
   backbone_features: 256
 
 zero_init:
   _target_: src.utils.prior_init.kpmvn_zero_init
-  rank_ch: ${..rank_ch}
-  rank_sp: ${..rank_sp}
   noise: 0.01
   
 class_conditional_init:
   _target_: src.utils.prior_init.kpmvn_simplex_init
-  rank_ch: ${..rank_ch}
-  rank_sp: ${..rank_sp}
   simplex_scale: 1.0
   noise: 0.01

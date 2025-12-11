@@ -176,7 +176,7 @@ class ConditionalKPMVNPrior(nn.Module):
         z_channels: int,
         h_channels: int,
         H: int, W: int,
-        rank_ch: int, rank_sp: int,
+        rank: tuple[int, int],
         backbone_features: int = 256,
     ):
         """
@@ -187,13 +187,15 @@ class ConditionalKPMVNPrior(nn.Module):
             z_channels: Number of channels in the conditioning tensor z.
             h_channels: Number of channels in the target tensor h.
             H, W: Spatial dimensions of the latent variables.
-            rank_ch, rank_sp: Ranks for the KPMVN covariance factors.
+            rank: tuple (rank_ch, rank_sp)
+                rank_ch: Rank of channel covariance
+                rank_sp: Rank of spatial covariance
             backbone_features: Number of features in the backbone network.
         """
         super().__init__()
         self.h_C, self.H, self.W = h_channels, H, W
         self.S = H * W
-        self.rank_ch, self.rank_sp = rank_ch, rank_sp
+        self.rank_ch, self.rank_sp = rank
 
         # 1. Shared Backbone to process z
         self.backbone = nn.Sequential(
