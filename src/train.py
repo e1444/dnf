@@ -74,12 +74,11 @@ def train(cfg: DictConfig):
                 level_priors_params.append(noise_prior)
             
             if struct_count > 0:
-                theta_list = hydra.utils.instantiate(cfg.prior.zero_init, K=1, C=struct_count, H=H, W=W)
                 struct_prior = hydra.utils.instantiate(
                     cfg.prior.conditional_cls,
                     z_channels=C,
                     h_channels=struct_count,
-                    **theta_list[0]
+                    H=H, W=W
                 ).to(device)
                 level_priors_params.append(struct_prior)
             
