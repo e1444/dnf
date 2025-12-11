@@ -78,7 +78,7 @@ class DGLOWNetwork(nn.Module):
                         z, log_det = flow_step(z)
                     log_dets.append(log_det)
             elif isinstance(level, Split): # Split
-                z, h = level(z, method="split")
+                z, h = level(z)
                 outs.append((z, h))
 
         outs.append((None, z))  # Final latent without split
