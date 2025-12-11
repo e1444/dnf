@@ -11,6 +11,7 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
 from src.models.priors import LowRankMVNPrior, KPMVNPrior, ClassConditionalPrior
+from src.utils.prior_init import lrmvn_simplex_init
 from src.utils.losses import nll_loss_fn, ce_loss_fn, standard_normal_logprob
 from src.utils.evaluation import evaluate
 
@@ -37,21 +38,17 @@ def train(cfg: DictConfig):
     model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
     
     with torch.no_grad():
-        initial_mu = torch.zeros(cfg.training.num_classes, cfg.training.features, device=device)
-        for i in range(cfg.training.num_classes):
-            initial_mu[i, i] = cfg.training.latent_separation
-        initial_mu += torch.randn_like(initial_mu) * cfg.training.latent_noise
-        
-        initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * cfg.training.latent_v
-        initial_v += torch.randn_like(initial_v) * cfg.training.latent_noise
-        
-        initial_U = torch.zeros(cfg.training.num_classes, cfg.training.features, cfg.training.latent_U_size, device=device)
-        
+        loc, diag, U = lrmvn_simplex_init(
+            K=cfg.training.num_classes,
+            D=cfg.model.latent_dim,
+            rank=cfg.training.latent_U_size,
+            simplex_scale=cfg.training.latent_separation
+        )
         prior = ClassConditionalPrior([
             LowRankMVNPrior(
-                loc=initial_mu[i],
-                diag=initial_v[i],
-                U=initial_U[i]
+                loc=loc[i],
+                diag=diag[i],
+                U=U[i]
             ) for i in range(cfg.training.num_classes)
         ]).to(device)
         
