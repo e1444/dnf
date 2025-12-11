@@ -174,16 +174,6 @@ def train(cfg: DictConfig):
         
         start_epoch = checkpoint['epoch'] + 1
         
-    if cfg.training.reset_freeze:
-        model.set_freeze_steps(freeze=False, start=0, end=-1)
-    
-    if cfg.training.freeze_steps.start is not None or cfg.training.freeze_steps.end is not None:
-        model.set_freeze_steps(
-            freeze=True,
-            start=cfg.training.freeze_steps.start,
-            end=cfg.training.freeze_steps.end
-        )
-        
     # Initialize EMA model
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
         
