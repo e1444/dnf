@@ -28,7 +28,7 @@ class FlowStep(nn.Module):
         return z, log_det_act + log_det_conv + log_det_coup
 
 class DGLOWNetwork(nn.Module):
-    def __init__(self, in_channels: int, input_shape: tuple[int, int], num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal", checkpoint_grads: bool = False):
+    def __init__(self, input_shape: tuple[int, int, int], num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal", checkpoint_grads: bool = False):
         super(DGLOWNetwork, self).__init__()
         assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
         
@@ -40,8 +40,7 @@ class DGLOWNetwork(nn.Module):
         self.checkpoint_grads = checkpoint_grads
         self.output_shapes = []
         
-        C = in_channels
-        H, W = input_shape
+        C, H, W = input_shape
         for level_idx in range(num_levels):
             C *= 4  # After Squeeze
             H //= 2

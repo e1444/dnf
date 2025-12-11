@@ -1,6 +1,5 @@
 _target_: src.models.glow.DGLOWNetwork
 
-in_channels: 1
 num_levels: 3
 steps_per_level: [24, 24, 48]
 hidden_channels: 128

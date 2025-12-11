@@ -34,9 +34,10 @@ def train(cfg: DictConfig):
     
     # Load data
     train_loader, test_loader = load_dataset(cfg.data)
+    input_shape = next(iter(train_loader))[0].shape[1:]  # (C, H, W)
     
     # Initialize model
-    model = hydra.utils.instantiate(cfg.model, _convert_="partial").to(device)
+    model = hydra.utils.instantiate(cfg.model, input_shape=input_shape, _convert_="partial").to(device)
     
     with torch.no_grad():
         C, H, W = model.output_shapes[-1]
