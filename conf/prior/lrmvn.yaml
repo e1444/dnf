@@ -3,7 +3,6 @@ cls:
 
 init:
   _target_: src.utils.prior_init.lrmvn_simplex_init
-  _convert_: partial
   rank: 20
   simplex_scale: 1.0
   noise: 0.01
