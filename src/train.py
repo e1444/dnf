@@ -42,7 +42,7 @@ def train(cfg: DictConfig):
             initial_mu[i, i] = cfg.training.latent_separation
         initial_mu += torch.randn_like(initial_mu) * cfg.training.latent_noise
         
-        initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * torch.tensor(cfg.training.latent_v)
+        initial_v = torch.ones(cfg.training.num_classes, cfg.training.features, device=device) * cfg.training.latent_v
         initial_v += torch.randn_like(initial_v) * cfg.training.latent_noise
         
         initial_U = torch.zeros(cfg.training.num_classes, cfg.training.features, cfg.training.latent_U_size, device=device)

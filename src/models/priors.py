@@ -17,7 +17,7 @@ class LowRankMVNPrior(nn.Module):
         """
         super(LowRankMVNPrior, self).__init__()
         
-        assert diag.positive().all(), "Diagonal covariance must be positive"
+        assert (diag > 0).all(), "Diagonal covariance must be positive"
         
         self.loc = nn.Parameter(loc)
         self.log_diag = nn.Parameter(torch.log(diag))
@@ -76,8 +76,8 @@ class KPMVNPrior(nn.Module):
         self.D_ch = C
         self.D_sp = H * W
         
-        assert ch_cov[1].positive().all(), "Channel diagonal must be positive"
-        assert sp_cov[1].positive().all(), "Spatial diagonal must be positive"
+        assert (ch_cov[1] > 0).all(), "Channel diagonal must be positive"
+        assert (sp_cov[1] > 0).all(), "Spatial diagonal must be positive"
 
         self._loc = nn.Parameter(loc)
         self.ch_cov_factor = nn.Parameter(ch_cov[0])
