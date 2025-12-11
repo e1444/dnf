@@ -225,11 +225,13 @@ def train(cfg: DictConfig):
             # Compute logits
             log_prob_noise = 0.0
             for _, h in outs[:-1]:
-                _log_prob_noise = standard_normal_logprob(h)
+                h_flat = h.view(h.size(0), -1)
+                _log_prob_noise = standard_normal_logprob(h_flat)
                 log_prob_noise = log_prob_noise + _log_prob_noise
                 
             z_semantic = outs[-1][1]
-            log_prob_semantic = torch.stack([dist.log_prob(z_semantic) for dist in target_dists], dim=1)
+            z_semantic_flat = z_semantic.view(z_semantic.size(0), -1)
+            log_prob_semantic = torch.stack([dist.log_prob(z_semantic_flat) for dist in target_dists], dim=1)
             
             log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
             logits = log_prob + log_det.unsqueeze(1)
