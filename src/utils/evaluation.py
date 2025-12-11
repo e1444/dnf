@@ -40,7 +40,7 @@ def evaluate(model, data_loader, device, cfg, target_dists):
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
             
-            loss += cfg.training.r_logdet * (torch.stack(log_dets) ** 2).mean()
+            loss += cfg.training.r_logdet * (log_dets ** 2).mean()
             total_test_loss += loss.item()
             
             # Calculate NLL for a clean evaluation metric
