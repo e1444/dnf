@@ -40,7 +40,7 @@ def lrmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: int, simplex_sca
     
     return theta
 
-def kpmvn_zeros_init(K: int, C: int, H: int, W: int, *, rank_ch: int, rank_sp: int, noise: float = 0.0) -> list[dict]:
+def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank_ch: int, rank_sp: int, noise: float = 0.0) -> list[dict]:
     """
     Initialize Kronecker-Product Multivariate Normal Prior Parameters at Zero
     
