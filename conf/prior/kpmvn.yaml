@@ -3,6 +3,7 @@ cls:
 
 init:
   _target_: src.utils.prior_init.kpmvn_simplex_init
+  _convert_: partial
   rank_ch: 8
   rank_sp: 8
   simplex_scale: 1.0

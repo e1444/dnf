@@ -1,7 +1,7 @@
 import torch
 
 
-def lrmvn_simplex_init(K: int, C: int, H: int, W: int, rank: int, simplex_scale: float = 1.0, noise: float = 0.0) -> list[dict]:
+def lrmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: int, simplex_scale: float = 1.0, noise: float = 0.0) -> list[dict]:
     """
     Initialize Low-Rank Multivariate Normal Prior Parameters on Simplex
     
@@ -40,7 +40,7 @@ def lrmvn_simplex_init(K: int, C: int, H: int, W: int, rank: int, simplex_scale:
     
     return theta
 
-def kpmvn_simplex_init(K: int, C: int, H: int, W: int, rank_ch: int, rank_sp: int, simplex_scale: float = 1.0, noise: float = 0.0) -> list[dict]:
+def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank_ch: int, rank_sp: int, simplex_scale: float = 1.0, noise: float = 0.0) -> list[dict]:
     """
     Initialize Kronecker-Product Multivariate Normal Prior Parameters on Simplex
     

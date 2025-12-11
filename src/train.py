@@ -40,9 +40,10 @@ def train(cfg: DictConfig):
     model = hydra.utils.instantiate(cfg.model, input_shape=input_shape, _convert_="partial").to(device)
     
     with torch.no_grad():
+        K = cfg.data.dataset.num_classes
         C, H, W = model.output_shapes[-1]
-        init_fn = hydra.utils.instantiate(cfg.prior.init, _convert_="partial")
-        theta_list = init_fn(K=cfg.data.dataset.num_classes, C=C, H=H, W=W)
+        init_fn = hydra.utils.instantiate(cfg.prior.init)
+        theta_list = init_fn(K=K, C=C, H=H, W=W)
         prior = ClassConditionalPrior([
             hydra.utils.instantiate(cfg.prior.cls, **theta) for theta in theta_list
         ]).to(device)
