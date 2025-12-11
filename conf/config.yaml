@@ -3,6 +3,7 @@ defaults:
   - _self_
   - data: mnist
   - model: glow
+  - prior: lrmvn
   - training: default
 
 project:

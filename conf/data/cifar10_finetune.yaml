@@ -2,6 +2,7 @@ dataset:
   name: "CIFAR10"
   path: "${paths.data}/cifar10"
   download: true
+  num_classes: 10
   train_transform:
     - type: "Dequantize"
   test_transform:

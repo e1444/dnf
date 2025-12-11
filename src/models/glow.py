@@ -28,7 +28,7 @@ class FlowStep(nn.Module):
         return z, log_det_act + log_det_conv + log_det_coup
 
 class DGLOWNetwork(nn.Module):
-    def __init__(self, in_channels: int, num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal", checkpoint_grads: bool = False):
+    def __init__(self, in_channels: int, input_shape: tuple[int, int], num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal", checkpoint_grads: bool = False):
         super(DGLOWNetwork, self).__init__()
         assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
         
@@ -38,13 +38,17 @@ class DGLOWNetwork(nn.Module):
         self.num_levels = num_levels
         self.steps_per_level = steps_per_level  
         self.checkpoint_grads = checkpoint_grads
+        self.output_shapes = []
         
-        current_channels = in_channels
+        C = in_channels
+        H, W = input_shape
         for level_idx in range(num_levels):
-            current_channels *= 4  # After Squeeze
+            C *= 4  # After Squeeze
+            H //= 2
+            W //= 2
             level_flows = nn.ModuleList([
                 FlowStep(
-                    current_channels, 
+                    C, 
                     hidden_channels, 
                     num_blocks=num_blocks,
                     dropout=dropout,
@@ -54,11 +58,12 @@ class DGLOWNetwork(nn.Module):
             ])
             self.split_levels.append(level_flows)
             
-            split = Split(current_channels)
-            self.split_levels.append(split)
-            current_channels //= 2  # After Split
-
-        self.split_levels = self.split_levels[:-1]  # Remove last split
+            if level_idx < num_levels - 1:
+                split = Split(C)
+                self.split_levels.append(split)
+                C //= 2  # After Split
+                
+            self.output_shapes.append((C, H, W))
     
     def forward(self, x):
         log_dets = []

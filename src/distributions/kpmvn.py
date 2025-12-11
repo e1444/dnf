@@ -14,7 +14,7 @@ class KroneckerProductMVN(Distribution):
       - inverse application via Woodbury (precompute small r×r Cholesky)
       - rsample: optimized low-rank sampler that never materializes S×S matrices
     """
-    arg_constraints = {}
+    arg_constraints = {}    # type: ignore
     has_rsample = True
 
     def __init__(self, loc, ch_cov, sp_cov, C, H, W, jitter=1e-6):

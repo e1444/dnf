@@ -2,6 +2,7 @@ dataset:
   name: "MNIST"
   path: "${paths.data}/mnist"
   download: true
+  num_classes: 10
   train_transform:
     - type: "Pad"
       params:

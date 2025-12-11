@@ -24,13 +24,6 @@ scheduler:
   T_mult: 2
   eta_min: 1e-6
 
-# Initialization
-latent_separation: 1
-latent_U_size: 20
-latent_noise: 0.0
-features: 256
-num_classes: 10
-
 # Lagrange multipliers settings
 use_al: false
 log_alpha: 0.0
