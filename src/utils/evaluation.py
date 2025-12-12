@@ -57,8 +57,8 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
                     sem_penalty = sum(d.kl_to_isotropic().mean() for d in priors[2]) / len(priors[2])
                     reg_prior_cov = reg_prior_cov + r * sem_penalty
                 
-            all_level_logits = torch.stack(all_level_logits, dim=3)  # (B, K, 3, L)
-            total_logit_split += torch.sum(all_level_logits, dim=(0, 1)).cpu().numpy()  # Sum over B and K -> (3, L)
+            all_level_logits = torch.stack(all_level_logits, dim=3)                             # (B, K, 3, L)
+            total_logit_split = total_logit_split + torch.sum(all_level_logits, dim=(0, 1))     # Sum over B and K -> (3, L)
 
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
