@@ -16,6 +16,5 @@ zero_init:
   
 class_conditional_init:
   _target_: src.utils.prior_init.lrmvn_simplex_init
-  rank: ${..rank}
   simplex_scale: 1.0
   noise: 0.01

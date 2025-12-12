@@ -1,6 +1,5 @@
 import os
 import hydra
-import wandb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -38,60 +37,65 @@ def main(cfg: DictConfig):
     assert len(semantic_features) == cfg.model.num_levels, "Length of semantic_features must match number of model levels"
 
     level_priors = []
+    splits = []
     level_priors_params = nn.ModuleList()
-
+    
     with torch.no_grad():
-        for k in range(cfg.model.num_levels):
-            C, H, W = model.output_shapes[k]
-            noise_count, struct_count, sem_count = splits[k]
+        for i, prior_cfg in enumerate(cfg.level_priors.priors.values()):
+            C, H, W = model.output_shapes[i]
+            split = prior_cfg.split
+            noise_count, struct_count, sem_count = split
             assert noise_count >= 0, "Noise feature dimension must be non-negative"
             assert struct_count >= 0, "Structure feature dimension must be non-negative"
             assert sem_count >= 0, "Semantic feature dimension must be non-negative"
             assert noise_count + struct_count + sem_count == C, "Sum of feature dimensions must equal total channels C"
             
-            if k == cfg.model.num_levels - 1:
+            if i == cfg.model.num_levels - 1:
                 assert struct_count == 0, "Top level cannot have structural features"
             
             noise_prior, struct_prior, sem_prior = None, None, None
+            level_params = nn.ModuleList()
             
             if noise_count > 0:
                 theta_list = hydra.utils.instantiate(
-                    cfg.prior.zero_init, 
+                    prior_cfg.zero_init, 
                     K=1,
                     C=noise_count, H=H, W=W,
-                    rank=cfg.prior.rank[k]
+                    rank=prior_cfg.rank
                 )
                 noise_prior = hydra.utils.instantiate(
-                    cfg.prior.cls,
+                    prior_cfg.cls,
                     **theta_list[0]
                 ).to(device)
-                level_priors_params.append(noise_prior)
+                level_params.append(noise_prior)
             
             if struct_count > 0:
                 struct_prior = hydra.utils.instantiate(
-                    cfg.prior.conditional_cls,
+                    prior_cfg.conditional_cls,
                     z_channels=C,
                     h_channels=struct_count,
                     H=H, W=W,
-                    rank=cfg.prior.rank[k]
+                    rank=prior_cfg.rank
                 ).to(device)
-                level_priors_params.append(struct_prior)
+                level_params.append(struct_prior)
             
             if sem_count > 0:
                 theta_list = hydra.utils.instantiate(
-                    cfg.prior.class_conditional_init,
+                    prior_cfg.class_conditional_init,
                     K=K,
                     C=sem_count, H=H, W=W,
-                    rank=cfg.prior.rank[k]
+                    rank=prior_cfg.rank
                 )
                 sem_prior = ClassConditionalPrior([
-                    hydra.utils.instantiate(cfg.prior.cls, **theta) for theta in theta_list
+                    hydra.utils.instantiate(prior_cfg.cls, **theta) for theta in theta_list
                 ]).to(device)
-                level_priors_params.append(sem_prior)
+                level_params.append(sem_prior)
                 
-            level_priors.append((noise_prior, struct_prior, sem_prior))
+            level_priors.append([noise_prior, struct_prior, sem_prior])
+            level_priors_params.append(level_params)
+            splits.append(split)
 
-    print(f"Resuming training from {cfg.training.resume_from_checkpoint}")
+    print(f"Loaded checkpoint from {cfg.training.resume_from_checkpoint}")
     checkpoint = torch.load(cfg.training.resume_from_checkpoint, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     level_priors_params.load_state_dict(checkpoint['prior_state_dict'])

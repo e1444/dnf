@@ -4,15 +4,12 @@ defaults:
   - /prior@priors.2: kpmvn  # (16, 4, 4)
 
 priors:
-  0:
+  "0":
     split: [0, 2, 0]
-    rank_ch: 2
-    rank_sp: 8
-  1:
+    rank: [2, 8]
+  "1":
     split: [0, 4, 0]
-    rank_ch: 4
-    rank_sp: 8
-  2:
+    rank: [4, 8]
+  "2":
     split: [0, 0, 16]
-    rank_ch: 8
-    rank_sp: 8
+    rank: [8, 8]

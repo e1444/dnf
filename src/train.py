@@ -46,7 +46,7 @@ def train(cfg: DictConfig):
     level_priors_params = nn.ModuleList()
     
     with torch.no_grad():
-        for i, prior_cfg in enumerate(cfg.level_priors.priors):
+        for i, prior_cfg in enumerate(cfg.level_priors.priors.values()):
             C, H, W = model.output_shapes[i]
             split = prior_cfg.split
             noise_count, struct_count, sem_count = split
@@ -66,6 +66,7 @@ def train(cfg: DictConfig):
                     prior_cfg.zero_init, 
                     K=1,
                     C=noise_count, H=H, W=W,
+                    rank=prior_cfg.rank
                 )
                 noise_prior = hydra.utils.instantiate(
                     prior_cfg.cls,
@@ -79,6 +80,7 @@ def train(cfg: DictConfig):
                     z_channels=C,
                     h_channels=struct_count,
                     H=H, W=W,
+                    rank=prior_cfg.rank
                 ).to(device)
                 level_params.append(struct_prior)
             
@@ -87,6 +89,7 @@ def train(cfg: DictConfig):
                     prior_cfg.class_conditional_init,
                     K=K,
                     C=sem_count, H=H, W=W,
+                    rank=prior_cfg.rank
                 )
                 sem_prior = ClassConditionalPrior([
                     hydra.utils.instantiate(prior_cfg.cls, **theta) for theta in theta_list
