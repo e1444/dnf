@@ -52,8 +52,7 @@ def compute_level_logits(z, h, level_priors, level_split, K, sum=True):
 
     # --- Semantic Log-Probs (per class) ---
     if sem_prior is not None and sem_h is not None:
-        sem_lp = torch.stack([dist.unit_scale and dist.log_prob(sem_h) or dist.log_prob(sem_h)  # keep unit_scale behavior from caller
-                              for dist in sem_prior(unit_scale=True)], dim=1)
+        sem_lp = torch.stack([dist.log_prob(sem_h) for dist in sem_prior(unit_scale=True)], dim=1)
 
     if sum:
         return noise_lp + struct_lp + sem_lp  # (B, K)
