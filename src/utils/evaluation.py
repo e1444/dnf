@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
-from .losses import nll_loss_fn, ce_loss_fn, compute_level_logits
+from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 
 
 def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None):
@@ -16,6 +16,7 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
     total_loss = 0.0
     total_nll = 0.0
     total_logit_split = 0.0
+    total_log_det = 0.0
     correct = 0
     total = 0
     
@@ -27,6 +28,7 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             
             outs, log_dets = model(x_batch)
             log_det = torch.sum(log_dets, dim=0)
+            total_log_det = total_log_det + log_det.sum().item()
             
             # Compute logits using the shared utility
             logits = log_det.unsqueeze(1)   # (B, 1)
@@ -84,6 +86,7 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
     avg_loss = total_loss / len(data_loader)
     avg_nll = total_nll / total
     avg_logit_split = total_logit_split / total
+    avg_log_det = total_log_det / total
     accuracy = 100 * correct / total
     
     if prefix is not None:
@@ -96,7 +99,60 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
         f"{prefix}accuracy": accuracy,
         f"{prefix}nll": avg_nll,
         f"{prefix}logit_split": avg_logit_split,
+        f"{prefix}log_det": avg_log_det,
     }
+    
+
+def print_split_table(title, split_tensor):
+    # split_tensor: (3, L)
+    split_names = ["noise", "structure", "semantics"]
+    L = split_tensor.shape[1]
+    level_labels = [f"level_{i}" for i in range(L)]
+
+    row_sums = split_tensor.sum(dim=1)
+    col_sums = split_tensor.sum(dim=0)
+    total_sum = split_tensor.sum()
+
+    print("\n" + "=" * 72)
+    print(f"{title:^72}")
+    print("=" * 72)
+
+    # Header row
+    print(f"{'Component':<15}" + "".join(f"{lvl:>12}" for lvl in level_labels) + f"{'Total':>12}")
+    print("-" * 72)
+
+    # Body rows
+    for i, name in enumerate(split_names):
+        vals = "".join(f"{split_tensor[i, j]:>12.1f}" for j in range(L))
+        print(f"{name:<15}{vals}{row_sums[i]:>12.1f}")
+
+    print("-" * 72)
+
+    # Footer totals
+    col_vals = "".join(f"{col_sums[j]:>12.1f}" for j in range(L))
+    print(f"{'Total':<15}{col_vals}{total_sum:>12.1f}")
+
+    print("=" * 72 + "\n")
+
+
+def print_train_stats(epoch, train_stats, test_stats):
+    print("\n" + "=" * 72)
+    title = f"Evaluation Results (Epoch {epoch})"
+    print(f"{title:^72}")
+    print("=" * 72)
+    
+    print(f"{'Metric':<20}{'Train':>15}{'Test':>15}")
+    print("-" * 72)
+    
+    print(f"{'Loss':<20}{train_stats['train_eval_loss']:>15.4f}{test_stats['test_loss']:>15.4f}")
+    print(f"{'Accuracy (%)':<20}{train_stats['train_eval_accuracy']:>15.2f}{test_stats['test_accuracy']:>15.2f}")
+    print(f"{'NLL':<20}{train_stats['train_eval_nll']:>15.2f}{test_stats['test_nll']:>15.2f}")
+    print(f"{'Log-Det':<20}{train_stats['train_eval_log_det']:>15.2f}{test_stats['test_log_det']:>15.2f}")
+    
+    print("=" * 72 + "\n")
+
+    print_split_table("Train Logit Split (Avg)", train_stats['train_eval_logit_split'])
+    print_split_table("Test Logit Split (Avg)", test_stats['test_logit_split'])
 
 
 def compute_marginal_bpd(model, target_dists, loader, device, cfg):

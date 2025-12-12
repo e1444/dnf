@@ -12,7 +12,7 @@ from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
 from src.models.priors import ClassConditionalPrior
 from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
-from src.utils.evaluation import evaluate
+from src.utils.evaluation import evaluate, print_train_stats
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -276,38 +276,7 @@ def train(cfg: DictConfig):
             test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, prefix="test")
             log_dict.update(test_stats)
             
-            print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_stats['train_eval_accuracy']:.2f}%/{test_stats['test_accuracy']:.2f}% | NLL (Tr/Te): {train_stats['train_eval_nll']:.2f}/{test_stats['test_nll']:.2f} (Target {nll_constraint:.1f}) | Alpha: {avg_alpha:.4f}")
-            
-            def print_split_table(title, split_tensor):
-                # split_tensor: (3, L)
-                split_names = ["noise", "structure", "semantics"]
-                L = split_tensor.shape[1]
-                level_labels = [f"level_{i}" for i in range(L)]
-                
-                # Marginals
-                row_sums = split_tensor.sum(dim=1) # (3,)
-                col_sums = split_tensor.sum(dim=0) # (L,)
-                total_sum = split_tensor.sum()
-                
-                print(f"\n{title}:")
-                # Header
-                header = " " * 12 + "  ".join(f"{lvl:>10}" for lvl in level_labels) + f"{'TOTAL':>12}"
-                print(header)
-                print("-" * len(header))
-                
-                # Rows
-                for i, name in enumerate(split_names):
-                    row_str = "  ".join(f"{split_tensor[i, j]:>10.1f}" for j in range(L))
-                    print(f"{name:>12}  {row_str}  {row_sums[i]:>10.1f}")
-                
-                print("-" * len(header))
-                # Footer (Column Sums)
-                col_str = "  ".join(f"{col_sums[j]:>10.1f}" for j in range(L))
-                print(f"{'TOTAL':>12}  {col_str}  {total_sum:>10.1f}")
-                print("")
-
-            print_split_table("Train Logit Split (Avg)", train_stats['train_eval_logit_split'])
-            print_split_table("Test Logit Split (Avg)", test_stats['test_logit_split'])
+            print_train_stats(epoch, train_stats, test_stats)
 
         wandb.log(log_dict)
 
