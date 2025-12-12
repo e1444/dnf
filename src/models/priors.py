@@ -3,7 +3,7 @@ from torch import nn
 from torch.distributions import LowRankMultivariateNormal
 
 from src.distributions.kpmvn import KroneckerProductMVN
-from src.models.modules import AttentionPooling
+from src.models.modules import AttentionPooling, GaussianBlurLayer
 from src.utils.flat_dist import FlattenedDistribution
 
 
@@ -177,6 +177,8 @@ class ConditionalKPMVNPrior(nn.Module):
         h_channels: int,
         H: int, W: int,
         rank: tuple[int, int],
+        dropout: float = 0.0,
+        blur_sigma: float = 0.0,
         backbone_features: int = 256,
     ):
         """
@@ -196,12 +198,19 @@ class ConditionalKPMVNPrior(nn.Module):
         self.h_C, self.H, self.W = h_channels, H, W
         self.S = H * W
         self.rank_ch, self.rank_sp = rank
+        
+        self.blur = nn.Identity()
+        if blur_sigma > 0.0:
+            self.blur = GaussianBlurLayer(channels=z_channels, kernel_size=5, sigma=blur_sigma)
 
         # 1. Shared Backbone to process z
         self.backbone = nn.Sequential(
             nn.Conv2d(z_channels, backbone_features, 3, padding=1),
             nn.ReLU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
             nn.Conv2d(backbone_features, backbone_features, 3, padding=1),
+            nn.ReLU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
         )
 
         # 2. Heads for Spatial Parameters of h
@@ -226,6 +235,7 @@ class ConditionalKPMVNPrior(nn.Module):
             A KroneckerProductMVN distribution object for h, with batch size B.
         """
         B = z.shape[0]
+        z = self.blur(z)
         shared_features = self.backbone(z)
 
         # --- Predict Spatial Parameters for h ---

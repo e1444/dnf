@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.linalg as la
 
 
@@ -32,6 +33,30 @@ class AttentionPooling(nn.Module):
         pooled_features = torch.sum(x_flat * attention_weights, dim=-1) # (B, C)
         
         return pooled_features
+    
+    
+class GaussianBlurLayer(nn.Module):
+    """
+    Applies a fixed Gaussian blur using a grouped 2D convolution.
+    This is efficient, differentiable, and GPU-friendly.
+    """
+    weight: torch.Tensor
+    
+    def __init__(self, channels: int, kernel_size: int = 5, sigma: float = 1.0):
+        super().__init__()
+        self.padding = kernel_size // 2
+        self.groups = channels
+        
+        x = torch.arange(kernel_size, dtype=torch.float32) - (kernel_size - 1) / 2
+        kernel_1d = torch.exp(-0.5 * (x / sigma).pow(2))
+        kernel_1d = kernel_1d / kernel_1d.sum()
+        kernel_2d = kernel_1d.unsqueeze(1) @ kernel_1d.unsqueeze(0)
+        kernel_2d = kernel_2d.expand(channels, 1, kernel_size, kernel_size)
+        
+        self.register_buffer('weight', kernel_2d)
+
+    def forward(self, x):
+        return F.conv2d(x, self.weight, padding=self.padding, groups=self.groups)
     
 
 class LogitTransform(nn.Module):

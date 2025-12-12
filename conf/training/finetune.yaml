@@ -3,7 +3,7 @@ defaults:
 
 epochs: 70
 lr: 1e-4
-lr_prior: 1e-5
+lr_prior: [1e-5, 1e-5, 1e-4]
 
 r_logdet: 0.0
 label_smoothing: 0.0

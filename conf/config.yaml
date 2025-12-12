@@ -1,9 +1,8 @@
-# Configuration file for Hydra
 defaults:
   - _self_
   - data: mnist
   - model: glow
-  - prior: lrmvn
+  - level_priors: mnist
   - training: default
 
 project:

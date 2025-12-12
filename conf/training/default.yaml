@@ -1,5 +1,5 @@
 lr: 1e-3
-lr_prior: 0
+lr_prior: [0, 0, 0]
 
 gradclip: 1.0
 weight_decay: 1e-4
@@ -9,11 +9,8 @@ eval_interval: 1
 checkpoint_interval: 5
 
 # Loss and regularization weights
-gamma_beta: 0.5
-aux_start: 32
-aux_freq: 1
-aux_end: 40
 r_logdet: 1e-2
+r_aniso: [1e-1, 1e-2, 1e-3]
 label_smoothing: 0.1
 
 # Scheduler settings

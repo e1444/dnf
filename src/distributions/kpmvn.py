@@ -281,6 +281,56 @@ class KroneckerProductMVN(Distribution):
     def loc(self):
         return self._loc
     
+    def anisotropy_penalty(self):
+        """
+        Computes a penalty proportional to the variance of the log-eigenvalues 
+        of the full covariance matrix Sigma_total = Sigma_ch ⊗ Sigma_sp.
+        
+        This is calculated as: Var(log_eig_ch) + Var(log_eig_sp).
+        """
+        # --- Common Parameters ---
+        device = self.ch_cov_diag.device
+        dtype = self.ch_cov_diag.dtype
+        jitter = self.jitter # Assuming self.jitter is accessible
+
+        # --- 1. Channel Eigenvalues (C x C) ---
+        U_ch = self.ch_cov_factor
+        D_ch = torch.diag_embed(self.ch_cov_diag)
+        Sigma_ch = D_ch + torch.matmul(U_ch, U_ch.transpose(-1, -2))
+        
+        # Add jitter for stability
+        I_C = torch.eye(self.C, device=device, dtype=dtype)
+        Sigma_ch = Sigma_ch + jitter * I_C
+
+        # eigvalsh is exact for the C x C matrix
+        eig_ch = torch.linalg.eigvalsh(Sigma_ch) # (..., C)
+        log_eig_ch = torch.log(eig_ch)
+        
+        # Variance of the C log-eigenvalues
+        var_ch = torch.var(log_eig_ch, dim=-1) # (Batch...)
+
+        # --- 2. Spatial Eigenvalues (S x S) ---
+        S = self.D_sp
+        U_sp = self.sp_cov_factor
+        D_sp = torch.diag_embed(self.sp_cov_diag)
+        Sigma_sp = D_sp + torch.matmul(U_sp, U_sp.transpose(-1, -2))
+        
+        # Add jitter for stability
+        I_S = torch.eye(S, device=device, dtype=dtype)
+        Sigma_sp = Sigma_sp + jitter * I_S
+
+        # WARNING: If S is very large (e.g., > 1024), this becomes a bottleneck.
+        # However, for an accurate penalty, this exact calculation is required.
+        eig_sp = torch.linalg.eigvalsh(Sigma_sp) # (..., S)
+        log_eig_sp = torch.log(eig_sp)
+        
+        # Variance of the S log-eigenvalues
+        var_sp = torch.var(log_eig_sp, dim=-1) # (Batch...)
+        
+        # --- 3. Total Penalty ---
+        # Var(log_total) = Var(log_ch) + Var(log_sp)
+        return var_ch + var_sp
+    
 
 if __name__ == "__main__":
     print("--- Running Test Suite for KroneckerProductMVN ---")

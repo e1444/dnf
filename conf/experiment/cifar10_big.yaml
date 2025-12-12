@@ -11,10 +11,10 @@ model:
   dropout: 0.1
 
 prior:
-  noise_features:     [3, 0,  16]
-  struct_features:    [3, 12, 0]
-  semantic_features:  [0, 0,  32]
-  rank: [[6, 8], [8, 8], [16, 8]]
+  noise_features:     [0, 0, 16]
+  struct_features:    [6, 12, 0]
+  semantic_features:  [0, 0, 32]
+  rank: [[6, 8], [12, 8], [16, 8]]
 
 wandb:
   group: "CIFAR10"

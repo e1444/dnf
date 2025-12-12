@@ -20,10 +20,10 @@ def compute_level_logits(z, h, level_priors, level_split, K, sum=True):
     Args:
         z: Tensor of shape (B, D, H, W) or None
         h: Tensor of shape (B, M, H, W)
-        priors: tuple (noise_prior, struct_prior, sem_prior)
-            noise_prior: callable or None
-            struct_prior: callable or None
-            sem_prior: callable or None
+        level_priors: (noise_prior, struct_prior, sem_prior)
+            noise_prior: Distribution or None
+            struct_prior: Distribution or None
+            sem_prior: List[Distribution] or None
         level_split: tuple (noise_count, struct_count, sem_count)
     """
     noise_prior, struct_prior, sem_prior = level_priors
@@ -43,17 +43,17 @@ def compute_level_logits(z, h, level_priors, level_split, K, sum=True):
 
     # --- Noise Log-Prob ---
     if noise_prior is not None and noise_h is not None:
-        noise_lp = noise_prior(unit_scale=True).log_prob(noise_h).unsqueeze(1).expand(-1, K)
+        noise_lp = noise_prior.log_prob(noise_h).unsqueeze(1).expand(-1, K)
 
     # --- Structural Log-Prob ---
     if struct_prior is not None and struct_h is not None:
         assert z is not None, "Structural prior requires z; struct_count > 0 on top level is invalid"
-        struct_lp = struct_prior(z, unit_scale=True).log_prob(struct_h).unsqueeze(1).expand(-1, K)
+        struct_lp = struct_prior.log_prob(struct_h).unsqueeze(1).expand(-1, K)
 
     # --- Semantic Log-Probs (per class) ---
     if sem_prior is not None and sem_h is not None:
-        sem_lp = torch.stack([dist.log_prob(sem_h) for dist in sem_prior(unit_scale=True)], dim=1)
-
+        sem_lp = torch.stack([dist.log_prob(sem_h) for dist in sem_prior], dim=1)  # (B, K)
+        
     if sum:
         return noise_lp + struct_lp + sem_lp  # (B, K)
     else:

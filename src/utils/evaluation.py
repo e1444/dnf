@@ -31,10 +31,31 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             # Compute logits using the shared utility
             logits = log_det.unsqueeze(1)   # (B, 1)
             all_level_logits = []
+            raniso = 0.0
             for k, (z, h) in enumerate(outs):
-                level_logits = compute_level_logits(z, h, level_priors[k], splits[k], K, sum=False)     # (B, K, 3)
+                prior_facts = level_priors[k]
+                priors = [None] * len(prior_facts)
+                split = splits[k]
+                
+                if prior_facts[0] is not None:
+                    priors[0] = prior_facts[0](unit_scale=True)        # noise_prior
+                if prior_facts[1] is not None:
+                    priors[1] = prior_facts[1](z, unit_scale=True)     # struct_prior
+                if prior_facts[2] is not None:
+                    priors[2] = prior_facts[2](unit_scale=True)        # sem_prior
+                
+                level_logits = compute_level_logits(z, h, priors, split, K, sum=False)     # (B, K, 3)
                 all_level_logits.append(level_logits)
-                logits = logits + torch.sum(level_logits, dim=2)                                        # Sum over splits
+                logits = logits + torch.sum(level_logits, dim=2)
+                
+                r_noise, r_struct, r_sem = cfg.training.r_aniso
+                if priors[0] is not None:
+                    raniso = raniso + r_noise * priors[0].anisotropy_penalty()
+                if priors[1] is not None:
+                    raniso = raniso + r_struct * priors[1].anisotropy_penalty()
+                if priors[2] is not None:
+                    sem_penalty = sum(d.anisotropy_penalty() for d in priors[2]) / len(priors[2])
+                    raniso = raniso + r_sem * sem_penalty
                 
             all_level_logits = torch.stack(all_level_logits, dim=3)  # (B, K, 3, L)
             total_logit_split += torch.sum(all_level_logits, dim=(0, 1)).cpu().numpy()  # Sum over B and K -> (3, L)
@@ -42,7 +63,8 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
             
-            loss += cfg.training.r_logdet * (log_dets ** 2).mean()
+            loss = loss + cfg.training.r_logdet * (log_dets ** 2).mean()
+            loss = loss + raniso
             
             if torch.isnan(loss) or torch.isinf(loss):
                 print("WARNING: NaN/Inf loss detected during evaluation. Skipping batch.")

@@ -39,84 +39,80 @@ def train(cfg: DictConfig):
     model = hydra.utils.instantiate(cfg.model, input_shape=input_shape, _convert_="partial").to(device)
     
     K = cfg.data.dataset.num_classes
-    noise_features = cfg.prior.noise_features
-    struct_features = cfg.prior.struct_features
-    semantic_features = cfg.prior.semantic_features
-    splits = list(zip(noise_features, struct_features, semantic_features))
-    
-    assert len(noise_features) == cfg.model.num_levels, "Length of noise_features must match number of model levels"
-    assert len(struct_features) == cfg.model.num_levels, "Length of struct_features must match number of model levels"
-    assert len(semantic_features) == cfg.model.num_levels, "Length of semantic_features must match number of model levels"
+    assert len(cfg.level_priors.priors) == cfg.model.num_levels, "Number of priors must match number of model levels"
     
     level_priors = []
+    splits = []
     level_priors_params = nn.ModuleList()
     
     with torch.no_grad():
-        for k in range(cfg.model.num_levels):
-            C, H, W = model.output_shapes[k]
-            noise_count, struct_count, sem_count = splits[k]
+        for i, prior_cfg in enumerate(cfg.level_priors.priors):
+            C, H, W = model.output_shapes[i]
+            split = prior_cfg.split
+            noise_count, struct_count, sem_count = split
             assert noise_count >= 0, "Noise feature dimension must be non-negative"
             assert struct_count >= 0, "Structure feature dimension must be non-negative"
             assert sem_count >= 0, "Semantic feature dimension must be non-negative"
             assert noise_count + struct_count + sem_count == C, "Sum of feature dimensions must equal total channels C"
             
-            if k == cfg.model.num_levels - 1:
+            if i == cfg.model.num_levels - 1:
                 assert struct_count == 0, "Top level cannot have structural features"
             
             noise_prior, struct_prior, sem_prior = None, None, None
+            level_params = nn.ModuleList()
             
             if noise_count > 0:
                 theta_list = hydra.utils.instantiate(
-                    cfg.prior.zero_init, 
+                    prior_cfg.zero_init, 
                     K=1,
                     C=noise_count, H=H, W=W,
-                    rank=cfg.prior.rank[k]
                 )
                 noise_prior = hydra.utils.instantiate(
-                    cfg.prior.cls,
+                    prior_cfg.cls,
                     **theta_list[0]
                 ).to(device)
-                level_priors_params.append(noise_prior)
+                level_params.append(noise_prior)
             
             if struct_count > 0:
                 struct_prior = hydra.utils.instantiate(
-                    cfg.prior.conditional_cls,
+                    prior_cfg.conditional_cls,
                     z_channels=C,
                     h_channels=struct_count,
                     H=H, W=W,
-                    rank=cfg.prior.rank[k]
                 ).to(device)
-                level_priors_params.append(struct_prior)
+                level_params.append(struct_prior)
             
             if sem_count > 0:
                 theta_list = hydra.utils.instantiate(
-                    cfg.prior.class_conditional_init,
+                    prior_cfg.class_conditional_init,
                     K=K,
                     C=sem_count, H=H, W=W,
-                    rank=cfg.prior.rank[k]
                 )
                 sem_prior = ClassConditionalPrior([
-                    hydra.utils.instantiate(cfg.prior.cls, **theta) for theta in theta_list
+                    hydra.utils.instantiate(prior_cfg.cls, **theta) for theta in theta_list
                 ]).to(device)
-                level_priors_params.append(sem_prior)
+                level_params.append(sem_prior)
                 
-            level_priors.append((noise_prior, struct_prior, sem_prior))
+            level_priors.append([noise_prior, struct_prior, sem_prior])
+            level_priors_params.append(level_params)
+            splits.append(split)
             
     if cfg.training.lr == 0:
         model.requires_grad_(False)
-    if cfg.training.lr_prior == 0:
-        level_priors_params.requires_grad_(False)
+    for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):
+        prior_param.requires_grad = (lr_prior > 0)
 
     optimizer = optim.AdamW(
         model.parameters(),
         lr=cfg.training.lr,
         weight_decay=cfg.training.weight_decay
     )
-    optimizer.add_param_group({
-        'params': level_priors_params.parameters(),
-        'lr': cfg.training.lr_prior,
-        'weight_decay': cfg.training.weight_decay
-    })
+    for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):
+        optimizer.add_param_group({
+            'params': prior_param.parameters(),
+            'lr': lr_prior,
+            'weight_decay': cfg.training.weight_decay
+        })
     
     # --- Augmented Lagrangian Setup ---
     log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
@@ -180,10 +176,31 @@ def train(cfg: DictConfig):
             log_det = torch.sum(log_dets, dim=0)
             
             logits = log_det.unsqueeze(1)
+            raniso = 0.0
             for k, (z, h) in enumerate(outs):
-                level_logits = compute_level_logits(z, h, level_priors[k], splits[k], K)
+                prior_facts = level_priors[k]
+                priors = [None] * len(prior_facts)
+                split = splits[k]
+                
+                if prior_facts[0] is not None:
+                    priors[0] = prior_facts[0](unit_scale=True)        # noise_prior
+                if prior_facts[1] is not None:
+                    priors[1] = prior_facts[1](z, unit_scale=True)     # struct_prior
+                if prior_facts[2] is not None:
+                    priors[2] = prior_facts[2](unit_scale=True)        # sem_prior
+                
+                level_logits = compute_level_logits(z, h, priors, splits[k], K)
                 logits = logits + level_logits
                 
+                r_noise, r_struct, r_sem = cfg.training.r_aniso
+                if priors[0] is not None:
+                    raniso = raniso + r_noise * priors[0].anisotropy_penalty()
+                if priors[1] is not None:
+                    raniso = raniso + r_struct * priors[1].anisotropy_penalty()
+                if priors[2] is not None:
+                    sem_penalty = sum(d.anisotropy_penalty() for d in priors[2]) / len(priors[2])
+                    raniso = raniso + r_sem * sem_penalty
+                    
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             task_loss = ce_loss
             
@@ -192,6 +209,7 @@ def train(cfg: DictConfig):
             
             # 3. Regularization terms
             reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
+            reg_loss = reg_loss + raniso
             
             # Primal Objective
             primal_loss = task_loss
