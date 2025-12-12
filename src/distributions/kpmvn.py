@@ -281,32 +281,70 @@ class KroneckerProductMVN(Distribution):
     def loc(self):
         return self._loc
     
+    def kl_to_isotropic(self, tau=1.0):
+        """
+        Computes KL(N(loc, Sigma) || N(0, tau * I)).
+        Efficiently calculated using trace properties of Kronecker products.
+        """
+        # 1. Trace of Sigma
+        # tr(Sigma) = tr(Sigma_ch) * tr(Sigma_sp)
+        
+        # tr(Sigma_ch) = sum(D_ch) + ||U_ch||_F^2
+        # ch_cov_diag: (Batch..., C)
+        # ch_cov_factor: (Batch..., C, r)
+        tr_ch = torch.sum(self.ch_cov_diag, dim=-1) + torch.sum(self.ch_cov_factor.pow(2), dim=[-1, -2])
+        
+        # tr(Sigma_sp) = sum(D_sp) + ||U_sp||_F^2
+        # sp_cov_diag: (Batch..., S)
+        # sp_cov_factor: (Batch..., S, r)
+        tr_sp = torch.sum(self.sp_cov_diag, dim=-1) + torch.sum(self.sp_cov_factor.pow(2), dim=[-1, -2])
+        
+        tr_sigma = tr_ch * tr_sp # (Batch...)
+        
+        # 2. Squared Norm of Loc
+        # ||loc||^2. loc is (Batch..., C, H, W)
+        # We sum over the event dimensions (last 3)
+        norm_loc = torch.sum(self.loc.pow(2), dim=[-3, -2, -1])
+        
+        # 3. Combine terms
+        k = self.C * self.H * self.W
+        
+        # KL = 0.5 * [ (tr(Sigma) + ||mu||^2) / tau - k + k*ln(tau) - ln|Sigma| ]
+        # Note: self.log_det_total is ln|Sigma|
+        
+        term1 = (tr_sigma + norm_loc) / tau
+        term2 = -k
+        # term3 = k * ln(tau). If tau=1, this is 0.
+        term3 = k * torch.log(torch.tensor(tau, device=self.loc.device, dtype=self.loc.dtype))
+        term4 = -self.log_det_total
+        
+        return 0.5 * (term1 + term2 + term3 + term4)
+    
     def anisotropy_penalty(self):
         """
         Computes a penalty proportional to the variance of the log-eigenvalues 
         of the full covariance matrix Sigma_total = Sigma_ch ⊗ Sigma_sp.
         
-        This is calculated as: Var(log_eig_ch) + Var(log_eig_sp).
+        Increased jitter is used internally to prevent LinalgError during decomposition.
         """
-        # --- Common Parameters ---
         device = self.ch_cov_diag.device
         dtype = self.ch_cov_diag.dtype
-        jitter = self.jitter # Assuming self.jitter is accessible
+        # Use a higher jitter for eigenvalue decomposition to ensure numerical stability.
+        # This prevents the "linalg.eigh: The algorithm failed to converge" error.
+        decomp_jitter = max(self.jitter, 1e-5) 
 
         # --- 1. Channel Eigenvalues (C x C) ---
         U_ch = self.ch_cov_factor
         D_ch = torch.diag_embed(self.ch_cov_diag)
         Sigma_ch = D_ch + torch.matmul(U_ch, U_ch.transpose(-1, -2))
         
-        # Add jitter for stability
+        # Add high jitter for stability
         I_C = torch.eye(self.C, device=device, dtype=dtype)
-        Sigma_ch = Sigma_ch + jitter * I_C
+        Sigma_ch = Sigma_ch + decomp_jitter * I_C
 
-        # eigvalsh is exact for the C x C matrix
         eig_ch = torch.linalg.eigvalsh(Sigma_ch) # (..., C)
-        log_eig_ch = torch.log(eig_ch)
-        
-        # Variance of the C log-eigenvalues
+        # Add tiny offset before log to prevent log(0) if eigenvalues are exactly 0
+        log_eig_ch = torch.log(eig_ch + 1e-12) 
         var_ch = torch.var(log_eig_ch, dim=-1) # (Batch...)
 
         # --- 2. Spatial Eigenvalues (S x S) ---
@@ -315,20 +353,15 @@ class KroneckerProductMVN(Distribution):
         D_sp = torch.diag_embed(self.sp_cov_diag)
         Sigma_sp = D_sp + torch.matmul(U_sp, U_sp.transpose(-1, -2))
         
-        # Add jitter for stability
+        # Add high jitter for stability
         I_S = torch.eye(S, device=device, dtype=dtype)
-        Sigma_sp = Sigma_sp + jitter * I_S
+        Sigma_sp = Sigma_sp + decomp_jitter * I_S
 
-        # WARNING: If S is very large (e.g., > 1024), this becomes a bottleneck.
-        # However, for an accurate penalty, this exact calculation is required.
         eig_sp = torch.linalg.eigvalsh(Sigma_sp) # (..., S)
-        log_eig_sp = torch.log(eig_sp)
-        
-        # Variance of the S log-eigenvalues
+        log_eig_sp = torch.log(eig_sp + 1e-12)
         var_sp = torch.var(log_eig_sp, dim=-1) # (Batch...)
         
         # --- 3. Total Penalty ---
-        # Var(log_total) = Var(log_ch) + Var(log_sp)
         return var_ch + var_sp
     
 

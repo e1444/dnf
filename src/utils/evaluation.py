@@ -50,11 +50,11 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
                 
                 r_noise, r_struct, r_sem = cfg.training.r_aniso
                 if priors[0] is not None:
-                    raniso = raniso + r_noise * priors[0].anisotropy_penalty().mean()
+                    raniso = raniso + r_noise * priors[0].kl_to_isotropic().mean()
                 if priors[1] is not None:
-                    raniso = raniso + r_struct * priors[1].anisotropy_penalty().mean()
+                    raniso = raniso + r_struct * priors[1].kl_to_isotropic().mean()
                 if priors[2] is not None:
-                    sem_penalty = sum(d.anisotropy_penalty().mean() for d in priors[2]) / len(priors[2])
+                    sem_penalty = sum(d.kl_to_isotropic().mean() for d in priors[2]) / len(priors[2])
                     raniso = raniso + r_sem * sem_penalty
                 
             all_level_logits = torch.stack(all_level_logits, dim=3)  # (B, K, 3, L)

@@ -179,7 +179,7 @@ def train(cfg: DictConfig):
             log_det = torch.sum(log_dets, dim=0)
             
             logits = log_det.unsqueeze(1)
-            raniso = 0.0
+            reg_prior_cov = 0.0
             for k, (z, h) in enumerate(outs):
                 prior_facts = level_priors[k]
                 priors = [None] * len(prior_facts)
@@ -195,14 +195,14 @@ def train(cfg: DictConfig):
                 level_logits = compute_level_logits(z, h, priors, splits[k], K)
                 logits = logits + level_logits
                 
-                r_noise, r_struct, r_sem = cfg.training.r_aniso
+                r = cfg.training.r_prior_cov[k]   # Regularize by level
                 if priors[0] is not None:
-                    raniso = raniso + r_noise * priors[0].anisotropy_penalty().mean()
+                    reg_prior_cov = reg_prior_cov + r * priors[0].kl_to_isotropic().mean()
                 if priors[1] is not None:
-                    raniso = raniso + r_struct * priors[1].anisotropy_penalty().mean()
+                    reg_prior_cov = reg_prior_cov + r * priors[1].kl_to_isotropic().mean()
                 if priors[2] is not None:
-                    sem_penalty = sum(d.anisotropy_penalty().mean() for d in priors[2]) / len(priors[2])
-                    raniso = raniso + r_sem * sem_penalty
+                    sem_penalty = sum(d.kl_to_isotropic().mean() for d in priors[2]) / len(priors[2])
+                    reg_prior_cov = reg_prior_cov + r * sem_penalty
                     
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             task_loss = ce_loss
@@ -212,7 +212,7 @@ def train(cfg: DictConfig):
             
             # 3. Regularization terms
             reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
-            reg_loss = reg_loss + raniso
+            reg_loss = reg_loss + reg_prior_cov
             
             # Primal Objective
             primal_loss = task_loss
@@ -278,15 +278,36 @@ def train(cfg: DictConfig):
             
             print(f"Epoch [{epoch+1:02d}/{total_epochs}] | Loss: {avg_train_loss:.4f} | Acc (Tr/Te): {train_stats['train_eval_accuracy']:.2f}%/{test_stats['test_accuracy']:.2f}% | NLL (Tr/Te): {train_stats['train_eval_nll']:.2f}/{test_stats['test_nll']:.2f} (Target {nll_constraint:.1f}) | Alpha: {avg_alpha:.4f}")
             
-            split_names = ["noise", "structure", "semantics"]
-            avg_logit_split = test_stats['test_logit_split']  # (3, L)
-            level_labels = [f"level_{i}" for i in range(avg_logit_split.shape[1])]
-            print("\nLogit split contributions (avg over samples):")
-            print("          " + "  ".join(f"{lvl:>10}" for lvl in level_labels))
-            for i, name in enumerate(split_names):
-                row = "  ".join(f"{avg_logit_split[i, j]:>10.4f}" for j in range(avg_logit_split.shape[1]))
-                print(f"{name:>10}  {row}")
-            print("")
+            def print_split_table(title, split_tensor):
+                # split_tensor: (3, L)
+                split_names = ["noise", "structure", "semantics"]
+                L = split_tensor.shape[1]
+                level_labels = [f"level_{i}" for i in range(L)]
+                
+                # Marginals
+                row_sums = split_tensor.sum(dim=1) # (3,)
+                col_sums = split_tensor.sum(dim=0) # (L,)
+                total_sum = split_tensor.sum()
+                
+                print(f"\n{title}:")
+                # Header
+                header = " " * 12 + "  ".join(f"{lvl:>10}" for lvl in level_labels) + f"{'TOTAL':>12}"
+                print(header)
+                print("-" * len(header))
+                
+                # Rows
+                for i, name in enumerate(split_names):
+                    row_str = "  ".join(f"{split_tensor[i, j]:>10.1f}" for j in range(L))
+                    print(f"{name:>12}  {row_str}  {row_sums[i]:>10.1f}")
+                
+                print("-" * len(header))
+                # Footer (Column Sums)
+                col_str = "  ".join(f"{col_sums[j]:>10.1f}" for j in range(L))
+                print(f"{'TOTAL':>12}  {col_str}  {total_sum:>10.1f}")
+                print("")
+
+            print_split_table("Train Logit Split (Avg)", train_stats['train_eval_logit_split'])
+            print_split_table("Test Logit Split (Avg)", test_stats['test_logit_split'])
 
         wandb.log(log_dict)
 
