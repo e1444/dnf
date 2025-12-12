@@ -1,3 +1,7 @@
+defaults:
+  - _self_
+  - /scheduler@scheduler: cosine
+
 lr: 1e-3
 lr_prior: [0, 0, 0]
 
@@ -15,10 +19,6 @@ label_smoothing: 0.1
 
 # Scheduler settings
 warmup_epochs: 5
-scheduler:
-  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
-  T_max: ${..epochs}
-  eta_min: 1e-5
 
 # Lagrange multipliers settings
 use_al: false

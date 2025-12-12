@@ -1,5 +1,7 @@
 defaults:
   - default
+  - _self_
+  - override /scheduler@scheduler: cosine
 
 epochs: 30
 lr: 1e-3

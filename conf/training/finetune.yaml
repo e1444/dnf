@@ -1,5 +1,7 @@
 defaults:
   - default
+  - _self_
+  - override /scheduler@scheduler: cosine_wr
 
 epochs: 70
 lr: 1e-4
@@ -8,12 +10,6 @@ lr_prior: [1e-5, 1e-4, 1e-3]
 r_logdet: 0.0
 r_prior_cov: [1e-1, 1e-3, 1e-4]
 label_smoothing: 0.0
-
-scheduler:
-  _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
-  T_0: 10
-  T_mult: 2
-  eta_min: 1e-6
 
 use_al: True
 log_alpha: 1.0
