@@ -1,19 +1,19 @@
 defaults:
-  - /prior@priors.0: kpmvn  # (6, 16, 16)
-  - /prior@priors.1: kpmvn  # (12, 8, 8)
-  - /prior@priors.2: kpmvn  # (48, 4, 4)
+  - /prior@priors.l0: kpmvn  # (6, 16, 16)
+  - /prior@priors.l1: kpmvn  # (12, 8, 8)
+  - /prior@priors.l2: kpmvn  # (48, 4, 4)
 
 priors:
-  "0":
-    split: [4, 2, 0]
+  l0:
+    split: [0, 6, 0]
     rank: [2, 8]
     conditional_cls:
       blur_sigma: 1.0
       dropout: 0.1
       backbone_features: 128
-  "1":
+  l1:
     split: [0, 12, 0]
     rank: [4, 4]
-  "2":
+  l2:
     split: [0, 0, 48]
     rank: [16, 8]

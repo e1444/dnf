@@ -3,7 +3,7 @@ defaults:
 
 epochs: 30
 lr: 1e-3
-lr_prior: [1e-5, 1e-5, 1e-4]
+lr_prior: [1e-6, 1e-5, 1e-4]
 
 # High Regularization
 r_logdet: 1e-4
