@@ -8,18 +8,21 @@ cls:
 
 conditional_cls:
   _target_: src.models.priors.ConditionalKPMVNPrior
-  # rank: [${..rank_ch}, ${..rank_sp}]
+  rank_ch: ${..rank_ch}
+  rank_sp: ${..rank_sp}
   dropout: 0.0
   blur_sigma: 0.0
   backbone_features: 256
 
 zero_init:
   _target_: src.utils.prior_init.kpmvn_zero_init
-  # rank: [${..rank_ch}, ${..rank_sp}]
+  rank_ch: ${..rank_ch}
+  rank_sp: ${..rank_sp}
   noise: 0.01
   
 class_conditional_init:
   _target_: src.utils.prior_init.kpmvn_simplex_init
-  # rank: [${..rank_ch}, ${..rank_sp}]
+  rank_ch: ${..rank_ch}
+  rank_sp: ${..rank_sp}
   simplex_scale: 1.0
   noise: 0.01

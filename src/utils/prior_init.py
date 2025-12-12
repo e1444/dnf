@@ -40,7 +40,7 @@ def lrmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: int, simplex_sca
     
     return theta
 
-def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], noise: float = 0.0) -> list[dict]:
+def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank_ch: int, rank_sp: int, noise: float = 0.0) -> list[dict]:
     """
     Initialize Kronecker-Product Multivariate Normal Prior Parameters at Zero
     
@@ -49,9 +49,8 @@ def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], no
         C: Number of channels
         H: Height
         W: Width
-        rank: tuple (rank_ch, rank_sp)
-            rank_ch: Rank of channel covariance
-            rank_sp: Rank of spatial covariance
+        rank_ch: Rank of channel covariance
+        rank_sp: Rank of spatial covariance
         simplex_scale: Scale of simplex vertices
         noise: Standard deviation of Gaussian noise added to initialization
     
@@ -63,8 +62,6 @@ def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], no
     S = H * W
     D = C * S
     assert C >= K, "Channel-based initialization requires C >= K"
-    
-    rank_ch, rank_sp = rank
     
     loc = torch.zeros(K, C, S)
     loc = loc.view(K, D)
@@ -89,7 +86,7 @@ def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], no
     
     return theta
 
-def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], simplex_scale: float = 1.0, noise: float = 0.0) -> list[dict]:
+def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank_ch: int, rank_sp: int, simplex_scale: float = 1.0, noise: float = 0.0) -> list[dict]:
     """
     Initialize Kronecker-Product Multivariate Normal Prior Parameters on Simplex
     
@@ -98,9 +95,8 @@ def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int],
         C: Number of channels
         H: Height
         W: Width
-        rank: tuple (rank_ch, rank_sp)
-            rank_ch: Rank of channel covariance
-            rank_sp: Rank of spatial covariance
+        rank_ch: Rank of channel covariance
+        rank_sp: Rank of spatial covariance
         simplex_scale: Scale of simplex vertices
         noise: Standard deviation of Gaussian noise added to initialization
     
@@ -112,8 +108,6 @@ def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int],
     S = H * W
     D = C * S
     assert C >= K, "Channel-based initialization requires C >= K"
-    
-    rank_ch, rank_sp = rank
     
     loc = torch.zeros(K, C, S)
     for i in range(K):
