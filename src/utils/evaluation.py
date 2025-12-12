@@ -31,7 +31,7 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             # Compute logits using the shared utility
             logits = log_det.unsqueeze(1)   # (B, 1)
             all_level_logits = []
-            raniso = 0.0
+            reg_prior_cov = 0.0
             for k, (z, h) in enumerate(outs):
                 prior_facts = level_priors[k]
                 priors = [None] * len(prior_facts)
@@ -48,14 +48,14 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
                 all_level_logits.append(level_logits)
                 logits = logits + torch.sum(level_logits, dim=2)
                 
-                r_noise, r_struct, r_sem = cfg.training.r_aniso
+                r = cfg.training.r_prior_cov[k]   # Regularize by level
                 if priors[0] is not None:
-                    raniso = raniso + r_noise * priors[0].kl_to_isotropic().mean()
+                    reg_prior_cov = reg_prior_cov + r * priors[0].kl_to_isotropic().mean()
                 if priors[1] is not None:
-                    raniso = raniso + r_struct * priors[1].kl_to_isotropic().mean()
+                    reg_prior_cov = reg_prior_cov + r * priors[1].kl_to_isotropic().mean()
                 if priors[2] is not None:
                     sem_penalty = sum(d.kl_to_isotropic().mean() for d in priors[2]) / len(priors[2])
-                    raniso = raniso + r_sem * sem_penalty
+                    reg_prior_cov = reg_prior_cov + r * sem_penalty
                 
             all_level_logits = torch.stack(all_level_logits, dim=3)  # (B, K, 3, L)
             total_logit_split += torch.sum(all_level_logits, dim=(0, 1)).cpu().numpy()  # Sum over B and K -> (3, L)
@@ -64,7 +64,7 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             loss = ce_loss
             
             loss = loss + cfg.training.r_logdet * (log_dets ** 2).mean()
-            loss = loss + raniso
+            loss = loss + reg_prior_cov
             
             if torch.isnan(loss) or torch.isinf(loss):
                 print("WARNING: NaN/Inf loss detected during evaluation. Skipping batch.")
