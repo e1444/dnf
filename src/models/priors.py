@@ -213,13 +213,17 @@ class ConditionalKPMVNPrior(nn.Module):
             nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
         )
 
-        # 2. Heads for Spatial Parameters of h
-        self.loc_head = nn.Conv2d(backbone_features, self.h_C, 1)
-        self.sp_D_head = nn.Conv2d(backbone_features, 1, 1)
-        self.sp_U_head = nn.Conv2d(backbone_features, self.rank_sp, 1)
-
-        # 3. Attention Pooling and Heads for Non-Spatial Parameters of h
+        # 2. Attention Pooling (Global Context)
         self.attention_pool = AttentionPooling(backbone_features)
+
+        # 3. Heads for Spatial Parameters of h
+        # INPUT: Concatenation of [Local Features, Global Context]
+        # Input channels = backbone_features + backbone_features
+        self.loc_head = nn.Conv2d(backbone_features * 2, self.h_C, 1)
+        self.sp_D_head = nn.Conv2d(backbone_features * 2, 1, 1)
+        self.sp_U_head = nn.Conv2d(backbone_features * 2, self.rank_sp, 1)
+
+        # 4. Heads for Non-Spatial Parameters of h (from Global Context)
         self.ch_D_head = nn.Linear(backbone_features, self.h_C)
         self.ch_U_head = nn.Linear(backbone_features, self.h_C * self.rank_ch)
 
@@ -236,17 +240,27 @@ class ConditionalKPMVNPrior(nn.Module):
         """
         B = z.shape[0]
         z = self.blur(z)
-        shared_features = self.backbone(z)
+        
+        # 1. Extract Local Features
+        shared_features = self.backbone(z) # (B, bb_f, H, W)
 
-        # --- Predict Spatial Parameters for h ---
-        loc = self.loc_head(shared_features).view(B, -1) # (B, h_C * S)
-        log_sp_D = self.sp_D_head(shared_features).view(B, -1) # (B, S)
-        sp_U = self.sp_U_head(shared_features).permute(0, 2, 3, 1).reshape(B, self.S, self.rank_sp)
+        # 2. Extract Global Context
+        pooled_features = self.attention_pool(shared_features) # (B, bb_f)
 
-        # --- Predict Non-Spatial Parameters for h ---
-        pooled_features = self.attention_pool(shared_features)
+        # --- Predict Non-Spatial Parameters (Global) ---
         log_ch_D = self.ch_D_head(pooled_features)
         ch_U = self.ch_U_head(pooled_features).view(B, self.h_C, self.rank_ch)
+
+        # --- Predict Spatial Parameters (Local + Global) ---
+        # Broadcast global context to spatial grid
+        global_context_map = pooled_features.view(B, -1, 1, 1).expand(-1, -1, self.H, self.W)
+        
+        # Concatenate: (B, 2*bb_f, H, W)
+        spatial_input = torch.cat([shared_features, global_context_map], dim=1)
+        
+        loc = self.loc_head(spatial_input).view(B, -1) # (B, h_C * S)
+        log_sp_D = self.sp_D_head(spatial_input).view(B, -1) # (B, S)
+        sp_U = self.sp_U_head(spatial_input).permute(0, 2, 3, 1).reshape(B, self.S, self.rank_sp)
         
         if unit_scale:
             if ch_cov_scale != 1.0:
