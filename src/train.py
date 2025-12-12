@@ -197,11 +197,11 @@ def train(cfg: DictConfig):
                 
                 r_noise, r_struct, r_sem = cfg.training.r_aniso
                 if priors[0] is not None:
-                    raniso = raniso + r_noise * priors[0].anisotropy_penalty()
+                    raniso = raniso + r_noise * priors[0].anisotropy_penalty().mean()
                 if priors[1] is not None:
-                    raniso = raniso + r_struct * priors[1].anisotropy_penalty()
+                    raniso = raniso + r_struct * priors[1].anisotropy_penalty().mean()
                 if priors[2] is not None:
-                    sem_penalty = sum(d.anisotropy_penalty() for d in priors[2]) / len(priors[2])
+                    sem_penalty = sum(d.anisotropy_penalty().mean() for d in priors[2]) / len(priors[2])
                     raniso = raniso + r_sem * sem_penalty
                     
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
