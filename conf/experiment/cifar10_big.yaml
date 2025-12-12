@@ -2,19 +2,13 @@
 defaults:
   - override /data: cifar10
   - override /model: glow
-  - override /prior: kpmvn
+  - override /level_priors: cifar10
 
 model:
   num_levels: 3
   steps_per_level: [32, 32, 32]
   hidden_channels: 512
   dropout: 0.1
-
-prior:
-  noise_features:     [0, 0, 16]
-  struct_features:    [6, 12, 0]
-  semantic_features:  [0, 0, 32]
-  rank: [[6, 8], [12, 8], [16, 8]]
 
 wandb:
   group: "CIFAR10"
