@@ -1,0 +1,35 @@
+dataset:
+  name: "MNIST"
+  path: "${paths.data}/mnist"
+  download: true
+  num_classes: 10
+  train_transform:
+    - type: "Pad"
+      params:
+        padding: 2
+    - type: "RandomAffine"
+      params:
+        degrees: 10         # Rotates the image by up to +/- 10 degrees
+        translate: [0.1, 0.1] # Shifts the image by up to 10% horizontally and vertically
+        scale: [0.9, 1.1]   # Zooms the image between 90% and 110%
+    - type: "ElasticTransform"
+      params:
+        alpha: 20.0         # Controls the intensity of the elastic deformation
+        sigma: 4.0          # Controls the smoothness of the deformation
+    - type: "Dequantize"
+    - type: "AddAWGN"
+      params:
+        snr_db: 9.5         # Adds Gaussian noise with a signal-to-noise ratio of 9.5 dB
+  test_transform:
+    - type: "Pad"
+      params:
+        padding: 2
+    - type: "Dequantize"
+    - type: "AddAWGN"
+      params:
+        snr_db: 9.5         # Adds Gaussian noise with a signal-to-noise ratio of 9.5 dB
+  batch_size: 256
+  num_workers: 4
+  shuffle: true
+  train_split: 0.8
+  valid_split: 0.2

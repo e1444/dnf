@@ -27,6 +27,29 @@ class Dequantize(object):
         x = (x + torch.rand_like(x)) / 256.0
         return torch.clamp(x, 0.0, 1.0)
     
+
+class AddAWGN(object):
+    def __init__(self, snr_db=9.5):
+        self.snr_db = snr_db
+
+    def __call__(self, x):
+        # x is [C, H, W] in [0, 1]
+        # Calculate signal power
+        signal_power = torch.mean(x ** 2)
+        
+        # Avoid division by zero for empty images
+        if signal_power == 0:
+            return x
+            
+        # Calculate noise power required
+        snr_linear = 10 ** (self.snr_db / 10)
+        noise_power = signal_power / snr_linear
+        noise_std = torch.sqrt(noise_power)
+        
+        # Add noise
+        noise = torch.randn_like(x) * noise_std
+        return torch.clamp(x + noise, 0.0, 1.0)
+    
     
 def load_dataset(cfg: DictConfig):
     """
@@ -42,6 +65,10 @@ def load_dataset(cfg: DictConfig):
             if t_cfg["type"] == "Dequantize":
                 train_transform_list.append(Dequantize())
                 continue
+            elif t_cfg["type"] == "AddAWGN":
+                snr_db = t_cfg.params.get("snr_db", 9.5)
+                train_transform_list.append(AddAWGN(snr_db=snr_db))
+                continue
             
             transform_config = {'_target_': f'torchvision.transforms.{t_cfg["type"]}'}
             if 'params' in t_cfg and t_cfg.params:
@@ -55,6 +82,10 @@ def load_dataset(cfg: DictConfig):
         for t_cfg in cfg.dataset.test_transform:
             if t_cfg["type"] == "Dequantize":
                 test_transform_list.append(Dequantize())
+                continue
+            elif t_cfg["type"] == "AddAWGN":
+                snr_db = t_cfg.params.get("snr_db", 9.5)
+                train_transform_list.append(AddAWGN(snr_db=snr_db))
                 continue
             
             transform_config = {'_target_': f'torchvision.transforms.{t_cfg["type"]}'}
