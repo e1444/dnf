@@ -34,16 +34,13 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             logits = log_det.unsqueeze(1)   # (B, 1)
             all_level_logits = []
             for k, (z, h) in enumerate(outs):
-                prior_facts = level_priors[k]
-                priors = [None] * len(prior_facts)
+                args = [{}, {"z": z}, {}]
                 split = splits[k]
                 
-                if prior_facts[0] is not None:
-                    priors[0] = prior_facts[0]()        # noise_prior
-                if prior_facts[1] is not None:
-                    priors[1] = prior_facts[1](z)     # struct_prior
-                if prior_facts[2] is not None:
-                    priors[2] = prior_facts[2]()        # sem_prior
+                priors = [
+                    prior_fact(**a) if prior_fact is not None else None 
+                    for prior_fact, a in zip(level_priors[k], args)
+                ]
                 
                 level_logits = compute_level_logits(z, h, priors, split, K, sum=False)     # (B, K, 3)
                 all_level_logits.append(level_logits)
@@ -56,6 +53,22 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             loss = ce_loss
             
             loss = loss + cfg.training.r_logdet * (log_dets ** 2).mean()
+            
+            for i in range(cfg.model.num_levels):
+                level_prior = level_priors[i]
+                _, H, W = model.output_shapes[i]
+                split = splits[i]
+                reg_tau_density = 0.0
+                
+                if level_prior[0] is not None:
+                    reg_tau_density = reg_tau_density + K * (level_prior[0].tau / (split[0] * H * W)) ** 2
+                if level_prior[1] is not None:
+                    reg_tau_density = reg_tau_density + K * (level_prior[1].tau / (split[1] * H * W)) ** 2
+                if level_prior[2] is not None:
+                    for cls_prior in level_prior[2].priors:
+                        reg_tau_density = reg_tau_density + (cls_prior.tau / (split[2] * H * W)) ** 2
+            
+                loss = loss + cfg.training.r_tau_density * reg_tau_density
             
             if torch.isnan(loss) or torch.isinf(loss):
                 print("WARNING: NaN/Inf loss detected during evaluation. Skipping batch.")
