@@ -62,8 +62,6 @@ def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], no
     """
     S = H * W
     D = C * S
-    assert C >= K, "Channel-based initialization requires C >= K"
-    
     rank_ch, rank_sp = rank
     
     loc = torch.zeros(K, C, S)
