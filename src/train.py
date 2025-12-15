@@ -142,6 +142,7 @@ def train(cfg: DictConfig):
         
     # Initialize EMA model
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
+    ema_model.output_shapes = model.output_shapes
         
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
