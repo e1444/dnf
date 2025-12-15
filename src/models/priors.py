@@ -81,7 +81,6 @@ class KPMVNPrior(nn.Module):
         self.cov_sp_factor = nn.Parameter(cov_sp[0])
         self.log_cov_sp_diag = nn.Parameter(torch.log(cov_sp[1]))
         
-        # Single learnable target for the total entropy
         if not isinstance(tau, torch.Tensor):
             tau = torch.tensor(tau, dtype=torch.float32)
         self.tau = nn.Parameter(tau)

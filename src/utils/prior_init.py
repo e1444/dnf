@@ -78,8 +78,8 @@ def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], no
     for k in range(K):
         theta.append({
             "loc": loc[k],
-            "ch_cov": (U_ch[k], D_ch[k]),
-            "sp_cov": (U_sp[k], D_sp[k]),
+            "cov_ch": (U_ch[k], D_ch[k]),
+            "cov_sp": (U_sp[k], D_sp[k]),
             "C": C,
             "H": H,
             "W": W
@@ -130,8 +130,8 @@ def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int],
     for k in range(K):
         theta.append({
             "loc": loc[k],
-            "ch_cov": (U_ch[k], D_ch[k]),
-            "sp_cov": (U_sp[k], D_sp[k]),
+            "cov_ch": (U_ch[k], D_ch[k]),
+            "cov_sp": (U_sp[k], D_sp[k]),
             "C": C,
             "H": H,
             "W": W
