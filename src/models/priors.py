@@ -6,7 +6,7 @@ from src.distributions.kpmvn import KroneckerProductMVN
 from src.models.modules import AttentionPooling, GaussianBlurLayer
 from src.utils.flat_dist import FlattenedDistribution
 
-from typing import List
+from typing import List, Union
 
 
 class LowRankMVNPrior(nn.Module):
@@ -58,7 +58,7 @@ class KPMVNPrior(nn.Module):
         loc: torch.Tensor,
         cov_ch: tuple,
         cov_sp: tuple,
-        tau: torch.Tensor, # Single target!
+        tau: Union[float, torch.Tensor],
         C: int, H: int, W: int,
         jitter: float = 1e-6,
         eps: float = 1e-6
@@ -82,6 +82,8 @@ class KPMVNPrior(nn.Module):
         self.log_cov_sp_diag = nn.Parameter(torch.log(cov_sp[1]))
         
         # Single learnable target for the total entropy
+        if not isinstance(tau, torch.Tensor):
+            tau = torch.tensor(tau, dtype=torch.float32)
         self.tau = nn.Parameter(tau)
         
         self.jitter = jitter
@@ -138,7 +140,7 @@ class ConditionalKPMVNPrior(nn.Module):
         h_channels: int,
         H: int, W: int,
         rank: tuple[int, int],
-        tau: torch.Tensor,
+        tau: Union[float, torch.Tensor],
         jitter: float = 1e-6,
         eps: float = 1e-6,
         dropout: float = 0.0,
@@ -153,6 +155,8 @@ class ConditionalKPMVNPrior(nn.Module):
         self.jitter = jitter
         self.eps = eps
         
+        if not isinstance(tau, torch.Tensor):
+            tau = torch.tensor(tau, dtype=torch.float32)
         self.tau = nn.Parameter(tau)
 
         self.blur = nn.Identity()
