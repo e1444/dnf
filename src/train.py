@@ -179,30 +179,20 @@ def train(cfg: DictConfig):
             log_det = torch.sum(log_dets, dim=0)
             
             logits = log_det.unsqueeze(1)
-            reg_prior_cov = 0.0
             for k, (z, h) in enumerate(outs):
                 prior_facts = level_priors[k]
                 priors = [None] * len(prior_facts)
                 split = splits[k]
                 
                 if prior_facts[0] is not None:
-                    priors[0] = prior_facts[0](unit_scale=True)        # noise_prior
+                    priors[0] = prior_facts[0]()        # noise_prior
                 if prior_facts[1] is not None:
-                    priors[1] = prior_facts[1](z, unit_scale=True)     # struct_prior
+                    priors[1] = prior_facts[1](z)       # struct_prior
                 if prior_facts[2] is not None:
-                    priors[2] = prior_facts[2](unit_scale=True)        # sem_prior
+                    priors[2] = prior_facts[2]()        # sem_prior
                 
                 level_logits = compute_level_logits(z, h, priors, splits[k], K)
                 logits = logits + level_logits
-                
-                r = cfg.training.r_prior_cov[k]   # Regularize by level
-                if priors[0] is not None:
-                    reg_prior_cov = reg_prior_cov + r * priors[0].kl_to_isotropic().mean()
-                if priors[1] is not None:
-                    reg_prior_cov = reg_prior_cov + r * priors[1].kl_to_isotropic().mean()
-                if priors[2] is not None:
-                    sem_penalty = sum(d.kl_to_isotropic().mean() for d in priors[2]) / len(priors[2])
-                    reg_prior_cov = reg_prior_cov + r * sem_penalty
                     
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             task_loss = ce_loss
@@ -212,7 +202,6 @@ def train(cfg: DictConfig):
             
             # 3. Regularization terms
             reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
-            reg_loss = reg_loss + reg_prior_cov
             
             # Primal Objective
             primal_loss = task_loss
