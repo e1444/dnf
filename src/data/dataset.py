@@ -85,7 +85,7 @@ def load_dataset(cfg: DictConfig):
                 continue
             elif t_cfg["type"] == "AddAWGN":
                 snr_db = t_cfg.params.get("snr_db", 9.5)
-                train_transform_list.append(AddAWGN(snr_db=snr_db))
+                test_transform_list.append(AddAWGN(snr_db=snr_db))
                 continue
             
             transform_config = {'_target_': f'torchvision.transforms.{t_cfg["type"]}'}
