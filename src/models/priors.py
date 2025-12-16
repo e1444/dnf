@@ -96,9 +96,11 @@ class KPMVNPrior(nn.Module):
         
     def forward(self) -> torch.distributions.Distribution:
         log_norm_scale = self._log_det / self.D_total / 2
+        
+        loc_shaped = self._loc.view(self.C, self.H, self.W)
             
         base_dist = KroneckerProductMVN(
-            loc=self._loc,
+            loc=torch.zeros(self.C * self.H * self.W, device=self._loc.device, dtype=self._loc.dtype),
             ch_cov=(self.cov_ch_factor * torch.exp(log_norm_scale / 2), torch.exp(self.log_cov_ch_diag + log_norm_scale) + self.eps),
             sp_cov=(self.cov_sp_factor * torch.exp(log_norm_scale / 2), torch.exp(self.log_cov_sp_diag + log_norm_scale) + self.eps),
             C=self.C, H=self.H, W=self.W,
@@ -107,7 +109,7 @@ class KPMVNPrior(nn.Module):
         
         log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
-        scaled_dist = ScaledDistribution(base_dist, loc=self._loc, scale=global_scale)
+        scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
         return scaled_dist
         
     @property
@@ -198,7 +200,7 @@ class ConditionalKPMVNPrior(nn.Module):
         spatial_input = torch.cat([shared_features, global_context_map], dim=1)
         
         loc = self.loc_head(spatial_input).view(B, -1)
-        loc = loc.view(B, self.h_C, self.H, self.W)
+        loc_shaped = loc.view(B, self.h_C, self.H, self.W)
         log_sp_D = self.sp_D_head(spatial_input).view(B, -1)
         sp_U = self.sp_U_head(spatial_input).permute(0, 2, 3, 1).reshape(B, self.S, self.rank_sp)
         
@@ -215,9 +217,8 @@ class ConditionalKPMVNPrior(nn.Module):
         log_norm_scale_D = log_norm_scale.view(-1, 1)       # (B, 1)
         log_norm_scale_U = log_norm_scale.view(-1, 1, 1)    # (B, 1, 1)
         
-        # FIX: Distribute scale between ch and sp factors (divide exponents by 2)
         base_dist = KroneckerProductMVN(
-            loc=loc,
+            loc=torch.zeros(B, self.h_C * self.H * self.W, device=z.device, dtype=z.dtype),
             ch_cov=(ch_U * torch.exp(log_norm_scale_U / 2), torch.exp(log_ch_D + log_norm_scale_D) + self.eps),
             sp_cov=(sp_U * torch.exp(log_norm_scale_U / 2), torch.exp(log_sp_D + log_norm_scale_D) + self.eps),
             C=self.h_C, H=self.H, W=self.W,
@@ -226,6 +227,6 @@ class ConditionalKPMVNPrior(nn.Module):
         
         log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
-        scaled_dist = ScaledDistribution(base_dist, loc=loc, scale=global_scale)
+        scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
         
         return scaled_dist
