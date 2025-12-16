@@ -203,21 +203,29 @@ def train(cfg: DictConfig):
             # 3. Regularization terms
             reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
             
+            r_tau_density = float(cfg.training.r_tau_density)
+            
             for i in range(cfg.model.num_levels):
                 level_prior = level_priors[i]
                 _, H, W = model.output_shapes[i]
                 split = splits[i]
-                reg_tau_density = 0.0
+                
+                # Initialize as a tensor on the correct device
+                reg_tau_density = torch.tensor(0.0, device=device)
                 
                 if level_prior[0] is not None:
-                    reg_tau_density = reg_tau_density + K * (level_prior[0].tau / (split[0] * H * W) - tau_hat[i, 0, 0]) ** 2
+                    # Explicitly cast split dimension to int to avoid any tensor indexing ambiguity
+                    dim = int(split[0])
+                    reg_tau_density = reg_tau_density + K * (level_prior[0].tau / (dim * H * W) - tau_hat[i, 0, 0]) ** 2
                 if level_prior[1] is not None:
-                    reg_tau_density = reg_tau_density + K * (level_prior[1].tau / (split[1] * H * W) - tau_hat[i, 1, 0]) ** 2
+                    dim = int(split[1])
+                    reg_tau_density = reg_tau_density + K * (level_prior[1].tau / (dim * H * W) - tau_hat[i, 1, 0]) ** 2
                 if level_prior[2] is not None:
+                    dim = int(split[2])
                     for k, cls_prior in enumerate(level_prior[2].priors):
-                        reg_tau_density = reg_tau_density + (cls_prior.tau / (split[2] * H * W) - tau_hat[i, 2, k]) ** 2
+                        reg_tau_density = reg_tau_density + (cls_prior.tau / (dim * H * W) - tau_hat[i, 2, k]) ** 2
             
-                reg_loss = reg_loss + cfg.training.r_tau_density * reg_tau_density
+                reg_loss = reg_loss + r_tau_density * reg_tau_density
             
             # Primal Objective
             primal_loss = task_loss
