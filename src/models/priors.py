@@ -4,7 +4,7 @@ from torch.distributions import LowRankMultivariateNormal
 
 from src.distributions.kpmvn import KroneckerProductMVN
 from src.models.modules import AttentionPooling, GaussianBlurLayer
-from src.utils.flat_dist import FlattenedDistribution
+from utils.dist_wrapper import FlattenedDistribution, ScaledDistribution
 
 from typing import List, Union
 
@@ -26,14 +26,20 @@ class LowRankMVNPrior(nn.Module):
 
     def forward(self) -> FlattenedDistribution:
         dim = self.loc.shape[0]
-        cov_scale = torch.exp((self.tau - self._log_det) / dim)
+        log_norm_scale = -self._log_det / dim
             
         base_dist = LowRankMultivariateNormal(
             loc=self.loc,
-            cov_factor=self.U * (cov_scale ** 0.5),
-            cov_diag=torch.exp(self.log_diag) * cov_scale + self.eps
+            cov_factor=self.U * torch.exp(log_norm_scale / 2),
+            cov_diag=torch.exp(self.log_diag + log_norm_scale) + self.eps
         )
-        return FlattenedDistribution(base_dist)
+        
+        log_s = torch.clamp(self.tau / dim, min=-15.0, max=15.0)
+        global_scale = torch.exp(0.5 * log_s)
+        scaled_dist = ScaledDistribution(base_dist, loc=self.loc, scale=global_scale)
+        flattened_dist = FlattenedDistribution(scaled_dist)
+    
+        return flattened_dist
         
     @staticmethod
     def _compute_log_det(cov_diag, cov_factor):
@@ -88,23 +94,21 @@ class KPMVNPrior(nn.Module):
         self.jitter = jitter
         self.eps = eps
         
-    def forward(self) -> KroneckerProductMVN:
-        # Calculate current total log det
-        current_log_det = self._log_det
-        
-        log_s = (self.tau - current_log_det) / self.D_total
-        s = torch.exp(log_s)
-        scale_factor = s ** 0.5
+    def forward(self) -> torch.distributions.Distribution:
+        log_norm_scale = self._log_det / self.D_total / 2
             
-        return KroneckerProductMVN(
+        base_dist = KroneckerProductMVN(
             loc=self._loc,
-            ch_cov=(self.cov_ch_factor * (scale_factor ** 0.5), torch.exp(self.log_cov_ch_diag) * scale_factor + self.eps),
-            sp_cov=(self.cov_sp_factor * (scale_factor ** 0.5), torch.exp(self.log_cov_sp_diag) * scale_factor + self.eps),
-            C=self.C,
-            H=self.H,
-            W=self.W,
+            ch_cov=(self.cov_ch_factor * torch.exp(log_norm_scale / 2), torch.exp(self.log_cov_ch_diag + log_norm_scale) + self.eps),
+            sp_cov=(self.cov_sp_factor * torch.exp(log_norm_scale / 2), torch.exp(self.log_cov_sp_diag + log_norm_scale) + self.eps),
+            C=self.C, H=self.H, W=self.W,
             jitter=self.jitter
         )
+        
+        log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
+        global_scale = torch.exp(0.5 * log_s)
+        scaled_dist = ScaledDistribution(base_dist, loc=self._loc, scale=global_scale)
+        return scaled_dist
         
     @property
     def _log_det_ch(self):
@@ -180,7 +184,7 @@ class ConditionalKPMVNPrior(nn.Module):
         self.ch_D_head = nn.Linear(backbone_features, self.h_C)
         self.ch_U_head = nn.Linear(backbone_features, self.h_C * self.rank_ch)
 
-    def forward(self, z: torch.Tensor) -> KroneckerProductMVN:
+    def forward(self, z: torch.Tensor) -> torch.distributions.Distribution:
         B = z.shape[0]
         z = self.blur(z)
         
@@ -204,18 +208,20 @@ class ConditionalKPMVNPrior(nn.Module):
         current_log_det = self.S * ld_ch + self.h_C * ld_sp
         
         # Calculate global scale s (B,)
-        log_s = (self.tau - current_log_det) / self.D_total
-        s = torch.exp(log_s)
-        scale_factor = s ** 0.5
+        log_norm_scale = torch.clamp(-current_log_det / self.D_total / 2, min=-15.0, max=15.0)
+        log_norm_scale = log_norm_scale.view(-1, 1)
         
-        # Reshape for broadcasting
-        scale_D = scale_factor.view(-1, 1)
-        scale_U = scale_factor.view(-1, 1, 1)
-
-        return KroneckerProductMVN(
+        # FIX: Distribute scale between ch and sp factors (divide exponents by 2)
+        base_dist = KroneckerProductMVN(
             loc=loc,
-            ch_cov=(ch_U * (scale_U ** 0.5), torch.exp(log_ch_D) * scale_D + self.eps),
-            sp_cov=(sp_U * (scale_U ** 0.5), torch.exp(log_sp_D) * scale_D + self.eps),
+            ch_cov=(ch_U * torch.exp(log_norm_scale / 2), torch.exp(log_ch_D + log_norm_scale) + self.eps),
+            sp_cov=(sp_U * torch.exp(log_norm_scale / 2), torch.exp(log_sp_D + log_norm_scale) + self.eps),
             C=self.h_C, H=self.H, W=self.W,
             jitter=self.jitter
         )
+        
+        log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
+        global_scale = torch.exp(0.5 * log_s)
+        scaled_dist = ScaledDistribution(base_dist, loc=loc, scale=global_scale)
+        
+        return scaled_dist
