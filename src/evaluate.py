@@ -22,15 +22,8 @@ def main(cfg: DictConfig):
     model = hydra.utils.instantiate(cfg.model, input_shape=input_shape, _convert_="partial").to(device)
 
     K = cfg.data.dataset.num_classes
-    noise_features = cfg.prior.noise_features
-    struct_features = cfg.prior.struct_features
-    semantic_features = cfg.prior.semantic_features
-    splits = list(zip(noise_features, struct_features, semantic_features))
-
-    assert len(noise_features) == cfg.model.num_levels, "Length of noise_features must match number of model levels"
-    assert len(struct_features) == cfg.model.num_levels, "Length of struct_features must match number of model levels"
-    assert len(semantic_features) == cfg.model.num_levels, "Length of semantic_features must match number of model levels"
-
+    assert len(cfg.level_priors.priors) == cfg.model.num_levels, "Number of priors must match number of model levels"
+    
     level_priors = []
     splits = []
     level_priors_params = nn.ModuleList()
