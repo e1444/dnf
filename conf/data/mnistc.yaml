@@ -9,13 +9,9 @@ dataset:
         padding: 2
     - type: "RandomAffine"
       params:
-        degrees: 10         # Rotates the image by up to +/- 10 degrees
-        translate: [0.1, 0.1] # Shifts the image by up to 10% horizontally and vertically
-        scale: [0.9, 1.1]   # Zooms the image between 90% and 110%
-    - type: "ElasticTransform"
-      params:
-        alpha: 20.0         # Controls the intensity of the elastic deformation
-        sigma: 4.0          # Controls the smoothness of the deformation
+        degrees: 1         # Rotates the image by up to +/- 1 degree
+        translate: [0.01, 0.01] # Shifts the image by up to 1% horizontally and vertically
+        scale: [0.99, 1.01]   # Zooms the image between 99% and 101%
     - type: "Dequantize"
     - type: "AddAWGN"
       params:
