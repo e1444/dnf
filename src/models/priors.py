@@ -4,7 +4,7 @@ from torch.distributions import LowRankMultivariateNormal
 
 from src.distributions.kpmvn import KroneckerProductMVN
 from src.models.modules import AttentionPooling, GaussianBlurLayer
-from utils.dist_wrapper import FlattenedDistribution, ScaledDistribution
+from src.utils.dist_wrapper import FlattenedDistribution, ScaledDistribution
 
 from typing import List, Union
 
