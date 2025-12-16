@@ -198,6 +198,7 @@ class ConditionalKPMVNPrior(nn.Module):
         spatial_input = torch.cat([shared_features, global_context_map], dim=1)
         
         loc = self.loc_head(spatial_input).view(B, -1)
+        loc = loc.view(B, self.h_C, self.H, self.W)
         log_sp_D = self.sp_D_head(spatial_input).view(B, -1)
         sp_U = self.sp_U_head(spatial_input).permute(0, 2, 3, 1).reshape(B, self.S, self.rank_sp)
         
