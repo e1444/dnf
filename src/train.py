@@ -104,6 +104,8 @@ def train(cfg: DictConfig):
         model.requires_grad_(False)
     for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):
         prior_param.requires_grad = (lr_prior > 0)
+        
+    tau_hat = torch.zeros((cfg.model.num_levels, 3, cfg.data.dataset.num_classes), device=device) - 10   # (level, feature_type, class)
 
     optimizer = optim.AdamW(
         model.parameters(),
@@ -208,12 +210,12 @@ def train(cfg: DictConfig):
                 reg_tau_density = 0.0
                 
                 if level_prior[0] is not None:
-                    reg_tau_density = reg_tau_density + K * (level_prior[0].tau / (split[0] * H * W)) ** 2
+                    reg_tau_density = reg_tau_density + K * (level_prior[0].tau / (split[0] * H * W) - tau_hat[i, 0, 0]) ** 2
                 if level_prior[1] is not None:
-                    reg_tau_density = reg_tau_density + K * (level_prior[1].tau / (split[1] * H * W)) ** 2
+                    reg_tau_density = reg_tau_density + K * (level_prior[1].tau / (split[1] * H * W) - tau_hat[i, 1, 0]) ** 2
                 if level_prior[2] is not None:
-                    for cls_prior in level_prior[2].priors:
-                        reg_tau_density = reg_tau_density + (cls_prior.tau / (split[2] * H * W)) ** 2
+                    for k, cls_prior in enumerate(level_prior[2].priors):
+                        reg_tau_density = reg_tau_density + (cls_prior.tau / (split[2] * H * W) - tau_hat[i, 2, k]) ** 2
             
                 reg_loss = reg_loss + cfg.training.r_tau_density * reg_tau_density
             
