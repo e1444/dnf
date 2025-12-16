@@ -209,13 +209,16 @@ class ConditionalKPMVNPrior(nn.Module):
         
         # Calculate global scale s (B,)
         log_norm_scale = torch.clamp(-current_log_det / self.D_total / 2, min=-15.0, max=15.0)
-        log_norm_scale = log_norm_scale.view(-1, 1)
+        
+        # Reshape for broadcasting
+        log_norm_scale_D = log_norm_scale.view(-1, 1)       # (B, 1)
+        log_norm_scale_U = log_norm_scale.view(-1, 1, 1)    # (B, 1, 1)
         
         # FIX: Distribute scale between ch and sp factors (divide exponents by 2)
         base_dist = KroneckerProductMVN(
             loc=loc,
-            ch_cov=(ch_U * torch.exp(log_norm_scale / 2), torch.exp(log_ch_D + log_norm_scale) + self.eps),
-            sp_cov=(sp_U * torch.exp(log_norm_scale / 2), torch.exp(log_sp_D + log_norm_scale) + self.eps),
+            ch_cov=(ch_U * torch.exp(log_norm_scale_U / 2), torch.exp(log_ch_D + log_norm_scale_D) + self.eps),
+            sp_cov=(sp_U * torch.exp(log_norm_scale_U / 2), torch.exp(log_sp_D + log_norm_scale_D) + self.eps),
             C=self.h_C, H=self.H, W=self.W,
             jitter=self.jitter
         )
