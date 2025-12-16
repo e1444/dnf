@@ -19,3 +19,5 @@ priors:
     rank: [8, 8]
     cls:
       tau: -2560.0
+    class_conditional_init:
+      simplex_scale: 1e-2
