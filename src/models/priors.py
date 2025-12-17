@@ -147,6 +147,9 @@ class ConditionalKPMVNPrior(nn.Module):
         H: int, W: int,
         rank: tuple[int, int],
         tau: Union[float, torch.Tensor],
+        loc: Optional[torch.Tensor] = None,
+        cov_ch: Optional[tuple] = None,
+        cov_sp: Optional[tuple] = None,
         jitter: float = 1e-6,
         eps: float = 1e-6,
         dropout: float = 0.0,
@@ -182,11 +185,40 @@ class ConditionalKPMVNPrior(nn.Module):
         self.attention_pool = AttentionPooling(backbone_features)
 
         self.loc_head = nn.Conv2d(backbone_features * 2, self.h_C, 1)
+        if loc is not None:
+            if loc.numel() == self.h_C * self.H * self.W:
+                loc_reshaped = loc.view(self.h_C, self.H, self.W)
+                # Initialize bias with spatial mean
+                self.loc_head.bias.data.copy_(loc_reshaped.mean(dim=(1, 2)))
+                nn.init.zeros_(self.loc_head.weight)
+        
         self.sp_D_head = nn.Conv2d(backbone_features * 2, 1, 1)
         self.sp_U_head = nn.Conv2d(backbone_features * 2, self.rank_sp, 1)
+        
+        if cov_sp is not None:
+            # cov_sp[1] is diag (H*W)
+            log_sp_diag = torch.log(cov_sp[1])
+            self.sp_D_head.bias.data.fill_(log_sp_diag.mean())
+            nn.init.zeros_(self.sp_D_head.weight)
+            
+            # cov_sp[0] is factor (H*W, rank_sp)
+            sp_factor_mean = cov_sp[0].mean(dim=0)
+            self.sp_U_head.bias.data.copy_(sp_factor_mean)
+            nn.init.zeros_(self.sp_U_head.weight)
 
         self.ch_D_head = nn.Linear(backbone_features, self.h_C)
         self.ch_U_head = nn.Linear(backbone_features, self.h_C * self.rank_ch)
+        
+        if cov_ch is not None:
+            # cov_ch[1] is diag (C)
+            log_ch_diag = torch.log(cov_ch[1])
+            self.ch_D_head.bias.data.copy_(log_ch_diag)
+            nn.init.zeros_(self.ch_D_head.weight)
+            
+            # cov_ch[0] is factor (C, rank_ch)
+            ch_factor = cov_ch[0].flatten()
+            self.ch_U_head.bias.data.copy_(ch_factor)
+            nn.init.zeros_(self.ch_U_head.weight)
 
     def forward(self, z: torch.Tensor, h: Optional[torch.Tensor] = None) -> torch.distributions.Distribution:
         B = z.shape[0]

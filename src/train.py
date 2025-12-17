@@ -46,9 +46,9 @@ def train(cfg: DictConfig):
     level_priors_params = nn.ModuleList()
     
     top_split = list(cfg.level_priors.priors.values())[-1].split    # top level split
-    conf_features = top_split[0]  # noise features at top level
+    cond_features = top_split[0]  # noise features at top level
     for d in model.output_shapes[-1][1:]: # H, W of top level
-        conf_features *= d
+        cond_features *= d
     
     with torch.no_grad():
         for i, prior_cfg in enumerate(cfg.level_priors.priors.values()):
@@ -80,12 +80,21 @@ def train(cfg: DictConfig):
                 level_params.append(noise_prior)
             
             if struct_count > 0:
+                theta_list = hydra.utils.instantiate(
+                    prior_cfg.zero_init,
+                    K=1,
+                    C=struct_count, H=H, W=W,
+                    rank=prior_cfg.rank
+                )
+                theta = theta_list[0]
+                theta.update({
+                    "z_channels": C,
+                    "h_channels": struct_count,
+                    "cond_features": cond_features
+                })
                 struct_prior = hydra.utils.instantiate(
                     prior_cfg.conditional_cls,
-                    z_channels=C,
-                    h_channels=struct_count,
-                    cond_features=conf_features,
-                    H=H, W=W,
+                    **theta,
                     rank=prior_cfg.rank
                 ).to(device)
                 level_params.append(struct_prior)
@@ -103,7 +112,7 @@ def train(cfg: DictConfig):
                         theta.update({
                             "z_channels": C,
                             "h_channels": sem_count,
-                            "cond_features": conf_features,
+                            "cond_features": cond_features,
                             "H": H,
                             "W": W
                         })
