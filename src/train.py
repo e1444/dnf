@@ -75,10 +75,14 @@ def train(cfg: DictConfig):
                 level_params.append(noise_prior)
             
             if struct_count > 0:
+                conf_features = 1
+                for d in model.output_shapes[-1]:
+                    conf_features *= d
                 struct_prior = hydra.utils.instantiate(
                     prior_cfg.conditional_cls,
                     z_channels=C,
                     h_channels=struct_count,
+                    cond_features=conf_features,
                     H=H, W=W,
                     rank=prior_cfg.rank
                 ).to(device)
@@ -179,8 +183,13 @@ def train(cfg: DictConfig):
             log_det = torch.sum(log_dets, dim=0)
             
             logits = log_det.unsqueeze(1)
+            h_global = outs[-1][1].reshape(x_batch.size(0), -1)
             for k, (z, h) in enumerate(outs):
-                args = [{}, {"z": z}, {}]
+                args = [
+                    {}, 
+                    {"z": z, "h": h_global},
+                    {}
+                ]
                 split = splits[k]
                 
                 priors = [
@@ -241,11 +250,8 @@ def train(cfg: DictConfig):
                         reg_tau_density = path_tensor.var(dim=1).mean()
                         reg_loss = reg_loss + r_tau_density * reg_tau_density
                     else:
-                        # Only semantic priors exist at this level (rare but possible)
-                        # Just regularize them to be close to each other? Or 0?
-                        # If there's no shared path, "equilibrium" just means they should be similar.
-                        reg_tau_density = sem_tensor.var()
-                        reg_loss = reg_loss + r_tau_density * reg_tau_density
+                        # Only a single level => only a single scalar => undefined variance
+                        pass
                         
                 elif len(shared_densities) > 1:
                     # Only shared priors exist (no semantics)

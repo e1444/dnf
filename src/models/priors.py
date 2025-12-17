@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.distributions import LowRankMultivariateNormal
 
 from src.distributions.kpmvn import KroneckerProductMVN
@@ -149,8 +150,8 @@ class ConditionalKPMVNPrior(nn.Module):
         jitter: float = 1e-6,
         eps: float = 1e-6,
         dropout: float = 0.0,
-        blur_sigma: float = 0.0,
         backbone_features: int = 256,
+        cond_features: int = 0,
     ):
         super().__init__()
         self.h_C, self.H, self.W = h_channels, H, W
@@ -164,18 +165,19 @@ class ConditionalKPMVNPrior(nn.Module):
             tau = torch.tensor(tau, dtype=torch.float32)
         self.tau = nn.Parameter(tau)
 
-        self.blur = nn.Identity()
-        if blur_sigma > 0.0:
-            self.blur = GaussianBlurLayer(channels=z_channels, kernel_size=5, sigma=blur_sigma)
-
-        self.backbone = nn.Sequential(
-            nn.Conv2d(z_channels, backbone_features, 3, padding=1),
-            nn.ReLU(),
-            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
-            nn.Conv2d(backbone_features, backbone_features, 3, padding=1),
-            nn.ReLU(),
-            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
-        )
+        # Split backbone to insert FiLM
+        self.conv1 = nn.Conv2d(z_channels, backbone_features, 3, padding=1)
+        self.conv2 = nn.Conv2d(backbone_features, backbone_features, 3, padding=1)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        
+        self.cond_features = cond_features
+        assert cond_features > 0, "Conditioning feature dimension must be positive for FiLM"
+        
+        # Projects h -> (gamma, beta) for each feature channel
+        self.film_gen = nn.Linear(cond_features, backbone_features * 2)
+        # Initialize to identity: gamma=0 (scale=1), beta=0
+        nn.init.zeros_(self.film_gen.weight)
+        nn.init.zeros_(self.film_gen.bias)
 
         self.attention_pool = AttentionPooling(backbone_features)
 
@@ -186,11 +188,27 @@ class ConditionalKPMVNPrior(nn.Module):
         self.ch_D_head = nn.Linear(backbone_features, self.h_C)
         self.ch_U_head = nn.Linear(backbone_features, self.h_C * self.rank_ch)
 
-    def forward(self, z: torch.Tensor) -> torch.distributions.Distribution:
+    def forward(self, z: torch.Tensor, h: torch.Tensor) -> torch.distributions.Distribution:
         B = z.shape[0]
-        z = self.blur(z)
         
-        shared_features = self.backbone(z)
+        # Backbone with FiLM
+        x = F.relu(self.conv1(z))
+        
+        # h: (B, cond_features)
+        film_params = self.film_gen(h)  # (B, 2 * backbone_features)
+        gamma, beta = torch.chunk(film_params, 2, dim=1)
+        
+        # Reshape for broadcasting: (B, C, 1, 1)
+        gamma = gamma.unsqueeze(-1).unsqueeze(-1)
+        beta = beta.unsqueeze(-1).unsqueeze(-1)
+        
+        # Apply FiLM: x = (1 + gamma) * x + beta
+        x = (1 + gamma) * x + beta
+            
+        x = self.dropout(x)
+        x = F.relu(self.conv2(x))
+        shared_features = self.dropout(x)
+        
         pooled_features = self.attention_pool(shared_features)
 
         log_ch_D = self.ch_D_head(pooled_features)
