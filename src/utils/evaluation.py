@@ -33,11 +33,12 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             # Compute logits using the shared utility
             logits = log_det.unsqueeze(1)   # (B, 1)
             all_level_logits = []
-            h_global = outs[-1][1].reshape(x_batch.size(0), -1)
+            top_noise = splits[-1][0]
+            z_style = outs[-1][1][:, :top_noise, :, :].reshape(x_batch.size(0), -1)
             for k, (z, h) in enumerate(outs):
                 args = [
                     {},                         # noise params
-                    {"z": z, "h": h_global},    # struct params
+                    {"z": z, "h": z_style},    # struct params
                     {}                          # semantic params
                 ]
                 split = splits[k]
