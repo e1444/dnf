@@ -105,7 +105,8 @@ def train(cfg: DictConfig):
     for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):
         prior_param.requires_grad = (lr_prior > 0)
         
-    tau_hat = torch.zeros((cfg.model.num_levels, 3, cfg.data.dataset.num_classes), device=device) - 10   # (level, feature_type, class)
+    tau_hat = torch.zeros((cfg.model.num_levels, 3, cfg.data.dataset.num_classes), device=device) - 10.0   # (level, feature_type, class)
+    tau_hat = nn.Parameter(tau_hat, requires_grad=True)
 
     optimizer = optim.AdamW(
         model.parameters(),
@@ -118,6 +119,11 @@ def train(cfg: DictConfig):
             'lr': lr_prior,
             'weight_decay': cfg.training.weight_decay
         })
+    optimizer.add_param_group({
+        'params': tau_hat,
+        'lr': cfg.training.lr_tau_hat,
+        'weight_decay': cfg.training.weight_decay
+    })
     
     # --- Augmented Lagrangian Setup ---
     log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
@@ -133,10 +139,10 @@ def train(cfg: DictConfig):
         checkpoint = torch.load(cfg.training.resume_from_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
+        tau_hat.data.copy_(checkpoint['tau_hat'])
         
         if not cfg.training.reset_optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            
             log_alpha.data.copy_(checkpoint['log_alpha'])
             alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
         
@@ -301,6 +307,7 @@ def train(cfg: DictConfig):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'prior_state_dict': level_priors_params.state_dict(),
+                'tau_hat': tau_hat.data,
                 'ema_model_state_dict': ema_model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),
