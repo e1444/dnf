@@ -75,9 +75,11 @@ def train(cfg: DictConfig):
                 level_params.append(noise_prior)
             
             if struct_count > 0:
-                conf_features = 1
-                for d in model.output_shapes[-1]:
+                top_split = list(cfg.level_priors.priors.values())[-1]  # top level split
+                conf_features = top_split[0]  # noise features at top level
+                for d in model.output_shapes[-1][1:]: # H, W of top level
                     conf_features *= d
+                
                 struct_prior = hydra.utils.instantiate(
                     prior_cfg.conditional_cls,
                     z_channels=C,
@@ -183,11 +185,12 @@ def train(cfg: DictConfig):
             log_det = torch.sum(log_dets, dim=0)
             
             logits = log_det.unsqueeze(1)
-            h_global = outs[-1][1].reshape(x_batch.size(0), -1)
+            top_noise = splits[-1][0]
+            z_style = outs[-1][1][:, :top_noise, :, :].reshape(x_batch.size(0), -1)
             for k, (z, h) in enumerate(outs):
                 args = [
                     {},                         # noise params
-                    {"z": z, "h": h_global},    # struct params
+                    {"z": z, "h": z_style},    # struct params
                     {}                          # semantic params
                 ]
                 split = splits[k]
