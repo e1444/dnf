@@ -117,6 +117,7 @@ def train(cfg: DictConfig):
                             "H": H,
                             "W": W
                         })
+                        theta.pop("C")
                 else:
                     cls = prior_cfg.cls
                     theta_list = hydra.utils.instantiate(
