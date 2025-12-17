@@ -104,9 +104,6 @@ def train(cfg: DictConfig):
         model.requires_grad_(False)
     for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):
         prior_param.requires_grad = (lr_prior > 0)
-        
-    tau_hat = torch.zeros((cfg.model.num_levels, 3, cfg.data.dataset.num_classes), device=device) - 10.0   # (level, feature_type, class)
-    tau_hat = nn.Parameter(tau_hat, requires_grad=True)
 
     optimizer = optim.AdamW(
         model.parameters(),
@@ -119,11 +116,6 @@ def train(cfg: DictConfig):
             'lr': lr_prior,
             'weight_decay': cfg.training.weight_decay
         })
-    optimizer.add_param_group({
-        'params': tau_hat,
-        'lr': cfg.training.lr_tau_hat,
-        'weight_decay': cfg.training.weight_decay
-    })
     
     # --- Augmented Lagrangian Setup ---
     log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
@@ -139,7 +131,6 @@ def train(cfg: DictConfig):
         checkpoint = torch.load(cfg.training.resume_from_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
-        tau_hat.data.copy_(checkpoint['tau_hat'])
         
         if not cfg.training.reset_optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -208,30 +199,6 @@ def train(cfg: DictConfig):
             
             # 3. Regularization terms
             reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
-            
-            r_tau_density = float(cfg.training.r_tau_density)
-            
-            for i in range(cfg.model.num_levels):
-                level_prior = level_priors[i]
-                _, H, W = model.output_shapes[i]
-                split = splits[i]
-                
-                # Initialize as a tensor on the correct device
-                reg_tau_density = torch.tensor(0.0, device=device)
-                
-                if level_prior[0] is not None:
-                    # Explicitly cast split dimension to int to avoid any tensor indexing ambiguity
-                    dim = int(split[0])
-                    reg_tau_density = reg_tau_density + K * (level_prior[0].tau / (dim * H * W) - tau_hat[i, 0, 0]) ** 2
-                if level_prior[1] is not None:
-                    dim = int(split[1])
-                    reg_tau_density = reg_tau_density + K * (level_prior[1].tau / (dim * H * W) - tau_hat[i, 1, 0]) ** 2
-                if level_prior[2] is not None:
-                    dim = int(split[2])
-                    for k, cls_prior in enumerate(level_prior[2].priors):
-                        reg_tau_density = reg_tau_density + (cls_prior.tau / (dim * H * W) - tau_hat[i, 2, k]) ** 2
-            
-                reg_loss = reg_loss + r_tau_density * reg_tau_density
             
             # Primal Objective
             primal_loss = task_loss
@@ -307,7 +274,6 @@ def train(cfg: DictConfig):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'prior_state_dict': level_priors_params.state_dict(),
-                'tau_hat': tau_hat.data,
                 'ema_model_state_dict': ema_model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),

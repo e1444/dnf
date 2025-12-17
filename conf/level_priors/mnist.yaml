@@ -20,4 +20,4 @@ priors:
     cls:
       tau: -2560.0
     class_conditional_init:
-      simplex_scale: 1e-2
+      simplex_scale: 5e-2

@@ -4,7 +4,6 @@ defaults:
 
 lr: 1e-3
 lr_prior: [0, 0, 0]
-lr_tau_hat: 1e-3
 
 gradclip: 1.0
 weight_decay: 1e-4
@@ -15,7 +14,6 @@ checkpoint_interval: 5
 
 # Loss and regularization weights
 r_logdet: 1e-2
-r_tau_density: 1e-2
 label_smoothing: 0.1
 
 # Scheduler settings
