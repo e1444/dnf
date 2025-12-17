@@ -75,7 +75,7 @@ def train(cfg: DictConfig):
                 level_params.append(noise_prior)
             
             if struct_count > 0:
-                top_split = list(cfg.level_priors.priors.values())[-1]  # top level split
+                top_split = list(cfg.level_priors.priors.values())[-1].split    # top level split
                 conf_features = top_split[0]  # noise features at top level
                 for d in model.output_shapes[-1][1:]: # H, W of top level
                     conf_features *= d
