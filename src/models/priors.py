@@ -7,7 +7,7 @@ from src.distributions.kpmvn import KroneckerProductMVN
 from src.models.modules import AttentionPooling, GaussianBlurLayer
 from src.utils.dist_wrapper import FlattenedDistribution, ScaledDistribution
 
-from typing import List, Union
+from typing import List, Optional, Union
 
 
 class LowRankMVNPrior(nn.Module):
@@ -135,8 +135,8 @@ class ClassConditionalPrior(nn.Module):
         
         assert all(isinstance(prior, priors[0].__class__) for prior in priors), "All priors must be of the same type"
 
-    def forward(self) -> List[torch.distributions.Distribution]:
-        return [prior() for prior in self.priors]
+    def forward(self, *args, **kwargs) -> List[torch.distributions.Distribution]:
+        return [prior(*args, **kwargs) for prior in self.priors]
 
 
 class ConditionalKPMVNPrior(nn.Module):
@@ -171,13 +171,13 @@ class ConditionalKPMVNPrior(nn.Module):
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         
         self.cond_features = cond_features
-        assert cond_features > 0, "Conditioning feature dimension must be positive for FiLM"
-        
-        # Projects h -> (gamma, beta) for each feature channel
-        self.film_gen = nn.Linear(cond_features, backbone_features * 2)
-        # Initialize to identity: gamma=0 (scale=1), beta=0
-        nn.init.zeros_(self.film_gen.weight)
-        nn.init.zeros_(self.film_gen.bias)
+        self.film_gen = nn.Identity()
+        if cond_features > 0:
+            # Projects h -> (gamma, beta) for each feature channel
+            self.film_gen = nn.Linear(cond_features, backbone_features * 2)
+            # Initialize to identity: gamma=0 (scale=1), beta=0
+            nn.init.zeros_(self.film_gen.weight)
+            nn.init.zeros_(self.film_gen.bias)
 
         self.attention_pool = AttentionPooling(backbone_features)
 
@@ -188,22 +188,24 @@ class ConditionalKPMVNPrior(nn.Module):
         self.ch_D_head = nn.Linear(backbone_features, self.h_C)
         self.ch_U_head = nn.Linear(backbone_features, self.h_C * self.rank_ch)
 
-    def forward(self, z: torch.Tensor, h: torch.Tensor) -> torch.distributions.Distribution:
+    def forward(self, z: torch.Tensor, h: Optional[torch.Tensor] = None) -> torch.distributions.Distribution:
         B = z.shape[0]
         
         # Backbone with FiLM
         x = F.relu(self.conv1(z))
         
-        # h: (B, cond_features)
-        film_params = self.film_gen(h)  # (B, 2 * backbone_features)
-        gamma, beta = torch.chunk(film_params, 2, dim=1)
-        
-        # Reshape for broadcasting: (B, C, 1, 1)
-        gamma = gamma.unsqueeze(-1).unsqueeze(-1)
-        beta = beta.unsqueeze(-1).unsqueeze(-1)
-        
-        # Apply FiLM: x = (1 + gamma) * x + beta
-        x = (1 + gamma) * x + beta
+        if h is not None:
+            assert self.cond_features > 0, "cond_features must be > 0 if conditioning is used"
+            # h: (B, cond_features)
+            film_params = self.film_gen(h)  # (B, 2 * backbone_features)
+            gamma, beta = torch.chunk(film_params, 2, dim=1)
+            
+            # Reshape for broadcasting: (B, C, 1, 1)
+            gamma = gamma.unsqueeze(-1).unsqueeze(-1)
+            beta = beta.unsqueeze(-1).unsqueeze(-1)
+            
+            # Apply FiLM: x = (1 + gamma) * x + beta
+            x = (1 + gamma) * x + beta
             
         x = self.dropout(x)
         x = F.relu(self.conv2(x))

@@ -13,6 +13,11 @@ conditional_cls:
 zero_init:
   _target_: null # TODO implement zero init for LRMVN prior
   noise: 0.01
+
+random_init:
+  _target_: null # TODO implement random init for LRMVN prior
+  scale: 1.0
+  noise: 0.01
   
 class_conditional_init:
   _target_: src.utils.prior_init.lrmvn_simplex_init

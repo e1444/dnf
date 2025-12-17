@@ -45,6 +45,11 @@ def train(cfg: DictConfig):
     splits = []
     level_priors_params = nn.ModuleList()
     
+    top_split = list(cfg.level_priors.priors.values())[-1].split    # top level split
+    conf_features = top_split[0]  # noise features at top level
+    for d in model.output_shapes[-1][1:]: # H, W of top level
+        conf_features *= d
+    
     with torch.no_grad():
         for i, prior_cfg in enumerate(cfg.level_priors.priors.values()):
             C, H, W = model.output_shapes[i]
@@ -75,11 +80,6 @@ def train(cfg: DictConfig):
                 level_params.append(noise_prior)
             
             if struct_count > 0:
-                top_split = list(cfg.level_priors.priors.values())[-1].split    # top level split
-                conf_features = top_split[0]  # noise features at top level
-                for d in model.output_shapes[-1][1:]: # H, W of top level
-                    conf_features *= d
-                
                 struct_prior = hydra.utils.instantiate(
                     prior_cfg.conditional_cls,
                     z_channels=C,
@@ -91,14 +91,33 @@ def train(cfg: DictConfig):
                 level_params.append(struct_prior)
             
             if sem_count > 0:
-                theta_list = hydra.utils.instantiate(
-                    prior_cfg.class_conditional_init,
-                    K=K,
-                    C=sem_count, H=H, W=W,
-                    rank=prior_cfg.rank
-                )
+                if i < cfg.model.num_levels - 1:
+                    cls = prior_cfg.conditional_cls
+                    theta_list = hydra.utils.instantiate(
+                        prior_cfg.random_init,
+                        K=K,
+                        C=sem_count, H=H, W=W,
+                        rank=prior_cfg.rank
+                    )
+                    for theta in theta_list:
+                        theta.update({
+                            "z_channels": C,
+                            "h_channels": sem_count,
+                            "cond_features": conf_features,
+                            "H": H,
+                            "W": W
+                        })
+                else:
+                    cls = prior_cfg.cls
+                    theta_list = hydra.utils.instantiate(
+                        prior_cfg.class_conditional_init,
+                        K=K,
+                        C=sem_count, H=H, W=W,
+                        rank=prior_cfg.rank
+                    )
+                    
                 sem_prior = ClassConditionalPrior([
-                    hydra.utils.instantiate(prior_cfg.cls, **theta) for theta in theta_list
+                    hydra.utils.instantiate(cls, **theta) for theta in theta_list
                 ]).to(device)
                 level_params.append(sem_prior)
                 
@@ -187,20 +206,22 @@ def train(cfg: DictConfig):
             logits = log_det.unsqueeze(1)
             top_noise = splits[-1][0]
             z_style = outs[-1][1][:, :top_noise, :, :].reshape(x_batch.size(0), -1)
-            for k, (z, h) in enumerate(outs):
+            for i, (z, h) in enumerate(outs):
                 args = [
                     {},                         # noise params
-                    {"z": z, "h": z_style},    # struct params
+                    {"z": z, "h": None},     # struct params
                     {}                          # semantic params
                 ]
-                split = splits[k]
+                if i < cfg.model.num_levels - 1:
+                    args[2] = {"z": z, "h": z_style}  # semantic params
+                split = splits[i]
                 
                 priors = [
                     prior_fact(**a) if prior_fact is not None else None 
-                    for prior_fact, a in zip(level_priors[k], args)
+                    for prior_fact, a in zip(level_priors[i], args)
                 ]
                 
-                level_logits = compute_level_logits(z, h, priors, splits[k], K)
+                level_logits = compute_level_logits(z, h, priors, splits[i], K)
                 logits = logits + level_logits
                     
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
