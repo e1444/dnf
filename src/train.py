@@ -186,9 +186,9 @@ def train(cfg: DictConfig):
             h_global = outs[-1][1].reshape(x_batch.size(0), -1)
             for k, (z, h) in enumerate(outs):
                 args = [
-                    {}, 
-                    {"z": z, "h": h_global},
-                    {}
+                    {},                         # noise params
+                    {"z": z, "h": h_global},    # struct params
+                    {}                          # semantic params
                 ]
                 split = splits[k]
                 
