@@ -155,6 +155,7 @@ class ConditionalKPMVNPrior(nn.Module):
         dropout: float = 0.0,
         backbone_features: int = 256,
         cond_features: int = 0,
+        **kwargs,
     ):
         super().__init__()
         self.h_C, self.H, self.W = h_channels, H, W
