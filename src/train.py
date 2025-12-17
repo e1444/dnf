@@ -83,14 +83,14 @@ def train(cfg: DictConfig):
                 theta_list = hydra.utils.instantiate(
                     prior_cfg.zero_init,
                     K=1,
-                    C=struct_count, H=H, W=W,
-                    rank=prior_cfg.rank
+                    C=struct_count, H=H, W=W
                 )
                 theta = theta_list[0]
                 theta.update({
                     "z_channels": C,
                     "h_channels": struct_count,
-                    "cond_features": cond_features
+                    "cond_features": cond_features,
+                    "rank": prior_cfg.rank,
                 })
                 theta.pop("C")
                 struct_prior = hydra.utils.instantiate(
@@ -115,7 +115,8 @@ def train(cfg: DictConfig):
                             "h_channels": sem_count,
                             "cond_features": cond_features,
                             "H": H,
-                            "W": W
+                            "W": W,
+                            "rank": prior_cfg.rank,
                         })
                         theta.pop("C")
                 else:
