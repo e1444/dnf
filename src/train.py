@@ -200,6 +200,58 @@ def train(cfg: DictConfig):
             # 3. Regularization terms
             reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
             
+            r_tau_density = float(cfg.training.r_tau_density)
+            
+            for i in range(cfg.model.num_levels):
+                level_prior = level_priors[i]
+                _, H, W = model.output_shapes[i]
+                split = splits[i]
+                
+                # 1. Collect Shared Densities (Noise, Structure)
+                shared_densities = []
+                if level_prior[0] is not None:
+                    dim = int(split[0])
+                    shared_densities.append(level_prior[0].tau / (dim * H * W))
+                if level_prior[1] is not None:
+                    dim = int(split[1])
+                    shared_densities.append(level_prior[1].tau / (dim * H * W))
+                
+                # 2. Collect Semantic Densities
+                sem_densities = []
+                if level_prior[2] is not None:
+                    dim = int(split[2])
+                    sem_densities = [p.tau / (dim * H * W) for p in level_prior[2].priors]
+                
+                # 3. Vectorized Variance Calculation
+                if sem_densities:
+                    # Stack semantic densities: (K,)
+                    sem_tensor = torch.stack(sem_densities)
+                    
+                    if shared_densities:
+                        # Stack shared densities: (M,)
+                        shared_tensor = torch.stack(shared_densities)
+                        
+                        # Expand shared to (K, M) by repeating
+                        shared_expanded = shared_tensor.unsqueeze(0).expand(len(sem_densities), -1)
+                        
+                        # Concatenate to (K, M+1): Each row is [Shared..., Sem_k]
+                        path_tensor = torch.cat([shared_expanded, sem_tensor.unsqueeze(1)], dim=1)
+                        
+                        # Compute variance per row (per class path), then mean across classes
+                        reg_tau_density = path_tensor.var(dim=1).mean()
+                        reg_loss = reg_loss + r_tau_density * reg_tau_density
+                    else:
+                        # Only semantic priors exist at this level (rare but possible)
+                        # Just regularize them to be close to each other? Or 0?
+                        # If there's no shared path, "equilibrium" just means they should be similar.
+                        reg_tau_density = sem_tensor.var()
+                        reg_loss = reg_loss + r_tau_density * reg_tau_density
+                        
+                elif len(shared_densities) > 1:
+                    # Only shared priors exist (no semantics)
+                    reg_tau_density = torch.stack(shared_densities).var()
+                    reg_loss = reg_loss + r_tau_density * reg_tau_density
+            
             # Primal Objective
             primal_loss = task_loss
             primal_loss += reg_loss

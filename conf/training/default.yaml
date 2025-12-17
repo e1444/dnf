@@ -14,6 +14,7 @@ checkpoint_interval: 5
 
 # Loss and regularization weights
 r_logdet: 1e-2
+r_tau_density: 1e-6
 label_smoothing: 0.1
 
 # Scheduler settings
