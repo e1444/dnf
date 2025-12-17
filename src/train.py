@@ -92,6 +92,7 @@ def train(cfg: DictConfig):
                     "h_channels": struct_count,
                     "cond_features": cond_features
                 })
+                theta.remove("C")
                 struct_prior = hydra.utils.instantiate(
                     prior_cfg.conditional_cls,
                     **theta,
