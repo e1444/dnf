@@ -87,7 +87,7 @@ def kpmvn_zero_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], no
     
     return theta
 
-def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], simplex_scale: float = 1.0, noise: float = 0.0) -> list[dict]:
+def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int], simplex_scale: float = 1.0, noise: float = 0.0, tau_marginal: float = 1.0) -> list[dict]:
     """
     Initialize Kronecker-Product Multivariate Normal Prior Parameters on Simplex
     
@@ -132,10 +132,13 @@ def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int],
     loc = loc.view(K, D)
     loc = loc + torch.randn_like(loc) * noise
     
-    target_prior_var = max(0.1, 1.0 - simplex_scale**2)
+    marg_var = torch.exp(torch.tensor(tau_marginal) / D)
+    comp_var = marg_var - (simplex_scale**2 / D)
+    comp_var = torch.clamp(comp_var, min=1e-6)
+    tau = D * torch.log(comp_var).item()
     
     U_ch = torch.zeros(K, C, rank_ch)
-    D_ch = torch.ones(K, C) * target_prior_var
+    D_ch = torch.ones(K, C)
     
     U_sp = torch.zeros(K, S, rank_sp)
     D_sp = torch.ones(K, S)
@@ -148,7 +151,8 @@ def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int],
             "cov_sp": (U_sp[k], D_sp[k]),
             "C": C,
             "H": H,
-            "W": W
+            "W": W,
+            "tau": tau
         })
     
     return theta

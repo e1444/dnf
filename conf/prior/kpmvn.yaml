@@ -19,3 +19,4 @@ class_conditional_init:
   _target_: src.utils.prior_init.kpmvn_simplex_init
   simplex_scale: 0.6
   noise: 0.01
+  tau_marginal: 1.0

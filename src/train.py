@@ -33,10 +33,17 @@ def train(cfg: DictConfig):
     
     # Load data
     train_loader, test_loader = load_dataset(cfg.data)
+    
+    # Initialize priors
     input_shape = next(iter(train_loader))[0].shape[1:]  # (C, H, W)
     
-    # Initialize model
-    model = hydra.utils.instantiate(cfg.model, input_shape=input_shape, _convert_="partial").to(device)
+    if cfg.model.__target__ == "src.models.glow.DGLOWNetwork":
+        from src.models.glow import DGLOWNetwork
+        output_shapes = DGLOWNetwork.output_shapes(input_shape, cfg.model.num_levels)
+    else:
+        raise NotImplementedError(f"Model {cfg.model.__target__} not supported.")
+    
+    std_per_level = []
     
     K = cfg.data.dataset.num_classes
     assert len(cfg.level_priors.priors) == cfg.model.num_levels, "Number of priors must match number of model levels"
@@ -47,7 +54,7 @@ def train(cfg: DictConfig):
     
     with torch.no_grad():
         for i, prior_cfg in enumerate(cfg.level_priors.priors.values()):
-            C, H, W = model.output_shapes[i]
+            C, H, W = output_shapes[i]
             split = prior_cfg.split
             noise_count, struct_count, sem_count = split
             assert noise_count >= 0, "Noise feature dimension must be non-negative"
@@ -61,6 +68,9 @@ def train(cfg: DictConfig):
             noise_prior, struct_prior, sem_prior = None, None, None
             level_params = nn.ModuleList()
             
+            std = torch.zeros(C, device=device)
+            std_idx = 0
+            
             if noise_count > 0:
                 theta_list = hydra.utils.instantiate(
                     prior_cfg.zero_init, 
@@ -73,6 +83,12 @@ def train(cfg: DictConfig):
                     **theta_list[0]
                 ).to(device)
                 level_params.append(noise_prior)
+                
+                # tau = D * ln(sigma^2) => sigma = exp(tau / 2D)
+                D_noise = noise_count * H * W
+                noise_std = torch.exp(torch.tensor(prior_cfg.cls.tau) / (2 * D_noise))
+                std[std_idx:std_idx + noise_count] = noise_std
+                std_idx += noise_count
             
             if struct_count > 0:
                 struct_prior = hydra.utils.instantiate(
@@ -83,6 +99,11 @@ def train(cfg: DictConfig):
                     rank=prior_cfg.rank
                 ).to(device)
                 level_params.append(struct_prior)
+                
+                D_struct = struct_count * H * W
+                struct_std = torch.exp(torch.tensor(prior_cfg.conditional_cls.tau) / (2 * D_struct))
+                std[std_idx:std_idx + struct_count] = struct_std
+                std_idx += struct_count
             
             if sem_count > 0:
                 theta_list = hydra.utils.instantiate(
@@ -96,10 +117,26 @@ def train(cfg: DictConfig):
                 ]).to(device)
                 level_params.append(sem_prior)
                 
+                D_sem = sem_count * H * W
+                sem_std = torch.exp(torch.tensor(prior_cfg.class_conditional_init.tau_marginal) / (2 * D_sem))
+                std[std_idx:std_idx + sem_count] = sem_std
+                std_idx += sem_count
+                
             level_priors.append([noise_prior, struct_prior, sem_prior])
             level_priors_params.append(level_params)
             splits.append(split)
             
+            std_per_level.append(std)
+            
+    # Initialize model
+    model = hydra.utils.instantiate(
+        cfg.model,
+        input_shape=input_shape, 
+        std_per_level=std_per_level,
+        _convert_="partial"
+    ).to(device)
+    
+    # Setup optimizer
     if cfg.training.lr == 0:
         model.requires_grad_(False)
     for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):

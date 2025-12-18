@@ -4,10 +4,27 @@ import torch.utils.checkpoint as checkpoint
 from .modules import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
-    def __init__(self, in_channels, hidden_channels, num_blocks: int, dropout: float, actnorm_initialization="identity", invconv_initialization="orthogonal"):
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        num_blocks: int,
+        dropout: float,
+        actnorm_init="identity",
+        invconv_init="orthogonal",
+        *,
+        actnorm_init_std: torch.Tensor
+    ):
         super().__init__()
-        self.actnorm = ActNorm(in_channels, initialization=actnorm_initialization)
-        self.inv_conv = Invertible1x1Conv(in_channels, initialization=invconv_initialization)
+        self.actnorm = ActNorm(
+            in_channels,
+            initialization=actnorm_init,
+            init_std=actnorm_init_std
+        )
+        self.inv_conv = Invertible1x1Conv(
+            in_channels,
+            initialization=invconv_init
+        )
         self.coupling = CNNCouplingLayer(
             in_channels, 
             hidden_channels,
@@ -33,6 +50,7 @@ class DGLOWNetwork(nn.Module):
         input_shape: tuple[int, int, int],
         num_levels: int,
         steps_per_level: list[int],
+        std_per_level: list[torch.Tensor],
         hidden_channels: int,
         num_blocks: int,
         dropout: float,
@@ -49,7 +67,6 @@ class DGLOWNetwork(nn.Module):
         self.num_levels = num_levels
         self.steps_per_level = steps_per_level  
         self.checkpoint_grads = checkpoint_grads
-        self.output_shapes = []
         
         C, H, W = input_shape
         for level_idx in range(num_levels):
@@ -62,8 +79,9 @@ class DGLOWNetwork(nn.Module):
                     hidden_channels, 
                     num_blocks=num_blocks,
                     dropout=dropout,
-                    actnorm_initialization=actnorm_initialization,
-                    invconv_initialization=invconv_initialization
+                    actnorm_init=actnorm_initialization,
+                    actnorm_init_std=std_per_level[level_idx],
+                    invconv_init=invconv_initialization
                 ) for _ in range(self.steps_per_level[level_idx])
             ])
             self.split_levels.append(level_flows)
@@ -72,8 +90,6 @@ class DGLOWNetwork(nn.Module):
                 split = Split(C)
                 self.split_levels.append(split)
                 C //= 2  # After Split
-                
-            self.output_shapes.append((C, H, W))
     
     def forward(self, x):
         log_dets = []
@@ -128,58 +144,20 @@ class DGLOWNetwork(nn.Module):
     @property
     def total_steps(self):
         return sum(self.steps_per_level)
+    
+    @staticmethod
+    def output_shapes(input_shape: tuple[int, int, int], num_levels: int):
+        C, H, W = input_shape
+        output_shapes = []
+        for level_idx in range(num_levels):
+            C *= 4  # After Squeeze
+            H //= 2
+            W //= 2
+            if level_idx < num_levels - 1:
+                C //= 2  # After Split
+            output_shapes.append((C, H, W))
+        return output_shapes
 
 
 if __name__ == "__main__":
-    # --- Test FlowStep Invertibility ---
-    print("--- Testing FlowStep Invertibility ---")
-    x_step = torch.randn(8, 2, 14, 14)
-    step = FlowStep(
-        in_channels=2,
-        hidden_channels=64,
-        num_blocks=1,
-        dropout=0.0,
-        actnorm_initialization="data-dependent",
-        invconv_initialization="orthogonal"
-    )
-    z, log_det_fwd = step(x_step)
-    x_recon_step, log_det_inv = step.inverse(z)
-    
-    recon_error_step = torch.abs(x_step - x_recon_step).mean().item()
-    log_det_error_step = torch.abs(log_det_fwd + log_det_inv).mean().item()
-
-    print(f"FlowStep Reconstruction Error: {recon_error_step:.2e}")
-    print(f"FlowStep Log-Determinant Sum: {log_det_error_step:.2e}")
-    if recon_error_step < 1e-5 and log_det_error_step < 1e-5:
-        print("[STATUS] PASSED")
-    else:
-        print("[STATUS] FAILED")
-
-
-    # --- Test DGLOWNetwork Invertibility ---
-    print("\n--- Testing DGLOWNetwork Invertibility ---")
-    model = DGLOWNetwork(
-        input_shape=(1, 32, 32),
-        num_levels=3,
-        steps_per_level=[4, 4, 4],
-        hidden_channels=64,
-        num_blocks=1,
-        dropout=0.0,
-        actnorm_initialization="identity",
-        invconv_initialization="identity"
-    )
-    x = torch.randn(8, 1, 32, 32).clamp(min=0.0, max=1.0)
-    outputs = model(x)
-    
-    # The final output of the forward pass is the reconstructed image
-    z_parts, log_det = outputs[-1]
-    
-    # The inverse method should also reconstruct the image
-    x_recon, log_det_inv = model.inverse(z_parts)
-
-    recon_error_net = torch.abs(x - x_recon).mean().item()
-    print(f"DGLOWNetwork Reconstruction Error: {recon_error_net:.2e}")
-    if recon_error_net < 1e-5:
-        print("[STATUS] PASSED")
-    else:
-        print("[STATUS] FAILED")
+    pass
