@@ -35,13 +35,15 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             all_level_logits = []
             top_noise = splits[-1][0]
             z_style = outs[-1][1][:, :top_noise, :, :].reshape(x_batch.size(0), -1)
-            for k, (z, h) in enumerate(outs):
+            for i, (z, h) in enumerate(outs):
                 args = [
                     {},                         # noise params
-                    {"z": z, "h": z_style},    # struct params
+                    {"z": z, "h": None},     # struct params
                     {}                          # semantic params
                 ]
-                split = splits[k]
+                if i < cfg.model.num_levels - 1:
+                    args[2] = {"z": z, "h": z_style}  # semantic params
+                split = splits[i]
                 
                 priors = [
                     prior_fact(**a) if prior_fact is not None else None 
