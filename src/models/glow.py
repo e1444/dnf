@@ -28,7 +28,18 @@ class FlowStep(nn.Module):
         return z, log_det_act + log_det_conv + log_det_coup
 
 class DGLOWNetwork(nn.Module):
-    def __init__(self, input_shape: tuple[int, int, int], num_levels: int, steps_per_level: list[int], hidden_channels: int, num_blocks: int, dropout: float, actnorm_initialization: str = "data-dependent", invconv_initialization: str = "orthogonal", checkpoint_grads: bool = False):
+    def __init__(
+        self,
+        input_shape: tuple[int, int, int],
+        num_levels: int,
+        steps_per_level: list[int],
+        hidden_channels: int,
+        num_blocks: int,
+        dropout: float,
+        actnorm_initialization: str = "data-dependent",
+        invconv_initialization: str = "orthogonal",
+        checkpoint_grads: bool = False
+    ):
         super(DGLOWNetwork, self).__init__()
         assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
         
@@ -70,22 +81,26 @@ class DGLOWNetwork(nn.Module):
         log_dets.append(log_det)
         
         outs = []
+        level_log_det = None
         for level in self.split_levels:
+            level_log_det = torch.zeros((), device=x.device)
             if isinstance(level, nn.ModuleList): # Flow steps
                 z, log_det = self.squeeze(z)
-                log_dets.append(log_det)
+                level_log_det = level_log_det + log_det
                 
                 for flow_step in level:
                     if self.checkpoint_grads and z.requires_grad:
                         z, log_det = checkpoint.checkpoint(flow_step, z, use_reentrant=False)   # type: ignore
                     else:
                         z, log_det = flow_step(z)
-                    log_dets.append(log_det)
+                    level_log_det = level_log_det + log_det
             elif isinstance(level, Split): # Split
                 z, h = level(z)
                 outs.append((z, h))
+                log_dets.append(level_log_det)
 
         outs.append((None, z))  # Final latent without split
+        log_dets.append(level_log_det)
         log_dets = torch.stack(log_dets, dim=0)
         return outs, log_dets
     

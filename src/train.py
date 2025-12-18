@@ -148,6 +148,8 @@ def train(cfg: DictConfig):
     steps_per_epoch = len(train_loader)
     total_warmup_steps = cfg.training.warmup_epochs * steps_per_epoch
     
+    r_log_det = cfg.training.r_logdet
+    
     # Training loop
     print("Starting training...")
     total_epochs = start_epoch + cfg.training.epochs
@@ -170,6 +172,8 @@ def train(cfg: DictConfig):
                         param_group['target_lr'] = param_group['lr']
                     
                     param_group['lr'] = param_group['target_lr'] * warmup_factor
+                    
+                r_log_det = cfg.training.r_logdet * (1 - warmup_factor)
             
             # --- Primal Step ---
             optimizer.zero_grad()
@@ -198,7 +202,7 @@ def train(cfg: DictConfig):
             nll_loss = nll_loss_fn(logits, y_batch)
             
             # 3. Regularization terms
-            reg_loss = cfg.training.r_logdet * (log_dets ** 2).mean()
+            reg_loss = r_log_det * log_dets.var(dim=1).mean()
             
             r_tau_density = float(cfg.training.r_tau_density)
             
@@ -216,7 +220,6 @@ def train(cfg: DictConfig):
                     dim = int(split[1])
                     shared_densities.append(level_prior[1].tau / (dim * H * W))
                 
-                # 2. Collect Semantic Densities
                 sem_densities = []
                 if level_prior[2] is not None:
                     dim = int(split[2])

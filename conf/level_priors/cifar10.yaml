@@ -6,13 +6,13 @@ defaults:
 priors:
   l0:
     split: [0, 6, 0]
-    rank: [2, 8]
+    rank: [4, 16]
     conditional_cls:
       dropout: 0.1
       backbone_features: 128
   l1:
     split: [0, 12, 0]
-    rank: [4, 4]
+    rank: [8, 8]
   l2:
     split: [16, 0, 32]
     rank: [16, 8]
