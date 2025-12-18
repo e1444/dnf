@@ -81,9 +81,8 @@ class DGLOWNetwork(nn.Module):
         log_dets.append(log_det)
         
         outs = []
-        level_log_det = None
+        level_log_det = torch.zeros(x.size(0), device=x.device)
         for level in self.split_levels:
-            level_log_det = torch.zeros((), device=x.device)
             if isinstance(level, nn.ModuleList): # Flow steps
                 z, log_det = self.squeeze(z)
                 level_log_det = level_log_det + log_det
@@ -98,6 +97,7 @@ class DGLOWNetwork(nn.Module):
                 z, h = level(z)
                 outs.append((z, h))
                 log_dets.append(level_log_det)
+                level_log_det = torch.zeros(x.size(0), device=x.device)
 
         outs.append((None, z))  # Final latent without split
         log_dets.append(level_log_det)

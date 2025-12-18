@@ -202,7 +202,7 @@ def train(cfg: DictConfig):
             nll_loss = nll_loss_fn(logits, y_batch)
             
             # 3. Regularization terms
-            reg_loss = r_log_det * log_dets.var(dim=1).mean()
+            reg_loss = r_log_det * log_dets[1:].var(dim=1).mean()
             
             r_tau_density = float(cfg.training.r_tau_density)
             
