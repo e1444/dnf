@@ -73,6 +73,13 @@ class DGLOWNetwork(nn.Module):
             C *= 4  # After Squeeze
             H //= 2
             W //= 2
+            
+            std_per_step = [
+                torch.ones(C, device=std_per_level[0].device) * torch.mean(std_per_level[level_idx])
+                for _ in range(self.steps_per_level[level_idx])
+            ]
+            std_per_step[-1][:C // 2] = std_per_level[level_idx]
+            
             level_flows = nn.ModuleList([
                 FlowStep(
                     C, 
@@ -80,9 +87,9 @@ class DGLOWNetwork(nn.Module):
                     num_blocks=num_blocks,
                     dropout=dropout,
                     actnorm_init=actnorm_initialization,
-                    actnorm_init_std=std_per_level[level_idx],
+                    actnorm_init_std=std_per_step[i],
                     invconv_init=invconv_initialization
-                ) for _ in range(self.steps_per_level[level_idx])
+                ) for i in range(self.steps_per_level[level_idx])
             ])
             self.split_levels.append(level_flows)
             
