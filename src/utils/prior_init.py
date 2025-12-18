@@ -99,7 +99,7 @@ def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int],
         rank: tuple (rank_ch, rank_sp)
             rank_ch: Rank of channel covariance
             rank_sp: Rank of spatial covariance
-        simplex_scale: Scale of simplex vertices
+        simplex_scale: Scale of simplex vertices (distance from origin)
         noise: Standard deviation of Gaussian noise added to initialization
     
     Returns:
@@ -109,19 +109,33 @@ def kpmvn_simplex_init(K: int, C: int, H: int, W: int, *, rank: tuple[int, int],
     """
     S = H * W
     D = C * S
-    assert C >= K, "Channel-based initialization requires C >= K"
+    assert C >= K - 1, f"Simplex initialization requires C >= K - 1 (got C={C}, K={K})"
     
     rank_ch, rank_sp = rank
     
-    loc = torch.zeros(K, C, S)
-    for i in range(K):
-        loc[i, i, :] = simplex_scale / (S**0.5)
+    simplex_vertices = torch.zeros(K, K - 1)
+    for k in range(K - 1):
+        r_k = (1.0 / (2 * (k + 1) * (k + 2)))**0.5
+        simplex_vertices[:k+1, k] = -r_k
+        simplex_vertices[k+1, k] = (k + 1) * r_k
+        
+    simplex_vertices = torch.nn.functional.normalize(simplex_vertices, p=2, dim=1)
+    
+    pixel_scale = simplex_scale / (S**0.5)
+    simplex_vertices = simplex_vertices * pixel_scale
+    
+    loc_ch = torch.zeros(K, C)
+    loc_ch[:, :K-1] = simplex_vertices
+    
+    loc = loc_ch.unsqueeze(-1).expand(K, C, S).contiguous()
     
     loc = loc.view(K, D)
     loc = loc + torch.randn_like(loc) * noise
     
+    target_prior_var = max(0.1, 1.0 - simplex_scale**2)
+    
     U_ch = torch.zeros(K, C, rank_ch)
-    D_ch = torch.ones(K, C)
+    D_ch = torch.ones(K, C) * target_prior_var
     
     U_sp = torch.zeros(K, S, rank_sp)
     D_sp = torch.ones(K, S)

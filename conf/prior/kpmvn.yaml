@@ -17,5 +17,5 @@ zero_init:
   
 class_conditional_init:
   _target_: src.utils.prior_init.kpmvn_simplex_init
-  simplex_scale: 1.0
+  simplex_scale: 0.6
   noise: 0.01
