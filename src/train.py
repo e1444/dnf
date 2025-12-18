@@ -202,7 +202,22 @@ def train(cfg: DictConfig):
             nll_loss = nll_loss_fn(logits, y_batch)
             
             # 3. Regularization terms
-            reg_loss = r_log_det * log_dets[1:].var(dim=1).mean()
+            flow_log_dets = log_dets[1:]
+            level_variances = flow_log_dets.var(dim=1)
+            normalized_variances = []
+            for i in range(len(level_variances)):
+                # Get shape (C, H, W) for this level
+                C, H, W = model.output_shapes[i]
+                dim = C * H * W
+                
+                # Normalize variance by dimension squared (since variance scales with dim^2)
+                # Or normalize log_det by dim first, then take variance.
+                # Let's normalize the log_det itself: log_det_per_dim = log_det / dim
+                
+                log_det_per_dim = flow_log_dets[i] / dim
+                normalized_variances.append(log_det_per_dim.var())
+                
+            reg_loss = r_log_det * torch.stack(normalized_variances).mean()
             
             r_tau_density = float(cfg.training.r_tau_density)
             
