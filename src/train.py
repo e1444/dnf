@@ -37,11 +37,11 @@ def train(cfg: DictConfig):
     # Initialize priors
     input_shape = next(iter(train_loader))[0].shape[1:]  # (C, H, W)
     
-    if cfg.model.__target__ == "src.models.glow.DGLOWNetwork":
+    if cfg.model._target_ == "src.models.glow.DGLOWNetwork":
         from src.models.glow import DGLOWNetwork
         output_shapes = DGLOWNetwork.output_shapes(input_shape, cfg.model.num_levels)
     else:
-        raise NotImplementedError(f"Model {cfg.model.__target__} not supported.")
+        raise NotImplementedError(f"Model {cfg.model._target_} not supported.")
     
     std_per_level = []
     
