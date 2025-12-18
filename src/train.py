@@ -45,11 +45,6 @@ def train(cfg: DictConfig):
     splits = []
     level_priors_params = nn.ModuleList()
     
-    top_split = list(cfg.level_priors.priors.values())[-1].split    # top level split
-    cond_features = top_split[0]  # noise features at top level
-    for d in model.output_shapes[-1][1:]: # H, W of top level
-        cond_features *= d
-    
     with torch.no_grad():
         for i, prior_cfg in enumerate(cfg.level_priors.priors.values()):
             C, H, W = model.output_shapes[i]
@@ -80,56 +75,24 @@ def train(cfg: DictConfig):
                 level_params.append(noise_prior)
             
             if struct_count > 0:
-                theta_list = hydra.utils.instantiate(
-                    prior_cfg.zero_init,
-                    K=1,
-                    C=struct_count, H=H, W=W,
-                    rank=prior_cfg.rank
-                )
-                theta = theta_list[0]
-                theta.update({
-                    "z_channels": C,
-                    "h_channels": struct_count,
-                    "cond_features": cond_features,
-                    "rank": prior_cfg.rank,
-                })
-                theta.pop("C")
                 struct_prior = hydra.utils.instantiate(
                     prior_cfg.conditional_cls,
-                    **theta
+                    z_channels=C,
+                    h_channels=struct_count,
+                    H=H, W=W,
+                    rank=prior_cfg.rank
                 ).to(device)
                 level_params.append(struct_prior)
             
             if sem_count > 0:
-                if i < cfg.model.num_levels - 1:
-                    cls = prior_cfg.conditional_cls
-                    theta_list = hydra.utils.instantiate(
-                        prior_cfg.random_init,
-                        K=K,
-                        C=sem_count, H=H, W=W,
-                        rank=prior_cfg.rank
-                    )
-                    for theta in theta_list:
-                        theta.update({
-                            "z_channels": C,
-                            "h_channels": sem_count,
-                            "cond_features": cond_features,
-                            "H": H,
-                            "W": W,
-                            "rank": prior_cfg.rank,
-                        })
-                        theta.pop("C")
-                else:
-                    cls = prior_cfg.cls
-                    theta_list = hydra.utils.instantiate(
-                        prior_cfg.class_conditional_init,
-                        K=K,
-                        C=sem_count, H=H, W=W,
-                        rank=prior_cfg.rank
-                    )
-                    
+                theta_list = hydra.utils.instantiate(
+                    prior_cfg.class_conditional_init,
+                    K=K,
+                    C=sem_count, H=H, W=W,
+                    rank=prior_cfg.rank
+                )
                 sem_prior = ClassConditionalPrior([
-                    hydra.utils.instantiate(cls, **theta) for theta in theta_list
+                    hydra.utils.instantiate(prior_cfg.cls, **theta) for theta in theta_list
                 ]).to(device)
                 level_params.append(sem_prior)
                 
@@ -216,24 +179,16 @@ def train(cfg: DictConfig):
             log_det = torch.sum(log_dets, dim=0)
             
             logits = log_det.unsqueeze(1)
-            top_noise = splits[-1][0]
-            z_style = outs[-1][1][:, :top_noise, :, :].reshape(x_batch.size(0), -1)
-            for i, (z, h) in enumerate(outs):
-                args = [
-                    {},                         # noise params
-                    {"z": z, "h": None},     # struct params
-                    {}                          # semantic params
-                ]
-                if i < cfg.model.num_levels - 1:
-                    args[2] = {"z": z, "h": z_style}  # semantic params
-                split = splits[i]
+            for k, (z, h) in enumerate(outs):
+                args = [{}, {"z": z}, {}]
+                split = splits[k]
                 
                 priors = [
                     prior_fact(**a) if prior_fact is not None else None 
-                    for prior_fact, a in zip(level_priors[i], args)
+                    for prior_fact, a in zip(level_priors[k], args)
                 ]
                 
-                level_logits = compute_level_logits(z, h, priors, splits[i], K)
+                level_logits = compute_level_logits(z, h, priors, splits[k], K)
                 logits = logits + level_logits
                     
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
@@ -286,8 +241,11 @@ def train(cfg: DictConfig):
                         reg_tau_density = path_tensor.var(dim=1).mean()
                         reg_loss = reg_loss + r_tau_density * reg_tau_density
                     else:
-                        # Only a single level => only a single scalar => undefined variance
-                        pass
+                        # Only semantic priors exist at this level (rare but possible)
+                        # Just regularize them to be close to each other? Or 0?
+                        # If there's no shared path, "equilibrium" just means they should be similar.
+                        reg_tau_density = sem_tensor.var()
+                        reg_loss = reg_loss + r_tau_density * reg_tau_density
                         
                 elif len(shared_densities) > 1:
                     # Only shared priors exist (no semantics)

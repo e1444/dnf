@@ -14,11 +14,6 @@ conditional_cls:
 zero_init:
   _target_: src.utils.prior_init.kpmvn_zero_init
   noise: 0.01
-
-random_init:
-  _target_: src.utils.prior_init.kpmvn_random_init
-  scale: 1.0
-  noise: 0.01
   
 class_conditional_init:
   _target_: src.utils.prior_init.kpmvn_simplex_init

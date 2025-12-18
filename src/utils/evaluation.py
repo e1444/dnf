@@ -33,21 +33,13 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             # Compute logits using the shared utility
             logits = log_det.unsqueeze(1)   # (B, 1)
             all_level_logits = []
-            top_noise = splits[-1][0]
-            z_style = outs[-1][1][:, :top_noise, :, :].reshape(x_batch.size(0), -1)
-            for i, (z, h) in enumerate(outs):
-                args = [
-                    {},                         # noise params
-                    {"z": z, "h": None},     # struct params
-                    {}                          # semantic params
-                ]
-                if i < cfg.model.num_levels - 1:
-                    args[2] = {"z": z, "h": z_style}  # semantic params
-                split = splits[i]
+            for k, (z, h) in enumerate(outs):
+                args = [{}, {"z": z}, {}]
+                split = splits[k]
                 
                 priors = [
                     prior_fact(**a) if prior_fact is not None else None 
-                    for prior_fact, a in zip(level_priors[i], args)
+                    for prior_fact, a in zip(level_priors[k], args)
                 ]
                 
                 level_logits = compute_level_logits(z, h, priors, split, K, sum=False)     # (B, K, 3)
