@@ -47,7 +47,7 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
                 
                 priors = [
                     prior_fact(**a) if prior_fact is not None else None 
-                    for prior_fact, a in zip(level_priors[k], args)
+                    for prior_fact, a in zip(level_priors[i], args)
                 ]
                 
                 level_logits = compute_level_logits(z, h, priors, split, K, sum=False)     # (B, K, 3)
