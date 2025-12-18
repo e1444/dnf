@@ -96,8 +96,7 @@ def train(cfg: DictConfig):
                 theta.pop("C")
                 struct_prior = hydra.utils.instantiate(
                     prior_cfg.conditional_cls,
-                    **theta,
-                    rank=prior_cfg.rank
+                    **theta
                 ).to(device)
                 level_params.append(struct_prior)
             
