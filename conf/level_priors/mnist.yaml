@@ -1,11 +1,11 @@
 defaults:
-  - /prior@priors.l0: kpmvn  # (2, 16, 16)
-  - /prior@priors.l1: kpmvn  # (4, 8, 8)
-  - /prior@priors.l2: kpmvn  # (16, 4, 4)
+  - /prior@priors.l0: kpmvn # (2, 16, 16)
+  - /prior@priors.l1: kpmvn # (4, 8, 8)
+  - /prior@priors.l2: kpmvn # (16, 4, 4)
 
 priors:
   l0:
-    split: [0, 2, 0]
+    split: [0, 2, 0]        # noise, struct, sem
     rank: [2, 8]
   l1:
     split: [0, 4, 0]
