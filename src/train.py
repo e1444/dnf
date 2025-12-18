@@ -83,7 +83,8 @@ def train(cfg: DictConfig):
                 theta_list = hydra.utils.instantiate(
                     prior_cfg.zero_init,
                     K=1,
-                    C=struct_count, H=H, W=W
+                    C=struct_count, H=H, W=W,
+                    rank=prior_cfg.rank
                 )
                 theta = theta_list[0]
                 theta.update({
