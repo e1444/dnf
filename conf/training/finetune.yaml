@@ -8,6 +8,7 @@ lr: 1e-4
 lr_prior: [1e-5, 1e-4, 1e-3]
 
 r_logdet: 0.0
+r_aniso: 0.0
 label_smoothing: 0.0
 
 use_al: True

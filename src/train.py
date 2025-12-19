@@ -220,6 +220,8 @@ def train(cfg: DictConfig):
             log_det = torch.sum(log_dets, dim=0)
             
             logits = log_det.unsqueeze(1)
+            
+            anisotropy_losses = []
             for k, (z, h) in enumerate(outs):
                 args = [{}, {"z": z}, {}]
                 split = splits[k]
@@ -228,6 +230,14 @@ def train(cfg: DictConfig):
                     prior_fact(**a) if prior_fact is not None else None 
                     for prior_fact, a in zip(level_priors[k], args)
                 ]
+                
+                for prior in priors:
+                    if prior is not None:
+                        try:
+                            anisotropy_loss = prior.anisotropy_loss()
+                            anisotropy_losses.append(anisotropy_loss)
+                        except NotImplementedError:
+                            print(f"Warning: Anisotropy loss not implemented for prior {prior.__class__.__name__}")
                 
                 level_logits = compute_level_logits(z, h, priors, splits[k], K)
                 logits = logits + level_logits
@@ -239,6 +249,7 @@ def train(cfg: DictConfig):
             nll_loss = nll_loss_fn(logits, y_batch)
             
             # 3. Regularization terms
+            # 3.1. Log-Det Variance Regularization
             flow_log_dets = log_dets[1:]
             level_variances = flow_log_dets.var(dim=1)
             normalized_variances = []
@@ -251,6 +262,10 @@ def train(cfg: DictConfig):
                 normalized_variances.append(log_det_per_dim.var())
                 
             reg_loss = r_log_det * torch.stack(normalized_variances).mean()
+            
+            # 3.2. Anisotropy Regularization
+            if len(anisotropy_losses) > 0:
+                reg_loss = reg_loss + cfg.training.r_aniso * torch.stack(anisotropy_losses).mean()
             
             # Primal Objective
             primal_loss = task_loss

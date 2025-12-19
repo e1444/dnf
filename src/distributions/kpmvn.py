@@ -205,6 +205,38 @@ class KroneckerProductMVN(Distribution):
         log_p = -0.5 * (const_term + self.log_det_total + mahalanobis_dist)
         return log_p
 
+    def anisotropy_loss(self) -> torch.Tensor:
+        """
+        Computes the KL divergence between this distribution and a volume-matched 
+        isotropic Gaussian. This serves as an anisotropy penalty.
+        
+        Equivalent to minimizing the log-ratio of the Arithmetic Mean to the 
+        Geometric Mean of the eigenvalues (AM/GM inequality).
+        
+        Returns:
+            loss: (Batch...,) The anisotropy loss for each batch element.
+        """
+        # 1. Channel Component Anisotropy
+        # tr(Sigma_ch) = sum(D_ch) + ||U_ch||_F^2
+        # ch_cov_diag: (Batch..., C)
+        # ch_cov_factor: (Batch..., C, r)
+        tr_ch = torch.sum(self.ch_cov_diag, dim=-1) + torch.sum(self.ch_cov_factor.pow(2), dim=[-2, -1])
+        d_ch = float(self.D_ch)
+        
+        # log(AM/GM) = log(tr/d) - log_det/d
+        #            = log(tr) - log(d) - log_det/d
+        log_am_gm_ch = torch.log(tr_ch + self.jitter) - torch.log(torch.tensor(d_ch, device=tr_ch.device)) - (self._log_det_ch / d_ch)
+        
+        # 2. Spatial Component Anisotropy
+        # sp_cov_diag: (Batch..., S)
+        # sp_cov_factor: (Batch..., S, r)
+        tr_sp = torch.sum(self.sp_cov_diag, dim=-1) + torch.sum(self.sp_cov_factor.pow(2), dim=[-2, -1])
+        d_sp = float(self.D_sp)
+        
+        log_am_gm_sp = torch.log(tr_sp + self.jitter) - torch.log(torch.tensor(d_sp, device=tr_sp.device)) - (self._log_det_sp / d_sp)
+        
+        return log_am_gm_ch + log_am_gm_sp
+
     def rsample(self, sample_shape=torch.Size()):
         """
         Generates samples: (sample_shape + batch_shape + event_shape)
@@ -280,6 +312,8 @@ class KroneckerProductMVN(Distribution):
     @property
     def loc(self):
         return self._loc
+    
+    
 
 
 if __name__ == "__main__":

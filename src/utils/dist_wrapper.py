@@ -12,6 +12,12 @@ class FlattenedDistribution(torch.distributions.Distribution):
         # where D = C*H*W
         flat_value = value.reshape(value.shape[:-3] + (-1,))
         return self.base_dist.log_prob(flat_value)
+    
+    def anisotropy_loss(self):
+        if hasattr(self.base_dist, "anisotropy_loss"):
+            return self.base_dist.anisotropy_loss()
+        else:
+            raise NotImplementedError("Base distribution does not implement anisotropy_loss computation.")
 
 
 class ScaledDistribution(torch.distributions.Distribution):
@@ -41,3 +47,9 @@ class ScaledDistribution(torch.distributions.Distribution):
         log_det_jacobian = self.event_dim * torch.log(self.scale)
         
         return log_prob_base - log_det_jacobian
+    
+    def anisotropy_loss(self):
+        if hasattr(self.base_dist, "anisotropy_loss"):
+            return self.base_dist.anisotropy_loss()
+        else:
+            raise NotImplementedError("Base distribution does not implement anisotropy_loss computation.")

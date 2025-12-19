@@ -5,10 +5,11 @@ defaults:
 
 epochs: 30
 lr: 1e-3
-lr_prior: [1e-6, 5e-6, 2e-5]
+lr_prior: [1e-5, 1e-4, 1e-4]
 
 # High Regularization
 r_logdet: 1e-4
+r_aniso: 1e-3
 label_smoothing: 0.1
 
 # Augmented Lagrangian (Frozen)
