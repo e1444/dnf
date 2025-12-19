@@ -238,11 +238,10 @@ def train(cfg: DictConfig):
                     if isinstance(prior, list):
                         for p in prior:
                             if p is not None:
-                                anisotropy_losses.append(p.anisotropy_loss())
+                                anisotropy_losses.append(p.anisotropy_loss().mean())
                     elif prior is not None:
-                        anisotropy_losses.append(K * prior.anisotropy_loss())
+                        anisotropy_losses.append(K * prior.anisotropy_loss().mean())
                         
-                
                 level_logits = compute_level_logits(z, h, priors, splits[k], K)
                 logits = logits + level_logits
                     
