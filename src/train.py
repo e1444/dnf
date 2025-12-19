@@ -250,6 +250,7 @@ def train(cfg: DictConfig):
             
             # 2. NLL Loss (The Constraint)
             nll_loss = nll_loss_fn(logits, y_batch)
+            nll_loss = nll_loss / (input_shape[0] * input_shape[1] * input_shape[2] * torch.log(torch.tensor(2.0)))
             
             # 3. Regularization terms
             # 3.1. Log-Det Variance Regularization

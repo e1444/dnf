@@ -21,11 +21,15 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
     total = 0
     
     K = cfg.data.dataset.num_classes
+    input_shape = None
 
     with torch.no_grad():
         for x_batch, y_batch in data_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             
+            if input_shape is None:
+                input_shape = x_batch.shape[1:]  # (C, H, W)
+    
             outs, log_dets = model(x_batch)
             log_det = torch.sum(log_dets, dim=0)
             total_log_det = total_log_det + log_det.sum().item()
@@ -48,7 +52,6 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
                 
             all_level_logits = torch.stack(all_level_logits, dim=3)                             # (B, K, 3, L)
             total_logit_split = total_logit_split + torch.sum(all_level_logits, dim=(0, 1))     # Sum over B and K -> (3, L)
-
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
             
@@ -61,8 +64,10 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             total_loss += loss.item()
             
             # Calculate NLL for a clean evaluation metric
-            nll_batch = nll_loss_fn(logits, y_batch) * y_batch.size(0)
-            total_nll += nll_batch.item()
+            nll_loss = nll_loss_fn(logits, y_batch)
+            nll_loss = nll_loss / (input_shape[0] * input_shape[1] * input_shape[2] * torch.log(torch.tensor(2.0)))
+            
+            total_nll += nll_loss.item() * y_batch.size(0)
             
             # Calculate accuracy
             _, predicted = torch.max(logits.data, 1)
