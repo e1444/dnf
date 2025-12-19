@@ -78,7 +78,10 @@ class DGLOWNetwork(nn.Module):
                 torch.ones(C, device=std_per_level[0].device) * torch.mean(std_per_level[level_idx])
                 for _ in range(self.steps_per_level[level_idx])
             ]
-            std_per_step[-1][C // 2:] = std_per_level[level_idx]
+            if level_idx == num_levels - 1:
+                std_per_step[-1] = std_per_level[level_idx]
+            else:
+                std_per_step[-1][C // 2:] = std_per_level[level_idx]
             
             level_flows = nn.ModuleList([
                 FlowStep(
