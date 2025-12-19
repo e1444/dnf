@@ -244,68 +244,13 @@ def train(cfg: DictConfig):
             normalized_variances = []
             for i in range(len(level_variances)):
                 # Get shape (C, H, W) for this level
-                C, H, W = model.output_shapes[i]
+                C, H, W = output_shapes[i]
                 dim = C * H * W
-                
-                # Normalize variance by dimension squared (since variance scales with dim^2)
-                # Or normalize log_det by dim first, then take variance.
-                # Let's normalize the log_det itself: log_det_per_dim = log_det / dim
                 
                 log_det_per_dim = flow_log_dets[i] / dim
                 normalized_variances.append(log_det_per_dim.var())
                 
             reg_loss = r_log_det * torch.stack(normalized_variances).mean()
-            
-            r_tau_density = float(cfg.training.r_tau_density)
-            
-            for i in range(cfg.model.num_levels):
-                level_prior = level_priors[i]
-                _, H, W = model.output_shapes[i]
-                split = splits[i]
-                
-                # 1. Collect Shared Densities (Noise, Structure)
-                shared_densities = []
-                if level_prior[0] is not None:
-                    dim = int(split[0])
-                    shared_densities.append(level_prior[0].tau / (dim * H * W))
-                if level_prior[1] is not None:
-                    dim = int(split[1])
-                    shared_densities.append(level_prior[1].tau / (dim * H * W))
-                
-                sem_densities = []
-                if level_prior[2] is not None:
-                    dim = int(split[2])
-                    sem_densities = [p.tau / (dim * H * W) for p in level_prior[2].priors]
-                
-                # 3. Vectorized Variance Calculation
-                if sem_densities:
-                    # Stack semantic densities: (K,)
-                    sem_tensor = torch.stack(sem_densities)
-                    
-                    if shared_densities:
-                        # Stack shared densities: (M,)
-                        shared_tensor = torch.stack(shared_densities)
-                        
-                        # Expand shared to (K, M) by repeating
-                        shared_expanded = shared_tensor.unsqueeze(0).expand(len(sem_densities), -1)
-                        
-                        # Concatenate to (K, M+1): Each row is [Shared..., Sem_k]
-                        path_tensor = torch.cat([shared_expanded, sem_tensor.unsqueeze(1)], dim=1)
-                        
-                        # Compute variance per row (per class path), then mean across classes
-                        reg_tau_density = path_tensor.var(dim=1).mean()
-                        reg_loss = reg_loss + r_tau_density * reg_tau_density
-                    else:
-                        # Only semantic priors exist at this level (rare but possible)
-                        # Just regularize them to be close to each other? Or 0?
-                        # If there's no shared path, "equilibrium" just means they should be similar.
-                        reg_tau_density = sem_tensor.var()
-                        reg_loss = reg_loss + r_tau_density * reg_tau_density
-                        
-                elif len(shared_densities) > 1:
-                    # Only shared priors exist (no semantics)
-                    reg_tau_density = torch.stack(shared_densities).var()
-                    reg_loss = reg_loss + r_tau_density * reg_tau_density
             
             # Primal Objective
             primal_loss = task_loss
@@ -364,9 +309,9 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, prefix="train_eval")
+            train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, output_shapes, prefix="train_eval")
             log_dict.update(train_stats)
-            test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, prefix="test")
+            test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, output_shapes, prefix="test")
             log_dict.update(test_stats)
             
             print_train_stats(epoch, train_stats, test_stats)
