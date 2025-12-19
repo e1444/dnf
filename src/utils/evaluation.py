@@ -8,7 +8,7 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_curve, 
 from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 
 
-def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None):
+def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shapes, prefix=None):
     """
     Evaluate the model on a given dataset.
     """
@@ -58,7 +58,7 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, prefix=None)
             
             for i in range(cfg.model.num_levels):
                 level_prior = level_priors[i]
-                _, H, W = model.output_shapes[i]
+                _, H, W = output_shapes[i]
                 split = splits[i]
                 
                 # 1. Collect Shared Densities (Noise, Structure)
