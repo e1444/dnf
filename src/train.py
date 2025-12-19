@@ -232,12 +232,16 @@ def train(cfg: DictConfig):
                 ]
                 
                 for prior in priors:
-                    if prior is not None:
-                        try:
-                            anisotropy_loss = prior.anisotropy_loss()
-                            anisotropy_losses.append(anisotropy_loss)
-                        except NotImplementedError:
-                            print(f"Warning: Anisotropy loss not implemented for prior {prior.__class__.__name__}")
+                    if cfg.training.r_aniso <= 0.0:
+                        pass
+                    
+                    if isinstance(prior, list):
+                        for p in prior:
+                            if p is not None:
+                                anisotropy_losses.append(p.anisotropy_loss())
+                    elif prior is not None:
+                        anisotropy_losses.append(K * prior.anisotropy_loss())
+                        
                 
                 level_logits = compute_level_logits(z, h, priors, splits[k], K)
                 logits = logits + level_logits
