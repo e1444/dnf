@@ -141,55 +141,51 @@ def print_train_stats(epoch, train_stats, test_stats):
     print_split_table("Test Logit Split (Avg)", test_stats['test_logit_split'])
 
 
-def compute_marginal_bpd(model, target_dists, loader, device, cfg):
+def compute_marginal_bpd(model, loader, device, cfg, level_priors, splits):
     total_bpd = 0
     total_pixels = 0
+    K = cfg.data.dataset.num_classes
     
     with torch.no_grad():
         for x, _ in loader:
             x = x.to(device)
             
-            # 2. Forward Pass on Dequantized Data
-            zs = model(x)
+            # 1. Forward Pass
+            outs, log_dets = model(x)
+            log_det = torch.sum(log_dets, dim=0) # (B,)
             
-            # 3. Preprocess (Flatten, Concat, Split)
-            # Flatten each part of z: [B, C, H, W] -> [B, D_part]
-            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs]
-            # Concatenate: [Noise1 | Noise2 | ... | Semantic]
-            zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]
-            # Slice: Noise = [:-feat], Semantic = [-feat:]
-            feat = cfg.training.features
-            zs = [((z[:, :-feat], z[:, -feat:]), log_det) for z, log_det in zs]
+            # 2. Compute Logits (log p(x|y))
+            # We need log p(x|y) for each class y.
+            # compute_level_logits returns (B, K, 3) where 3 is [noise, struct, sem]
+            # Summing over the last dim gives log p(x|y) - log_det_jacobian
             
-            # Get final state
-            (z_noise, z_sem), log_det = zs[-1]
+            logits = log_det.unsqueeze(1) # (B, 1)
             
-            # 4. Calculate Noise Probability: log p(z_noise) ~ N(0, I)
-            # -0.5 * (z^2 + log(2pi)) summed over dimensions
-            log_p_noise = -0.5 * (z_noise ** 2 + np.log(2 * np.pi)).sum(dim=1)
-            
-            # 5. Calculate log p(x|c) for ALL classes
-            log_probs_conditional = []
-            num_classes = len(target_dists)
-            
-            for c in range(num_classes):
-                target = target_dists[c]
-                # log p(z_sem | c)
-                log_p_sem_given_c = target.log_prob(z_sem)
+            for k, (z, h) in enumerate(outs):
+                args = [{}, {"z": z}, {}]
+                split = splits[k]
                 
-                # Total log p(x | c) = log p(noise) + log p(sem | c) + log_det
-                # Note: log_p_noise and log_det are shared across classes
-                log_p_x_given_c = log_p_noise + log_p_sem_given_c + log_det
-                log_probs_conditional.append(log_p_x_given_c)
+                priors = [
+                    prior_fact(**a) if prior_fact is not None else None 
+                    for prior_fact, a in zip(level_priors[k], args)
+                ]
+                
+                # (B, K, 3)
+                level_logits = compute_level_logits(z, h, priors, split, K, sum=False)
+                # Sum over components (noise+struct+sem) -> (B, K)
+                logits = logits + torch.sum(level_logits, dim=2)
             
-            log_probs_conditional = torch.stack(log_probs_conditional, dim=1)
+            # logits is now log p(x, y) = log p(x|y) + log p(y) if we assume uniform prior?
+            # Actually compute_level_logits computes log p(z|y).
+            # So logits = log p(z|y) + log |det J|.
+            # This is log p(x|y).
             
-            # 6. Marginalize: log p(x) = log sum_c p(x|c)p(c)
-            # Assuming uniform prior p(c) = 1/K
-            # log p(x) = log sum exp(log p(x|c)) - log(K)
-            log_prob_marginal = torch.logsumexp(log_probs_conditional, dim=1) - np.log(num_classes)
+            # 3. Marginalize: log p(x) = log sum_y p(x|y)p(y)
+            # Assuming uniform prior p(y) = 1/K
+            # log p(x) = log sum_y exp(log p(x|y)) - log K
+            log_prob_marginal = torch.logsumexp(logits, dim=1) - np.log(K)
             
-            # 7. Convert to Bits Per Dimension (BPD)
+            # 4. Convert to Bits Per Dimension (BPD)
             # Formula: BPD = -log_2(p(x)) / D + 8
             n_pixels = x.shape[1] * x.shape[2] * x.shape[3]
             
@@ -205,7 +201,7 @@ def compute_marginal_bpd(model, target_dists, loader, device, cfg):
     return total_bpd / total_pixels
 
 
-def get_all_predictions(model, data_loader, device, target_dists):
+def get_all_predictions(model, data_loader, device, cfg, level_priors, splits):
     """
     Get model predictions for an entire dataset.
     """
@@ -214,25 +210,29 @@ def get_all_predictions(model, data_loader, device, target_dists):
     all_y_pred = []
     all_probs = []
     all_confs = []
+    
+    K = cfg.data.dataset.num_classes
 
     with torch.no_grad():
         for x_batch, y_batch in data_loader:
             x_batch = x_batch.to(device)
             
-            zs = model(x_batch)
-            zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs] # Flatten each part of z
-            z, log_det = zs[-1]
-            z = (torch.cat(z[:-1], dim=1), z[-1])  # Concatenate all but semantic part
+            outs, log_dets = model(x_batch)
+            log_det = torch.sum(log_dets, dim=0)
             
-            noise_dists = torch.distributions.Independent(
-                torch.distributions.Normal(loc=torch.zeros_like(z[0]), scale=torch.ones_like(z[0])), 
-                reinterpreted_batch_ndims=1
-            )
-            
-            log_prob_noise = noise_dists.log_prob(z[0])
-            log_prob_semantic = torch.stack([dist.log_prob(z[1]) for dist in target_dists], dim=1)
-            log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
-            logits = log_prob + log_det.unsqueeze(1)
+            logits = log_det.unsqueeze(1)
+            for k, (z, h) in enumerate(outs):
+                args = [{}, {"z": z}, {}]
+                split = splits[k]
+                
+                priors = [
+                    prior_fact(**a) if prior_fact is not None else None 
+                    for prior_fact, a in zip(level_priors[k], args)
+                ]
+                
+                level_logits = compute_level_logits(z, h, priors, split, K, sum=True)
+                logits = logits + level_logits
+
             probabilities = torch.softmax(logits, dim=1)
             confidences, y_pred = torch.max(probabilities, 1)
 
@@ -247,6 +247,7 @@ def get_all_predictions(model, data_loader, device, target_dists):
         torch.cat(all_probs).numpy(),
         torch.cat(all_confs).numpy(),
     )
+
 
 def get_classification_report_and_cm(y_true, y_pred, target_names):
     """
@@ -264,6 +265,7 @@ def get_classification_report_and_cm(y_true, y_pred, target_names):
     plt.xlabel('Predicted Label')
     plt.show()
     return report, cm
+
 
 def calculate_ece_and_reliability_diagram(confidences, predictions, true_labels, n_bins=15):
     """
@@ -326,6 +328,7 @@ def calculate_ece_and_reliability_diagram(confidences, predictions, true_labels,
 
     return ece
 
+
 def calculate_brier_score(y_true, probabilities):
     """
     Calculate and Brier score.
@@ -335,11 +338,13 @@ def calculate_brier_score(y_true, probabilities):
     print(f"Multi-class Brier Score: {brier_score:.4f}")
     return brier_score
 
-def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, target_dists):
+
+def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device, cfg, level_priors, splits):
     """
     Get and plot ROC curve and calculate AUROC for OOD detection.
     """
     model.eval()
+    K = cfg.data.dataset.num_classes
     
     def get_confidences(loader):
         all_confs = []
@@ -347,31 +352,21 @@ def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device,
             for x_batch, _ in loader:
                 x_batch = x_batch.to(device)
                 
-                # --- Standardized Preprocessing (Matches get_all_predictions) ---
-                zs = model(x_batch)
-                # Flatten parts
-                zs = [([z_part.view(z_part.size(0), -1) for z_part in z], log_det) for z, log_det in zs]
-                # Concatenate all parts
-                zs = [(torch.cat(z, dim=1), log_det) for z, log_det in zs]
-                # Slice: Noise = [:-feat], Semantic = [-feat:]
-                feat = cfg.training.features
-                zs = [((z[:, :-feat], z[:, -feat:]), log_det) for z, log_det in zs]
+                outs, log_dets = model(x_batch)
+                log_det = torch.sum(log_dets, dim=0)
                 
-                # Get final state
-                (z_noise, z_sem), log_det = zs[-1]
-                
-                # --- Compute Logits ---
-                noise_dists = torch.distributions.Independent(
-                    torch.distributions.Normal(loc=torch.zeros_like(z_noise[0]), scale=torch.ones_like(z_noise[0])), 
-                    reinterpreted_batch_ndims=1
-                )
-                
-                log_prob_noise = noise_dists.log_prob(z_noise)
-                log_prob_semantic = torch.stack([dist.log_prob(z_sem) for dist in target_dists], dim=1)
-                
-                # Broadcast noise prob
-                log_prob = log_prob_noise.unsqueeze(1) + log_prob_semantic
-                logits = log_prob + log_det.unsqueeze(1)
+                logits = log_det.unsqueeze(1)
+                for k, (z, h) in enumerate(outs):
+                    args = [{}, {"z": z}, {}]
+                    split = splits[k]
+                    
+                    priors = [
+                        prior_fact(**a) if prior_fact is not None else None 
+                        for prior_fact, a in zip(level_priors[k], args)
+                    ]
+                    
+                    level_logits = compute_level_logits(z, h, priors, split, K, sum=True)
+                    logits = logits + level_logits
                 
                 probabilities = torch.softmax(logits, dim=1)
                 confidences, _ = torch.max(probabilities, 1)
@@ -391,8 +386,16 @@ def get_ood_confidences_and_plot(model, in_dist_loader, out_dist_loader, device,
 
     fpr, tpr, thresholds = roc_curve(y_true, y_scores)
     roc_auc = auc(fpr, tpr)
+    
+    target_tpr = 0.95
+    idx = np.where(tpr >= target_tpr)[0]
+    if len(idx) > 0:
+        fpr_at_95_tpr = fpr[idx[0]]
+    else:
+        fpr_at_95_tpr = 1.0 # Should not happen if curve goes to 1.0
 
     print(f"AUROC: {roc_auc:.4f}")
+    print(f"FPR @ 95% TPR: {fpr_at_95_tpr:.4f}")
     print(f"Avg Confidence (ID): {np.mean(in_dist_confs):.4f}")
     print(f"Avg Confidence (OOD): {np.mean(out_dist_confs):.4f}")
 
