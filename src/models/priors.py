@@ -194,9 +194,9 @@ class ConditionalKPMVNPrior(nn.Module):
         nn.init.zeros_(self.ch_D_head.weight)
         nn.init.zeros_(self.ch_D_head.bias)
         
-        nn.init.normal_(self.sp_U_head.weight, std=1e-4)
+        nn.init.zeros_(self.sp_U_head.weight)
         nn.init.zeros_(self.sp_U_head.bias)
-        nn.init.normal_(self.ch_U_head.weight, std=1e-4)
+        nn.init.zeros_(self.ch_U_head.weight)
         nn.init.zeros_(self.ch_U_head.bias)
 
     def forward(self, z: torch.Tensor) -> torch.distributions.Distribution:
