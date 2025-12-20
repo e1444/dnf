@@ -185,6 +185,19 @@ class ConditionalKPMVNPrior(nn.Module):
 
         self.ch_D_head = nn.Linear(backbone_features, self.h_C)
         self.ch_U_head = nn.Linear(backbone_features, self.h_C * self.rank_ch)
+        
+        nn.init.zeros_(self.loc_head.weight)
+        nn.init.zeros_(self.loc_head.bias)
+        
+        nn.init.zeros_(self.sp_D_head.weight)
+        nn.init.zeros_(self.sp_D_head.bias)
+        nn.init.zeros_(self.ch_D_head.weight)
+        nn.init.zeros_(self.ch_D_head.bias)
+        
+        nn.init.normal_(self.sp_U_head.weight, std=1e-4)
+        nn.init.zeros_(self.sp_U_head.bias)
+        nn.init.normal_(self.ch_U_head.weight, std=1e-4)
+        nn.init.zeros_(self.ch_U_head.bias)
 
     def forward(self, z: torch.Tensor) -> torch.distributions.Distribution:
         B = z.shape[0]
