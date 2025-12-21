@@ -7,10 +7,11 @@ priors:
   l0:
     split: [0, 6, 0]
     rank: [4, 8]
+    cls:
+      eps: 1e-2
     conditional_cls:
       _target_: src.models.priors.ConditionalMixturePrior
       tau: 1536.0   # 1536 / 1
-      eps: 1e-2
       dropout: 0.1
       backbone_features: 128
       num_components: 2
@@ -19,10 +20,11 @@ priors:
   l1:
     split: [0, 12, 0]
     rank: [8, 8]
+    cls:
+      eps: 1e-2
     conditional_cls:
       _target_: src.models.priors.ConditionalMixturePrior
       tau: 768.0    # 768 / 1
-      eps: 1e-2
       dropout: 0.0
       backbone_features: 256
       num_components: 8
@@ -32,6 +34,7 @@ priors:
     split: [32, 0, 16]
     rank: [8, 8]
     cls:
+      eps: 1e-2
       tau: 512.0                # Controls entropy of noise prior (512 / 1)
     class_conditional_init:
       simplex_scale: 0.5        # Controls separation of sem mixture components
