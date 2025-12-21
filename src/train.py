@@ -92,7 +92,8 @@ def train(cfg: DictConfig):
             
             if struct_count > 0:
                 if prior_cfg.conditional_cls._target_ == "src.models.priors.ConditionalMixturePrior":
-                    num_components = prior_cfg.conditional_cls.pop("num_components")
+                    num_components = prior_cfg.conditional_cls.num_components
+                    del prior_cfg.conditional_cls.num_components
                     theta_list = hydra.utils.instantiate(
                         prior_cfg.class_conditional_init,
                         K=num_components,
@@ -331,6 +332,8 @@ def train(cfg: DictConfig):
             total_nll += nll_loss.item()
             total_ce += ce_loss.item()
             total_alpha += alpha.item()
+            
+            return
 
         avg_train_loss = total_loss / len(train_loader)
         avg_nll = total_nll / len(train_loader)

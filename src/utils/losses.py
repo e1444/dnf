@@ -39,9 +39,9 @@ def compute_level_logits(h, z, level_priors, level_split, K, sum=True):
     struct_z = z[:, noise_count:noise_count+struct_count, :, :]
     sem_z = z[:, noise_count+struct_count:noise_count+struct_count+sem_count, :, :]
     
-    B = h.shape[0]
-    device = h.device
-    dtype = h.dtype
+    B = z.shape[0]
+    device = z.device
+    dtype = z.dtype
     noise_lp = torch.zeros(B, K, device=device, dtype=dtype)
     struct_lp = torch.zeros(B, K, device=device, dtype=dtype)
     sem_lp = torch.zeros(B, K, device=device, dtype=dtype)

@@ -2,6 +2,8 @@ import torch
 
 
 class FlattenedDistribution(torch.distributions.Distribution):
+    arg_constraints = {}    # type: ignore
+    
     def __init__(self, base_dist):
         super().__init__(batch_shape=base_dist.batch_shape, event_shape=base_dist.event_shape)
         self.base_dist = base_dist
@@ -28,6 +30,8 @@ class ScaledDistribution(torch.distributions.Distribution):
     This avoids constructing covariance matrices with tiny eigenvalues by
     evaluating the density on the normalized scale.
     """
+    arg_constraints = {}    # type: ignore
+    
     def __init__(self, base_dist, loc, scale):
         super().__init__(batch_shape=base_dist.batch_shape, event_shape=base_dist.event_shape)
         self.base_dist = base_dist
@@ -56,6 +60,8 @@ class ScaledDistribution(torch.distributions.Distribution):
 
 
 class MixtureDistribution(torch.distributions.Distribution):
+    arg_constraints = {}    # type: ignore
+    
     def __init__(self, component_dists, mixing_logits):
         """
         component_dists: list of torch.distributions.Distribution
