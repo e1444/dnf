@@ -4,7 +4,7 @@ from torch.distributions import LowRankMultivariateNormal
 
 from src.distributions.kpmvn import KroneckerProductMVN
 from src.models.modules import AttentionPooling, GaussianBlurLayer
-from src.utils.dist_wrapper import FlattenedDistribution, ScaledDistribution
+from src.utils.dist_wrapper import FlattenedDistribution, ScaledDistribution, MixtureDistribution
 
 from typing import List, Union
 
@@ -194,16 +194,16 @@ class ConditionalKPMVNPrior(nn.Module):
         nn.init.zeros_(self.ch_D_head.weight)
         nn.init.zeros_(self.ch_D_head.bias)
         
-        nn.init.zeros_(self.sp_U_head.weight)
+        nn.init.normal_(self.sp_U_head.weight, std=1e-4)
         nn.init.zeros_(self.sp_U_head.bias)
-        nn.init.zeros_(self.ch_U_head.weight)
+        nn.init.normal_(self.ch_U_head.weight, std=1e-4)
         nn.init.zeros_(self.ch_U_head.bias)
 
-    def forward(self, z: torch.Tensor) -> torch.distributions.Distribution:
-        B = z.shape[0]
-        z = self.blur(z)
+    def forward(self, h: torch.Tensor) -> torch.distributions.Distribution:
+        B = h.shape[0]
+        h = self.blur(h)
         
-        shared_features = self.backbone(z)
+        shared_features = self.backbone(h)
         pooled_features = self.attention_pool(shared_features)
 
         log_ch_D = self.ch_D_head(pooled_features)
@@ -231,7 +231,7 @@ class ConditionalKPMVNPrior(nn.Module):
         log_norm_scale_U = log_norm_scale.view(-1, 1, 1)    # (B, 1, 1)
         
         base_dist = KroneckerProductMVN(
-            loc=torch.zeros(B, self.h_C * self.H * self.W, device=z.device, dtype=z.dtype),
+            loc=torch.zeros(B, self.h_C * self.H * self.W, device=h.device, dtype=h.dtype),
             ch_cov=(ch_U * torch.exp(log_norm_scale_U / 2), torch.exp(log_ch_D + log_norm_scale_D) + self.eps),
             sp_cov=(sp_U * torch.exp(log_norm_scale_U / 2), torch.exp(log_sp_D + log_norm_scale_D) + self.eps),
             C=self.h_C, H=self.H, W=self.W,
@@ -242,4 +242,47 @@ class ConditionalKPMVNPrior(nn.Module):
         global_scale = torch.exp(0.5 * log_s)
         scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
         
+        return scaled_dist
+    
+
+class ConditionalMixturePrior(nn.Module):
+    def __init__(
+        self,
+        components: List[nn.Module],
+        tau: Union[float, torch.Tensor],
+        z_channels: int,
+        backbone_features: int = 256,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.components = nn.ModuleList(components)
+        self.K = len(components)
+        
+        if not isinstance(tau, torch.Tensor):
+            tau = torch.tensor(tau, dtype=torch.float32)
+        self.tau = nn.Parameter(tau)
+        
+        self.mixing_net = nn.Sequential(
+            nn.Conv2d(z_channels, backbone_features, 3, padding=1),
+            nn.ReLU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+            nn.Conv2d(backbone_features, backbone_features, 3, padding=1),
+            nn.ReLU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+            AttentionPooling(backbone_features),
+            nn.Linear(backbone_features, self.K)
+        )
+
+        # Initialize mixing weights to be close to uniform
+        nn.init.zeros_(self.mixing_net[-1].weight)
+        nn.init.zeros_(self.mixing_net[-1].bias)
+        
+    def forward(self, h: torch.Tensor, *args, **kwargs) -> torch.distributions.Distribution:
+        dists = [comp(*args, **kwargs) for comp in self.components]
+        logits = self.mixing_net(h)
+        mixture_dist = MixtureDistribution(dists, mixing_logits=logits)
+        
+        log_s = torch.clamp(self.tau / mixture_dist.event_shape.numel(), min=-15.0, max=15.0)
+        global_scale = torch.exp(0.5 * log_s)
+        scaled_dist = ScaledDistribution(mixture_dist, loc=0.0, scale=global_scale)
         return scaled_dist

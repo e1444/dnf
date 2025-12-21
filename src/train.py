@@ -222,8 +222,8 @@ def train(cfg: DictConfig):
             logits = log_det.unsqueeze(1)
             
             anisotropy_losses = []
-            for k, (z, h) in enumerate(outs):
-                args = [{}, {"z": z}, {}]
+            for k, (h, z) in enumerate(outs):
+                args = [{}, {"h": h}, {}]
                 split = splits[k]
                 
                 priors = [
@@ -242,7 +242,7 @@ def train(cfg: DictConfig):
                     elif prior is not None:
                         anisotropy_losses.append(K * prior.anisotropy_loss().mean())
                         
-                level_logits = compute_level_logits(z, h, priors, splits[k], K)
+                level_logits = compute_level_logits(h, z, priors, splits[k], K)
                 logits = logits + level_logits
                     
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)

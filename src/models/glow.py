@@ -102,30 +102,43 @@ class DGLOWNetwork(nn.Module):
                 C //= 2  # After Split
     
     def forward(self, x):
+        """
+        Split input x into latent variables at each level where
+        
+        h^(i) -> (h^(i+1), z^(i))
+        h^(L) -> (z^(L),)
+
+        Args:
+            x: Input tensor of shape (B, C, H, W)
+
+        Returns:
+            outs: List of tuples (h, z) per level; for final level (None, z)
+            log_dets: Tensor of shape (num_levels + 1, B) with log-determinants per level and final
+        """
         log_dets = []
-        z, log_det = self.logit_transform(x)
+        h, log_det = self.logit_transform(x)
         log_dets.append(log_det)
         
         outs = []
         level_log_det = torch.zeros(x.size(0), device=x.device)
         for level in self.split_levels:
             if isinstance(level, nn.ModuleList): # Flow steps
-                z, log_det = self.squeeze(z)
+                h, log_det = self.squeeze(h)
                 level_log_det = level_log_det + log_det
                 
                 for flow_step in level:
-                    if self.checkpoint_grads and z.requires_grad:
-                        z, log_det = checkpoint.checkpoint(flow_step, z, use_reentrant=False)   # type: ignore
+                    if self.checkpoint_grads and h.requires_grad:
+                        h, log_det = checkpoint.checkpoint(flow_step, h, use_reentrant=False)   # type: ignore
                     else:
-                        z, log_det = flow_step(z)
+                        h, log_det = flow_step(h)
                     level_log_det = level_log_det + log_det
             elif isinstance(level, Split): # Split
-                z, h = level(z)
-                outs.append((z, h))
+                h, z = level(h)
+                outs.append((h, z))             # Store (h^(i+1), z^(i))
                 log_dets.append(level_log_det)
                 level_log_det = torch.zeros(x.size(0), device=x.device)
 
-        outs.append((None, z))  # Final latent without split
+        outs.append((None, h))  # Final latent without split
         log_dets.append(level_log_det)
         log_dets = torch.stack(log_dets, dim=0)
         return outs, log_dets
