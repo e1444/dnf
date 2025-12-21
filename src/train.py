@@ -332,8 +332,6 @@ def train(cfg: DictConfig):
             total_nll += nll_loss.item()
             total_ce += ce_loss.item()
             total_alpha += alpha.item()
-            
-            return
 
         avg_train_loss = total_loss / len(train_loader)
         avg_nll = total_nll / len(train_loader)
