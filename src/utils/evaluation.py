@@ -37,8 +37,9 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             # Compute logits using the shared utility
             logits = log_det.unsqueeze(1)   # (B, 1)
             all_level_logits = []
-            for k, (z, h) in enumerate(outs):
-                args = [{}, {"z": z}, {}]
+            anisotropy_losses = []
+            for k, (h, z) in enumerate(outs):
+                args = [{}, {"h": h}, {}]
                 split = splits[k]
                 
                 priors = [
@@ -46,7 +47,18 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
                     for prior_fact, a in zip(level_priors[k], args)
                 ]
                 
-                level_logits = compute_level_logits(z, h, priors, split, K, sum=False)     # (B, K, 3)
+                for prior in priors:
+                    if cfg.training.r_aniso <= 0.0:
+                        pass
+                    
+                    if isinstance(prior, list):
+                        for p in prior:
+                            if p is not None:
+                                anisotropy_losses.append(p.anisotropy_loss().mean())
+                    elif prior is not None:
+                        anisotropy_losses.append(K * prior.anisotropy_loss().mean())
+                
+                level_logits = compute_level_logits(h, z, priors, split, K, sum=False)     # (B, K, 3)
                 all_level_logits.append(level_logits)
                 logits = logits + torch.sum(level_logits, dim=2)
                 
@@ -55,7 +67,22 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
             
-            loss = loss + cfg.training.r_logdet * (log_dets ** 2).mean()
+            flow_log_dets = log_dets[1:]
+            level_variances = flow_log_dets.var(dim=1)
+            normalized_variances = []
+            for i in range(len(level_variances)):
+                # Get shape (C, H, W) for this level
+                C, H, W = output_shapes[i]
+                dim = C * H * W
+                
+                log_det_per_dim = flow_log_dets[i] / dim
+                normalized_variances.append(log_det_per_dim.var())
+                
+            reg_loss = cfg.training.r_logdet * torch.stack(normalized_variances).mean()
+            loss = loss + reg_loss
+            
+            if len(anisotropy_losses) > 0:
+                reg_loss = reg_loss + cfg.training.r_aniso * torch.stack(anisotropy_losses).mean()
             
             if torch.isnan(loss) or torch.isinf(loss):
                 print("WARNING: NaN/Inf loss detected during evaluation. Skipping batch.")

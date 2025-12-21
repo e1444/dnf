@@ -10,7 +10,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
-from src.models.priors import ClassConditionalPrior, ConditionalMixturePrior
+from src.models.priors import ClassConditionalPrior
 from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 from src.utils.evaluation import evaluate, print_train_stats
 
