@@ -11,6 +11,13 @@ conditional_cls:
   dropout: 0.0
   backbone_features: 256
 
+# conditional_cls:
+#   _target_: src.models.priors.ConditionalMixturePrior
+#   tau: 0.0
+#   dropout: 0.0
+#   backbone_features: 256
+#   num_components: 4
+
 zero_init:
   _target_: src.utils.prior_init.kpmvn_zero_init
   noise: 0.01

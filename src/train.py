@@ -10,7 +10,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
-from src.models.priors import ClassConditionalPrior
+from src.models.priors import ClassConditionalPrior, ConditionalMixturePrior
 from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 from src.utils.evaluation import evaluate, print_train_stats
 
@@ -91,14 +91,34 @@ def train(cfg: DictConfig):
                 std_idx += noise_count
             
             if struct_count > 0:
-                struct_prior = hydra.utils.instantiate(
-                    prior_cfg.conditional_cls,
-                    z_channels=C,
-                    h_channels=struct_count,
-                    H=H, W=W,
-                    rank=prior_cfg.rank
-                ).to(device)
-                level_params.append(struct_prior)
+                if prior_cfg.conditional_cls._target_ == "src.models.priors.ConditionalMixturePrior":
+                    num_components = prior_cfg.conditional_cls.pop("num_components")
+                    theta_list = hydra.utils.instantiate(
+                        prior_cfg.class_conditional_init,
+                        K=num_components,
+                        C=struct_count, H=H, W=W,
+                        rank=prior_cfg.rank
+                    )
+                    components = [
+                        hydra.utils.instantiate(prior_cfg.cls, **theta) for theta in theta_list
+                    ]
+                    struct_prior = hydra.utils.instantiate(
+                        prior_cfg.conditional_cls,
+                        components=components,
+                        h_channels=C
+                    ).to(device)
+                    level_params.append(struct_prior)
+                elif prior_cfg.conditional_cls._target_ == "src.models.priors.ConditionalKPMVNPrior":
+                    struct_prior = hydra.utils.instantiate(
+                        prior_cfg.conditional_cls,
+                        h_channels=struct_count,
+                        z_channels=C,
+                        H=H, W=W,
+                        rank=prior_cfg.rank
+                    ).to(device)
+                    level_params.append(struct_prior)
+                else:
+                    raise NotImplementedError(f"Conditional prior {prior_cfg.conditional_cls._target_} not supported.")
                 
                 D_struct = struct_count * H * W
                 struct_std = torch.exp(torch.tensor(prior_cfg.conditional_cls.tau) / (2 * D_struct))

@@ -141,8 +141,8 @@ class ClassConditionalPrior(nn.Module):
 class ConditionalKPMVNPrior(nn.Module):
     def __init__(
         self,
-        z_channels: int,
         h_channels: int,
+        z_channels: int,
         H: int, W: int,
         rank: tuple[int, int],
         tau: Union[float, torch.Tensor],
@@ -249,8 +249,8 @@ class ConditionalMixturePrior(nn.Module):
     def __init__(
         self,
         components: List[nn.Module],
+        h_channels: int,
         tau: Union[float, torch.Tensor],
-        z_channels: int,
         backbone_features: int = 256,
         dropout: float = 0.0,
     ):
@@ -263,7 +263,7 @@ class ConditionalMixturePrior(nn.Module):
         self.tau = nn.Parameter(tau)
         
         self.mixing_net = nn.Sequential(
-            nn.Conv2d(z_channels, backbone_features, 3, padding=1),
+            nn.Conv2d(h_channels, backbone_features, 3, padding=1),
             nn.ReLU(),
             nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
             nn.Conv2d(backbone_features, backbone_features, 3, padding=1),
