@@ -8,9 +8,11 @@ priors:
     split: [0, 6, 0]
     rank: [4, 8]
     conditional_cls:
+      _target_: src.models.priors.ConditionalMixturePrior
+      tau: 1536.0
       dropout: 0.1
       backbone_features: 128
-      tau: 1536.0
+      num_components: 2
   l1:
     split: [0, 12, 0]
     rank: [8, 8]
