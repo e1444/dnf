@@ -67,7 +67,8 @@ class KPMVNPrior(nn.Module):
         tau: Union[float, torch.Tensor],
         C: int, H: int, W: int,
         jitter: float = 1e-6,
-        eps: float = 1e-6
+        eps: float = 1e-6,
+        freeze_U: bool = True
     ):
         """
         Kronecker-Product Multivariate Normal Prior
@@ -93,6 +94,10 @@ class KPMVNPrior(nn.Module):
         
         self.jitter = jitter
         self.eps = eps
+        
+        if freeze_U:
+            self.cov_ch_factor.requires_grad = False
+            self.cov_sp_factor.requires_grad = False
         
     def forward(self) -> torch.distributions.Distribution:
         log_norm_scale = self._log_det / self.D_total / 2
