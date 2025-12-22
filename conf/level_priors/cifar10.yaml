@@ -10,13 +10,10 @@ priors:
     cls:
       eps: 1e-2
     conditional_cls:
-      _target_: src.models.priors.ConditionalMixturePrior
+      _target_: src.models.priors.ConditionalKPMVNPrior
       tau: 1536.0   # 1536 / 1
       dropout: 0.1
       backbone_features: 128
-      num_components: 2
-    class_conditional_init:
-      simplex_scale: 0.2
   l1:
     split: [0, 12, 0]
     rank: [8, 8]
@@ -24,9 +21,9 @@ priors:
       eps: 1e-2
     conditional_cls:
       _target_: src.models.priors.ConditionalMixturePrior
-      tau: 768.0    # 768 / 1
+      tau: 384.0    # 768 / 2
       dropout: 0.0
-      backbone_features: 256
+      backbone_features: 128
       num_components: 8
     class_conditional_init:
       simplex_scale: 0.35
