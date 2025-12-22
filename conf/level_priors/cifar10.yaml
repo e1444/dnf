@@ -23,7 +23,7 @@ priors:
       _target_: src.models.priors.ConditionalMixturePrior
       tau: 384.0    # 768 / 2
       dropout: 0.0
-      backbone_features: 128
+      backbone_features: 256
       num_components: 8
     class_conditional_init:
       simplex_scale: 0.35
