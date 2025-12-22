@@ -184,11 +184,14 @@ def train(cfg: DictConfig):
 
     # Load from checkpoint if specified
     start_epoch = 0
-    if cfg.training.resume_from_checkpoint is not None:
-        print(f"Resuming training from {cfg.training.resume_from_checkpoint}")
-        checkpoint = torch.load(cfg.training.resume_from_checkpoint, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
+    if cfg.training.ckpt is not None:
+        print(f"Resuming training from {cfg.training.ckpt}")
+        checkpoint = torch.load(cfg.training.ckpt, map_location=device)
+        
+        if cfg.training.load_model:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        if cfg.training.load_prior:
+            level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
         
         if not cfg.training.reset_optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

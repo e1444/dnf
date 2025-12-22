@@ -17,4 +17,7 @@ lr_log_alpha: 1e-3
 nll_constraint: 0.0   # Specify based on warmup results
 aug_rho: 1.0
 
+ckpt: null
+load_model: true
+load_prior: true
 reset_optimizer: true

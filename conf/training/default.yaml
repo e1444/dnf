@@ -27,5 +27,7 @@ lr_log_alpha: 1e-3
 aug_rho: 1.0
 nll_constraint: -3000.0
 
-resume_from_checkpoint: null
+ckpt: null
+load_model: false
+load_prior: false
 reset_optimizer: false
