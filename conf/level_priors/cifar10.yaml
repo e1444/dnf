@@ -21,7 +21,7 @@ priors:
       eps: 1e-2
     conditional_cls:
       _target_: src.models.priors.ConditionalMixturePrior
-      tau: 384.0    # 768 / 2
+      tau: 576.0    # 768 * 0.75
       dropout: 0.0
       backbone_features: 256
       num_components: 8
@@ -32,7 +32,7 @@ priors:
     rank: [8, 8]
     cls:
       eps: 1e-2
-      tau: 256.0                # Controls entropy of noise prior (512 / 2)
+      tau: 384.0                # Controls entropy of noise prior (512 * 0.75)
     class_conditional_init:
-      simplex_scale: 0.5        # Controls separation of sem mixture components
-      tau_marginal: 64.0       # Controls marginal entropy of sem mixture (256 / 4)
+      simplex_scale: 0.7        # Controls separation of sem mixture components
+      tau_marginal: 128.0       # Controls marginal entropy of sem mixture (256 * 0.5)
