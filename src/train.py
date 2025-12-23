@@ -205,7 +205,7 @@ def train(cfg: DictConfig):
     steps_per_epoch = len(train_loader)
     total_warmup_steps = cfg.training.warmup_epochs * steps_per_epoch
     
-    r_log_det = cfg.training.r_logdet
+    r_logdet = cfg.training.r_logdet
     
     # Training loop
     print("Starting training...")
@@ -230,7 +230,7 @@ def train(cfg: DictConfig):
                     
                     param_group['lr'] = param_group['target_lr'] * warmup_factor
                     
-                # r_log_det = cfg.training.r_logdet * (1 - warmup_factor)
+                # r_logdet = cfg.training.r_logdet * (1 - warmup_factor)
             
             # --- Primal Step ---
             optimizer.zero_grad()
@@ -275,17 +275,17 @@ def train(cfg: DictConfig):
             # 3. Regularization terms
             # 3.1. Log-Det Variance Regularization
             flow_log_dets = log_dets[1:]
-            level_variances = flow_log_dets.var(dim=1)
-            normalized_variances = []
-            for i in range(len(level_variances)):
+            for i in range(log_dets[1:]):
                 # Get shape (C, H, W) for this level
                 C, H, W = output_shapes[i]
                 dim = C * H * W
                 
-                log_det_per_dim = flow_log_dets[i] / dim
-                normalized_variances.append(log_det_per_dim.var())
-                
-            reg_loss = r_log_det * torch.stack(normalized_variances).mean()
+                flow_log_dets[i] = flow_log_dets[i] / dim
+            
+            # flow_log_dets = torch.stack(flow_log_dets)  # (num_levels, batch_size)
+            # between_level_var = flow_log_dets.var(dim=0).mean()
+            
+            reg_loss = r_logdet * (flow_log_dets ** 2).mean()
             
             # 3.2. Anisotropy Regularization
             if len(anisotropy_losses) > 0:

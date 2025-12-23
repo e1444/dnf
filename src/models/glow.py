@@ -140,7 +140,7 @@ class DGLOWNetwork(nn.Module):
 
         outs.append((None, h))  # Final latent without split
         log_dets.append(level_log_det)
-        log_dets = torch.stack(log_dets, dim=0)
+        log_dets = torch.stack(log_dets, dim=0) # (num_levels + 1, B)
         return outs, log_dets
     
     def inverse(self, z):
