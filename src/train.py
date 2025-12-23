@@ -163,11 +163,13 @@ def train(cfg: DictConfig):
         weight_decay=cfg.training.weight_decay
     )
     for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):
-        optimizer.add_param_group({
-            'params': prior_param.parameters(),
-            'lr': lr_prior,
-            'weight_decay': cfg.training.weight_decay
-        })
+        params_to_optimize = [p for p in prior_param.parameters() if p.requires_grad]
+        if len(params_to_optimize) > 0:
+            optimizer.add_param_group({
+                'params': params_to_optimize,
+                'lr': lr_prior,
+                'weight_decay': cfg.training.weight_decay
+            })
     
     # --- Augmented Lagrangian Setup ---
     log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
