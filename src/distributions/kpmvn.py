@@ -34,15 +34,20 @@ class KroneckerProductMVN(Distribution):
         )
         
         # Reshape loc to (Batch..., C, H, W) for event_shape alignment
-        self._loc = loc.expand(batch_shape + (C * S,)).reshape(batch_shape + (C, H, W))
+        self._loc = (
+            loc
+            .expand(batch_shape + (C * S,))
+            .clone()
+            .reshape(batch_shape + (C, H, W))
+        )
         
         # Broadcast Covariance parameters
         # Factor U: (..., D, r) -> expand to (batch..., D, r)
         # Diag D:   (..., D)    -> expand to (batch..., D)
-        self.ch_cov_factor = ch_cov[0].expand(batch_shape + (C, -1))
-        self.ch_cov_diag   = ch_cov[1].expand(batch_shape + (C,))
-        self.sp_cov_factor = sp_cov[0].expand(batch_shape + (S, -1))
-        self.sp_cov_diag   = sp_cov[1].expand(batch_shape + (S,))
+        self.ch_cov_factor = ch_cov[0].expand(batch_shape + (C, -1)).clone()
+        self.ch_cov_diag   = ch_cov[1].expand(batch_shape + (C,)).clone()
+        self.sp_cov_factor = sp_cov[0].expand(batch_shape + (S, -1)).clone()
+        self.sp_cov_diag   = sp_cov[1].expand(batch_shape + (S,)).clone()
         
         self.jitter = jitter
 
@@ -314,8 +319,6 @@ class KroneckerProductMVN(Distribution):
         return self._loc
     
     
-
-
 if __name__ == "__main__":
     print("--- Running Test Suite for KroneckerProductMVN ---")
     
