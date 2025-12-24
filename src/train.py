@@ -275,7 +275,7 @@ def train(cfg: DictConfig):
             # 3. Regularization terms
             # 3.1. Log-Det Variance Regularization
             flow_log_dets = log_dets[1:]
-            for i in range(log_dets[1:]):
+            for i in range(cfg.model.num_levels):
                 # Get shape (C, H, W) for this level
                 C, H, W = output_shapes[i]
                 dim = C * H * W
