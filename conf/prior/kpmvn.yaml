@@ -4,14 +4,12 @@ rank: [8, 8]      # rank_ch, rank_sp
 cls:
   _target_: src.models.priors.KPMVNPrior
   tau: 0.0
-  jitter: 1e-4
 
 conditional_cls:
   _target_: src.models.priors.ConditionalKPMVNPrior
   tau: 0.0
   dropout: 0.0
   backbone_features: 256
-  jitter: 1e-4
 
 # conditional_cls:
 #   _target_: src.models.priors.ConditionalMixturePrior

@@ -7,18 +7,19 @@ priors:
   l0:
     split: [0, 6, 0]
     rank: [4, 8]
-    cls:
-      eps: 1e-2
     conditional_cls:
       _target_: src.models.priors.ConditionalKPMVNPrior
       tau: 1536.0   # 1536 / 1
       dropout: 0.1
       backbone_features: 128
+      eps: 1e-2
+      jitter: 1e-4
   l1:
     split: [0, 12, 0]
     rank: [8, 8]
     cls:
       eps: 1e-2
+      jitter: 1e-4
     conditional_cls:
       _target_: src.models.priors.ConditionalMixturePrior
       tau: 576.0    # 768 * 0.75
@@ -32,6 +33,7 @@ priors:
     rank: [8, 8]
     cls:
       eps: 1e-2
+      jitter: 1e-4
       tau: 384.0                # Controls entropy of noise prior (512 * 0.75)
     class_conditional_init:
       simplex_scale: 0.7        # Controls separation of sem mixture components
