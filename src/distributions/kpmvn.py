@@ -10,7 +10,7 @@ class KroneckerProductMVN(Distribution):
     arg_constraints = {}    # type: ignore
     has_rsample = True
 
-    def __init__(self, loc, ch_cov, sp_cov, C, H, W, jitter=1e-6):
+    def __init__(self, loc, ch_cov, sp_cov, C, H, W, jitter=1e-4):
         """
         loc: (..., C * S) mean vector
         ch_cov: tuple (U_ch, D_ch) where U_ch: (..., C, r_ch), D_ch: (..., C)
