@@ -25,15 +25,13 @@ class LowRankMVNPrior(nn.Module):
         self.eps = eps
 
     def forward(self) -> FlattenedDistribution:
-        dim = self.loc.shape[0]
-        log_norm_scale = -self._log_det / dim
-            
         base_dist = LowRankMultivariateNormal(
             loc=self.loc,
-            cov_factor=self.U * torch.exp(log_norm_scale / 2),
-            cov_diag=torch.exp(self.log_diag + log_norm_scale) + self.eps
+            cov_factor=self.U,
+            cov_diag=self.log_diag + self.eps
         )
         
+        dim = self.loc.shape[0]
         log_s = torch.clamp(self.tau / dim, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
         scaled_dist = ScaledDistribution(base_dist, loc=self.loc, scale=global_scale)
@@ -100,13 +98,12 @@ class KPMVNPrior(nn.Module):
             self.cov_sp_factor.requires_grad = False
         
     def forward(self) -> torch.distributions.Distribution:
-        log_norm_scale = -self._log_det / self.D_total / 2
         loc_shaped = self._loc.view(self.C, self.H, self.W)
             
         base_dist = KroneckerProductMVN(
             loc=torch.zeros(self.C * self.H * self.W, device=self._loc.device, dtype=self._loc.dtype),
-            ch_cov=(self.cov_ch_factor * torch.exp(log_norm_scale / 2), torch.exp(self.log_cov_ch_diag + log_norm_scale) + self.eps),
-            sp_cov=(self.cov_sp_factor * torch.exp(log_norm_scale / 2), torch.exp(self.log_cov_sp_diag + log_norm_scale) + self.eps),
+            ch_cov=(self.cov_ch_factor, torch.exp(self.log_cov_ch_diag) + self.eps),
+            sp_cov=(self.cov_sp_factor, torch.exp(self.log_cov_sp_diag) + self.eps),
             C=self.C, H=self.H, W=self.W,
             jitter=self.jitter
         )
@@ -227,17 +224,10 @@ class ConditionalKPMVNPrior(nn.Module):
         
         current_log_det = self.S * ld_ch + self.h_C * ld_sp
         
-        # Calculate global scale s (B,)
-        log_norm_scale = torch.clamp(-current_log_det / self.D_total / 2, min=-15.0, max=15.0)
-        
-        # Reshape for broadcasting
-        log_norm_scale_D = log_norm_scale.view(-1, 1)       # (B, 1)
-        log_norm_scale_U = log_norm_scale.view(-1, 1, 1)    # (B, 1, 1)
-        
         base_dist = KroneckerProductMVN(
             loc=torch.zeros(B, self.h_C * self.H * self.W, device=h.device, dtype=h.dtype),
-            ch_cov=(ch_U * torch.exp(log_norm_scale_U / 2), torch.exp(log_ch_D + log_norm_scale_D) + self.eps),
-            sp_cov=(sp_U * torch.exp(log_norm_scale_U / 2), torch.exp(log_sp_D + log_norm_scale_D) + self.eps),
+            ch_cov=(ch_U, torch.exp(log_ch_D) + self.eps),
+            sp_cov=(sp_U, torch.exp(log_sp_D) + self.eps),
             C=self.h_C, H=self.H, W=self.W,
             jitter=self.jitter
         )
