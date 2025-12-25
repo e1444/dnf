@@ -68,6 +68,9 @@ class KroneckerProductMVN(Distribution):
         cov_diag: (..., D)
         cov_factor: (..., D, r)
         """
+        # 1. Clamp D to ensure numerical stability
+        cov_diag = torch.clamp(cov_diag, min=1e-6)
+        
         r = cov_factor.shape[-1]
         D_inv = 1.0 / cov_diag
         # U_scaled = U * D^-1. Broadcasting (..., D, r) * (..., D, 1)
@@ -76,6 +79,9 @@ class KroneckerProductMVN(Distribution):
         # M = I + U^T D^-1 U
         # matmul: (..., r, D) @ (..., D, r) -> (..., r, r)
         M = torch.eye(r, device=cov_diag.device, dtype=cov_diag.dtype) + torch.matmul(cov_factor.transpose(-1, -2), U_scaled)
+        
+        # 2. Symmetrize M to correct floating point drift
+        M = 0.5 * (M + M.transpose(-1, -2))
         
         sign, logabsdet_M = torch.linalg.slogdet(M)
         logdet_D = torch.sum(torch.log(cov_diag), dim=-1)
@@ -87,6 +93,9 @@ class KroneckerProductMVN(Distribution):
         D: (..., D_dim)
         U: (..., D_dim, r)
         """
+        # 1. Clamp D to ensure numerical stability
+        D = torch.clamp(D, min=1e-6)
+        
         r = U.shape[-1]
         D_inv = 1.0 / D
         
@@ -96,8 +105,15 @@ class KroneckerProductMVN(Distribution):
         U_scaled = U * D_inv.unsqueeze(-1)
         M_inner = torch.eye(r, device=D.device, dtype=D.dtype) + torch.matmul(U.transpose(-1, -2), U_scaled)
         
-        # Jitter
-        M_inner = M_inner + jitter * torch.eye(r, device=D.device, dtype=D.dtype)
+        # 2. Symmetrize M_inner to correct floating point drift
+        M_inner = 0.5 * (M_inner + M_inner.transpose(-1, -2))
+        
+        # 3. Robust Jitter: Scale jitter by the diagonal magnitude
+        # This ensures jitter is effective even if matrix elements are large
+        diag_mean = torch.diagonal(M_inner, dim1=-2, dim2=-1).mean(dim=-1, keepdim=True).unsqueeze(-1)
+        scaled_jitter = jitter * torch.maximum(torch.ones_like(diag_mean), diag_mean)
+        
+        M_inner = M_inner + scaled_jitter * torch.eye(r, device=D.device, dtype=D.dtype)
         
         # Cholesky decomposition of the r x r matrix
         L_inner = torch.linalg.cholesky(M_inner) 

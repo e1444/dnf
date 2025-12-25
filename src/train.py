@@ -156,6 +156,12 @@ def train(cfg: DictConfig):
         std_per_level=std_per_level,
         _convert_="partial"
     ).to(device)
+    
+    if cfg.training.lr == 0:
+        model.requires_grad_(False)
+    for lr_prior, level_prior_params in zip(cfg.training.lr_prior, level_priors_params):
+        if lr_prior == 0:
+            level_prior_params.requires_grad_(False)
 
     optimizer = optim.AdamW(
         model.parameters(),
