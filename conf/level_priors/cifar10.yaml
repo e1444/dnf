@@ -20,12 +20,19 @@ priors:
     cls:
       eps: 1e-2
       jitter: 1e-4
+    # conditional_cls:
+    #   _target_: src.models.priors.ConditionalMixturePrior
+    #   tau: 576.0    # 768 * 0.75
+    #   dropout: 0.0
+    #   backbone_features: 256
+    #   num_components: 8
     conditional_cls:
-      _target_: src.models.priors.ConditionalMixturePrior
+      _target_: src.models.priors.ConditionalKPMVNPrior
       tau: 576.0    # 768 * 0.75
       dropout: 0.0
       backbone_features: 256
-      num_components: 8
+      eps: 1e-2
+      jitter: 1e-4
     class_conditional_init:
       simplex_scale: 0.35
   l2:
