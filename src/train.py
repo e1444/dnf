@@ -174,7 +174,7 @@ def train(cfg: DictConfig):
             optimizer.add_param_group({
                 'params': params_to_optimize,
                 'lr': lr_prior,
-                'weight_decay': cfg.training.weight_decay
+                'weight_decay': 0
             })
     
     # --- Augmented Lagrangian Setup ---
