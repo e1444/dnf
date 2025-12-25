@@ -100,8 +100,7 @@ class KPMVNPrior(nn.Module):
             self.cov_sp_factor.requires_grad = False
         
     def forward(self) -> torch.distributions.Distribution:
-        log_norm_scale = self._log_det / self.D_total / 2
-        
+        log_norm_scale = -self._log_det / self.D_total / 2
         loc_shaped = self._loc.view(self.C, self.H, self.W)
             
         base_dist = KroneckerProductMVN(
