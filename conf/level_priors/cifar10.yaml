@@ -41,7 +41,7 @@ priors:
     cls:
       eps: 1e-2
       jitter: 1e-4
-      tau: 384.0                # Controls entropy of noise prior (512 * 0.75)
+      tau: 256.0                # Controls entropy of noise prior (512 * 0.5)
     class_conditional_init:
       simplex_scale: 0.7        # Controls separation of sem mixture components
-      tau_marginal: 128.0       # Controls marginal entropy of sem mixture (256 * 0.5)
+      tau_marginal: 64.0       # Controls marginal entropy of sem mixture (256 * 0.25)
