@@ -236,7 +236,7 @@ def train(cfg: DictConfig):
                     
                     param_group['lr'] = param_group['target_lr'] * warmup_factor
                     
-                r_logdet = cfg.training.r_logdet * (1 - warmup_factor)
+                # r_logdet = cfg.training.r_logdet * (1 - warmup_factor)
             
             # --- Primal Step ---
             optimizer.zero_grad()
