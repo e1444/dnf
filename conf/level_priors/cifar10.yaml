@@ -10,7 +10,7 @@ priors:
     conditional_cls:
       _target_: src.models.priors.ConditionalKPMVTPrior
       tau: 1536.0   # 1536 / 1
-      df: 8.0
+      df: 16.0
       dropout: 0.1
       backbone_features: 128
       eps: 1e-2
@@ -21,7 +21,7 @@ priors:
     conditional_cls:
       _target_: src.models.priors.ConditionalKPMVTPrior
       tau: 576.0    # 768 * 0.75
-      df: 12.0
+      df: 24.0
       dropout: 0.0
       backbone_features: 256
       eps: 1e-2
