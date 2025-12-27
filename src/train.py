@@ -109,7 +109,10 @@ def train(cfg: DictConfig):
                         h_channels=C
                     ).to(device)
                     level_params.append(struct_prior)
-                elif prior_cfg.conditional_cls._target_ == "src.models.priors.ConditionalKPMVNPrior":
+                elif prior_cfg.conditional_cls._target_ in [
+                    "src.models.priors.ConditionalKPMVNPrior",
+                    "src.models.priors.ConditionalKPMVTPrior"
+                ]:
                     struct_prior = hydra.utils.instantiate(
                         prior_cfg.conditional_cls,
                         h_channels=struct_count,

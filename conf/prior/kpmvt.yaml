@@ -1,0 +1,33 @@
+split: [0, 0, 16] # noise, struct, sem
+rank: [8, 8]      # rank_ch, rank_sp
+
+cls:
+  _target_: src.models.priors.KPMVTPrior
+  tau: 0.0
+  df: 4.0
+
+conditional_cls:
+  _target_: src.models.priors.ConditionalKPMVTPrior
+  tau: 0.0
+  df: 4.0
+  dropout: 0.0
+  backbone_features: 256
+
+# conditional_cls:
+#   _target_: src.models.priors.ConditionalMixturePrior
+#   tau: 0.0
+#   df: 4.0
+#   dropout: 0.0
+#   backbone_features: 256
+#   num_components: 4
+
+zero_init:
+  _target_: src.utils.prior_init.kpmvn_zero_init
+  noise: 0.01
+  
+class_conditional_init:
+  _target_: src.utils.prior_init.kpmvt_simplex_init
+  simplex_scale: 0.6
+  noise: 0.01
+  df: 4.0
+  tau_marginal: 1.0

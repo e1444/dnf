@@ -10,7 +10,14 @@ class KroneckerProductMVN(Distribution):
     arg_constraints = {}    # type: ignore
     has_rsample = True
 
-    def __init__(self, loc, ch_cov, sp_cov, C, H, W, jitter=1e-6):
+    def __init__(
+        self,
+        loc,
+        ch_cov,
+        sp_cov,
+        C, H, W,
+        jitter=1e-6
+    ):
         """
         loc: (..., C * S) mean vector
         ch_cov: tuple (U_ch, D_ch) where U_ch: (..., C, r_ch), D_ch: (..., C)
@@ -183,9 +190,11 @@ class KroneckerProductMVN(Distribution):
 
         return D_inv_M - correction
 
-    def log_prob(self, value):
+    def mahalanobis_sq(self, value):
         """
+        Computes the squared Mahalanobis distance: (x - mu)^T Sigma^-1 (x - mu)
         value: (Sample_Batch..., Batch..., C, H, W)
+        Returns: (Sample_Batch..., Batch...)
         """
         # Ensure value aligns with loc
         diff = value - self.loc # (..., C, H, W)
@@ -219,6 +228,13 @@ class KroneckerProductMVN(Distribution):
         # --- Step 3: Mahalanobis ---
         # tr(Z^T T) = sum(Z * T)
         mahalanobis_dist = torch.sum(Z * T, dim=[-2, -1])
+        return mahalanobis_dist
+
+    def log_prob(self, value):
+        """
+        value: (Sample_Batch..., Batch..., C, H, W)
+        """
+        mahalanobis_dist = self.mahalanobis_sq(value)
 
         const_term = (self.D_ch * self.D_sp) * torch.log(
             2.0 * torch.tensor(torch.pi, device=value.device, dtype=value.dtype)
