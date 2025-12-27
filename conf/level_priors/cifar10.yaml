@@ -10,6 +10,7 @@ priors:
     conditional_cls:
       _target_: src.models.priors.ConditionalKPMVTPrior
       tau: 1536.0   # 1536 / 1
+      df: 4.0
       dropout: 0.1
       backbone_features: 128
       eps: 1e-2
@@ -17,25 +18,23 @@ priors:
   l1:
     split: [0, 12, 0]
     rank: [8, 8]
-    cls:
-      eps: 1e-2
-      jitter: 1e-4
     conditional_cls:
       _target_: src.models.priors.ConditionalKPMVTPrior
       tau: 576.0    # 768 * 0.75
+      df: 6.0
       dropout: 0.0
       backbone_features: 256
       eps: 1e-2
       jitter: 1e-4
-    class_conditional_init:
-      simplex_scale: 0.35
   l2:
     split: [32, 0, 16]
     rank: [8, 8]
     cls:
+      df: 8.0
       eps: 1e-2
       jitter: 1e-4
       tau: 256.0                # Controls entropy of noise prior (512 * 0.5)
     class_conditional_init:
+      df: 12.0
       simplex_scale: 0.7        # Controls separation of sem mixture components
       tau_marginal: 32.0       # Controls marginal entropy of sem mixture (256 * 0.125)
