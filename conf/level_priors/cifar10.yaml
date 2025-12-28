@@ -1,6 +1,6 @@
 defaults:
-  - /prior@priors.l0: kpmvt  # (6, 16, 16)
-  - /prior@priors.l1: kpmvt  # (12, 8, 8)
+  - /prior@priors.l0: kpmvn  # (6, 16, 16)
+  - /prior@priors.l1: kpmvn  # (12, 8, 8)
   - /prior@priors.l2: kpmvn  # (48, 4, 4)
 
 priors:
@@ -8,9 +8,7 @@ priors:
     split: [0, 6, 0]
     rank: [4, 8]
     conditional_cls:
-      _target_: src.models.priors.ConditionalKPMVTPrior
       tau: 1536.0   # 1536 / 1
-      df: 16.0
       dropout: 0.1
       backbone_features: 128
       eps: 1e-2
@@ -19,9 +17,7 @@ priors:
     split: [0, 12, 0]
     rank: [8, 8]
     conditional_cls:
-      _target_: src.models.priors.ConditionalKPMVTPrior
       tau: 576.0    # 768 * 0.75
-      df: 24.0
       dropout: 0.0
       backbone_features: 256
       eps: 1e-2
