@@ -6,7 +6,7 @@ defaults:
 
 model:
   num_levels: 3
-  steps_per_level: [32, 32, 32]
+  steps_per_level: [24, 24, 24]
   hidden_channels: 256
 
 wandb:
