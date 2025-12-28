@@ -5,16 +5,13 @@ defaults:
 
 epochs: 30
 lr: 3e-4
-lr_prior: [1e-6, 1e-6, 1e-6]
+lr_prior: [1e-4, 1e-4, 1e-4]
 
 # High Regularization
-r_logdet: 1e-1
-r_aniso: 5e-1
+r_logdet: 0
+r_aniso: 5e0
 label_smoothing: 0.1
 
-# Augmented Lagrangian (Frozen)
-use_al: True
-log_alpha: 1.0
-lr_log_alpha: 0.0
-nll_constraint: 10.0
-aug_rho: 1.0
+# Loss Weights
+l_lambda: 0.8     # NLL weight (1.0 - lambda = CE weight)
+em_steps: 3

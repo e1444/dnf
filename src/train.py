@@ -166,27 +166,23 @@ def train(cfg: DictConfig):
         if lr_prior == 0:
             level_prior_params.requires_grad_(False)
 
-    optimizer = optim.AdamW(
+    optimizer_model = optim.AdamW(
         model.parameters(),
         lr=cfg.training.lr,
         weight_decay=cfg.training.weight_decay
     )
+    
+    prior_param_groups = []
     for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):
         params_to_optimize = [p for p in prior_param.parameters() if p.requires_grad]
         if len(params_to_optimize) > 0:
-            optimizer.add_param_group({
+            prior_param_groups.append({
                 'params': params_to_optimize,
                 'lr': lr_prior,
                 'weight_decay': 0
             })
+    optimizer_prior = optim.AdamW(prior_param_groups)
     
-    # --- Augmented Lagrangian Setup ---
-    log_alpha = torch.tensor(cfg.training.log_alpha, requires_grad=True, device=device)
-    alpha_optimizer = optim.Adam([log_alpha], lr=cfg.training.lr_log_alpha)
-    
-    rho = cfg.training.aug_rho
-    nll_constraint = cfg.training.nll_constraint
-
     # Load from checkpoint if specified
     start_epoch = 0
     if cfg.training.ckpt is not None:
@@ -199,9 +195,11 @@ def train(cfg: DictConfig):
             level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
         
         if not cfg.training.reset_optimizer:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            log_alpha.data.copy_(checkpoint['log_alpha'])
-            alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
+            if 'optimizer_model_state_dict' in checkpoint:
+                optimizer_model.load_state_dict(checkpoint['optimizer_model_state_dict'])
+                optimizer_prior.load_state_dict(checkpoint['optimizer_prior_state_dict'])
+            else:
+                print("Warning: Old checkpoint format detected. Optimizer state might not load correctly.")
         
         start_epoch = checkpoint['epoch'] + 1
         
@@ -210,7 +208,7 @@ def train(cfg: DictConfig):
     ema_model.output_shapes = model.output_shapes
         
     # Initialize scheduler
-    scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer)
+    scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer_model)
     steps_per_epoch = len(train_loader)
     total_warmup_steps = cfg.training.warmup_epochs * steps_per_epoch
     
@@ -221,10 +219,11 @@ def train(cfg: DictConfig):
     total_epochs = start_epoch + cfg.training.epochs
     for epoch in range(start_epoch, total_epochs):
         model.train()
+        level_priors_params.train()
+        
         total_loss = 0.0
         total_nll = 0.0
         total_ce = 0.0
-        total_alpha = 0.0
 
         for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
@@ -233,22 +232,24 @@ def train(cfg: DictConfig):
                 current_step = epoch * steps_per_epoch + batch_idx
                 warmup_factor = (current_step + 1) / total_warmup_steps
                 
-                for param_group in optimizer.param_groups:
-                    if 'target_lr' not in param_group:
-                        param_group['target_lr'] = param_group['lr']
-                    
-                    param_group['lr'] = param_group['target_lr'] * warmup_factor
+                for optimizer in [optimizer_model, optimizer_prior]:
+                    for param_group in optimizer.param_groups:
+                        if 'target_lr' not in param_group:
+                            param_group['target_lr'] = param_group['lr']
+                        
+                        param_group['lr'] = param_group['target_lr'] * warmup_factor
                     
                 # r_logdet = cfg.training.r_logdet * (1 - warmup_factor)
             
-            # --- Primal Step ---
-            optimizer.zero_grad()
+            optimizer_model.zero_grad()
+            optimizer_prior.zero_grad()
 
             # Forward pass
             outs, log_dets = model(x_batch)
             log_det = torch.sum(log_dets, dim=0)
             
-            logits = log_det.unsqueeze(1)
+            model_logits = log_det.unsqueeze(1)
+            prior_logits_acc = torch.zeros_like(model_logits)
             
             anisotropy_losses = []
             for k, (h, z) in enumerate(outs):
@@ -272,14 +273,20 @@ def train(cfg: DictConfig):
                         anisotropy_losses.append(K * prior.anisotropy_loss().mean())
                         
                 level_logits = compute_level_logits(h, z, priors, splits[k], K)
-                logits = logits + level_logits
-                    
-            ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
-            task_loss = ce_loss
+                prior_logits_acc = prior_logits_acc + level_logits
             
-            # 2. NLL Loss (The Constraint)
+            # Detach priors for CE (Option A)
+            logits_ce = model_logits + prior_logits_acc.detach()
+            ce_loss = ce_loss_fn(logits_ce, y_batch, label_smoothing=cfg.training.label_smoothing)
+            
+            # Full logits for NLL
+            logits = model_logits + prior_logits_acc
+            
+            # 2. NLL Loss
             nll_loss = nll_loss_fn(logits, y_batch)
             nll_loss = nll_loss / (input_shape[0] * input_shape[1] * input_shape[2] * torch.log(torch.tensor(2.0)))
+            
+            task_loss = (1 - cfg.training.l_lambda) * ce_loss + cfg.training.l_lambda * nll_loss
             
             # 3. Regularization terms
             # 3.1. Log-Det Variance Regularization
@@ -291,9 +298,6 @@ def train(cfg: DictConfig):
                 
                 flow_log_dets[i] = flow_log_dets[i] / dim
             
-            # flow_log_dets = torch.stack(flow_log_dets)  # (num_levels, batch_size)
-            # between_level_var = flow_log_dets.var(dim=0).mean()
-            
             reg_loss = r_logdet * (flow_log_dets ** 2).mean()
             
             # 3.2. Anisotropy Regularization
@@ -301,58 +305,64 @@ def train(cfg: DictConfig):
                 reg_loss = reg_loss + cfg.training.r_aniso * torch.stack(anisotropy_losses).mean()
             
             # Primal Objective
-            primal_loss = task_loss
-            primal_loss += reg_loss
+            task_loss = task_loss + reg_loss
             
-            if torch.isnan(primal_loss) or torch.isinf(primal_loss):
-                print(f"WARNING: NaN/Inf loss detected at epoch {epoch} batch {batch_idx}.")
-                print("Skipping batch.")
-                optimizer.zero_grad()
-                continue
-            
-            alpha = F.softplus(log_alpha)
-            nll_violation = nll_loss - nll_constraint
-            violation_pos = F.relu(nll_violation)
-            
-            if cfg.training.use_al:
-                primal_loss += alpha * nll_violation 
-                primal_loss += 0.5 * rho * violation_pos.pow(2)
-
-            primal_loss.backward()
+            task_loss.backward()
             
             # Clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
             torch.nn.utils.clip_grad_norm_(level_priors_params.parameters(), max_norm=cfg.training.gradclip)
             
-            optimizer.step()
-            ema_model.update_parameters(model)
+            optimizer_model.step()
+            optimizer_prior.step()
 
-            # --- Dual Step ---
-            if cfg.training.use_al:
-                alpha_optimizer.zero_grad()
-                # Maximize alpha * violation => Minimize -alpha * violation
-                # Use detached violation to avoid affecting primal vars
-                dual_loss = -F.softplus(log_alpha) * nll_violation.detach()
-                dual_loss.backward()
-                alpha_optimizer.step()
-
-            total_loss += primal_loss.item()
+            total_loss += task_loss.item()
             total_nll += nll_loss.item()
             total_ce += ce_loss.item()
-            total_alpha += alpha.item()
+            
+            # EM step
+            for _ in range(cfg.training.em_steps):
+                optimizer_prior.zero_grad()
+                
+                with torch.no_grad():
+                    outs, log_dets = model(x_batch)
+                    log_det = torch.sum(log_dets, dim=0)
+                    model_logits = log_det.unsqueeze(1)
+                
+                prior_logits_acc = torch.zeros_like(model_logits)
+                for k, (h, z) in enumerate(outs):
+                    args = [{}, {"h": h}, {}]
+                    split = splits[k]
+                    
+                    priors = [
+                        prior_fact(**a) if prior_fact is not None else None 
+                        for prior_fact, a in zip(level_priors[k], args)
+                    ]
+                    
+                    level_logits = compute_level_logits(h, z, priors, splits[k], K)
+                    prior_logits_acc = prior_logits_acc + level_logits
+                
+                logits = model_logits + prior_logits_acc
+            
+                nll_loss_em = nll_loss_fn(logits, y_batch)
+                nll_loss_em = nll_loss_em / (input_shape[0] * input_shape[1] * input_shape[2] * torch.log(torch.tensor(2.0)))
+                
+                nll_loss_em.backward()
+                torch.nn.utils.clip_grad_norm_(level_priors_params.parameters(), max_norm=cfg.training.gradclip)
+                optimizer_prior.step()
+            
+            # EMA update after EM
+            ema_model.update_parameters(model)
 
         avg_train_loss = total_loss / len(train_loader)
         avg_nll = total_nll / len(train_loader)
         avg_ce = total_ce / len(train_loader)
-        avg_alpha = total_alpha / len(train_loader)
         
         log_dict = {
             "epoch": epoch, 
             "train_loss": avg_train_loss,
             "train_nll": avg_nll,
             "train_ce": avg_ce,
-            "alpha": avg_alpha,
-            "nll_violation": avg_nll - nll_constraint
         }
 
         # Evaluation
@@ -375,9 +385,8 @@ def train(cfg: DictConfig):
                 'model_state_dict': model.state_dict(),
                 'prior_state_dict': level_priors_params.state_dict(),
                 'ema_model_state_dict': ema_model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'alpha_optimizer_state_dict': alpha_optimizer.state_dict(),
-                'log_alpha': log_alpha.detach().cpu().clone(),
+                'optimizer_model_state_dict': optimizer_model.state_dict(),
+                'optimizer_prior_state_dict': optimizer_prior.state_dict(),
             }, checkpoint_path)
             
         scheduler.step()

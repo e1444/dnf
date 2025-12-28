@@ -13,6 +13,11 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
     Evaluate the model on a given dataset.
     """
     model.eval()
+    for prior_level in level_priors:
+        for prior in prior_level:
+            if prior is not None:
+                prior.eval()
+                
     total_loss = 0.0
     total_nll = 0.0
     total_logit_split = 0.0

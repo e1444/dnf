@@ -20,12 +20,9 @@ label_smoothing: 0.1
 # Scheduler settings
 warmup_epochs: 5
 
-# Lagrange multipliers settings
-use_al: false
-log_alpha: 0.0
-lr_log_alpha: 1e-3
-aug_rho: 1.0
-nll_constraint: -3000.0
+# Loss Weights
+l_lambda: 0.5     # NLL weight (1.0 - lambda = CE weight)
+em_steps: 2
 
 ckpt: null
 load_model: false
