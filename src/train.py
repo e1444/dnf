@@ -276,7 +276,9 @@ def train(cfg: DictConfig):
                 prior_logits_acc = prior_logits_acc + level_logits
             
             # Detach priors for CE (Option A)
-            logits_ce = model_logits + prior_logits_acc.detach()
+            # logits_ce = model_logits + prior_logits_acc.detach()
+            # Option B: Allow priors to learn from CE (Discriminative Signal)
+            logits_ce = model_logits + prior_logits_acc
             ce_loss = ce_loss_fn(logits_ce, y_batch, label_smoothing=cfg.training.label_smoothing)
             
             # Full logits for NLL
