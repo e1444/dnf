@@ -55,6 +55,9 @@ class LowRankMVNPrior(nn.Module):
         D = torch.exp(self.log_diag) + self.eps
         U = self.U
         return LowRankMVNPrior._compute_log_det(D, U)
+
+    def __str__(self):
+        return f"LowRankMVNPrior(dim={self.loc.shape[0]}, rank={self.U.shape[1]}, tau={self.tau.item():.2f})"
         
 
 class KPMVNPrior(nn.Module):
@@ -120,6 +123,9 @@ class KPMVNPrior(nn.Module):
     @property
     def _log_det(self):
         return self.D_sp * self._log_det_ch + self.D_ch * self._log_det_sp
+
+    def __str__(self):
+        return f"KPMVNPrior(C={self.C}, H={self.H}, W={self.W}, tau={self.tau.item():.2f})"
 
 
 class KPMVTPrior(nn.Module):
@@ -192,6 +198,10 @@ class KPMVTPrior(nn.Module):
         return KroneckerProductMVN._compute_log_det(torch.exp(self.log_cov_sp_diag) + self.eps, self.cov_sp_factor)
 
     @property
+    def __str__(self):
+        df = torch.exp(self.log_df) + 2.0
+        return f"KPMVTPrior(C={self.C}, H={self.H}, W={self.W}, tau={self.tau.item():.2f}, df={df.item():.2f})"
+
     def _log_det(self):
         return self.D_sp * self._log_det_ch + self.D_ch * self._log_det_sp
 
@@ -288,6 +298,8 @@ class ConditionalKPMVNPrior(nn.Module):
             C=self.h_C, H=self.H, W=self.W,
             jitter=self.jitter
         )
+    def __str__(self):
+        return f"ConditionalKPMVNPrior(h_C={self.h_C}, H={self.H}, W={self.W}, rank_ch={self.rank_ch}, rank_sp={self.rank_sp}, tau={self.tau.item():.2f})"
         
         log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
@@ -397,6 +409,10 @@ class ConditionalKPMVTPrior(nn.Module):
             jitter=self.jitter
         )
         
+    def __str__(self):
+        df = torch.exp(self.log_df) + 2.0
+        return f"ConditionalKPMVTPrior(h_C={self.h_C}, H={self.H}, W={self.W}, rank_ch={self.rank_ch}, rank_sp={self.rank_sp}, tau={self.tau.item():.2f}, df={df.item():.2f})"
+
         log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
         scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
@@ -406,6 +422,9 @@ class ConditionalKPMVTPrior(nn.Module):
 
 class ClassConditionalPrior(nn.Module):
     def __init__(self, priors: List[nn.Module]):
+    def __str__(self):
+        return f"ClassConditionalPrior(K={self.K}, prior_cls={self.prior_cls.__name__})"
+
         super(ClassConditionalPrior, self).__init__()
         self.priors = nn.ModuleList(priors)
         self.prior_cls = priors[0].__class__
@@ -445,6 +464,9 @@ class ConditionalMixturePrior(nn.Module):
             nn.Linear(backbone_features, self.K)
         )
 
+
+    def __str__(self):
+        return f"ConditionalMixturePrior(K={self.K}, tau={self.tau.item():.2f})"
         # Initialize mixing weights to be close to uniform
         nn.init.zeros_(self.mixing_net[-1].weight)
         nn.init.zeros_(self.mixing_net[-1].bias)
