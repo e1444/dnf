@@ -11,7 +11,7 @@ priors:
       tau: 1536.0   # 1536 / 1
       dropout: 0.1
       backbone_features: 128
-      eps: 1e-2
+      eps: 1e-3
       jitter: 1e-4
   l1:
     split: [0, 12, 0]
@@ -20,13 +20,13 @@ priors:
       tau: 576.0    # 768 * 0.75
       dropout: 0.0
       backbone_features: 256
-      eps: 1e-2
+      eps: 1e-3
       jitter: 1e-4
   l2:
-    split: [32, 0, 16]
+    split: [16, 0, 32]
     rank: [8, 8]
     cls:
-      eps: 1e-2
+      eps: 1e-3
       jitter: 1e-4
       tau: 256.0                # Controls entropy of noise prior (512 * 0.5)
     class_conditional_init:
