@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
-from .modules import ActNorm, Invertible1x1Conv, CNNCouplingLayer, Squeeze, Split, LogitTransform
+from .modules import ActNorm, Invertible1x1Conv, AffineCoupling, PiecewiseRationalQuadraticCoupling, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
     def __init__(
@@ -25,7 +25,7 @@ class FlowStep(nn.Module):
             in_channels,
             initialization=invconv_init
         )
-        self.coupling = CNNCouplingLayer(
+        self.coupling = PiecewiseRationalQuadraticCoupling(
             in_channels, 
             hidden_channels,
             num_blocks=num_blocks,
