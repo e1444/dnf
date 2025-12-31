@@ -6,8 +6,10 @@ defaults:
 
 model:
   num_levels: 3
-  steps_per_level: [12, 12, 12]
-  hidden_channels: 1024
+  steps_per_level: [4, 4, 4]
+  num_blocks: 8
+  hidden_channels: 512
+  dropout: 0.1
 
 wandb:
   group: "CIFAR10"
