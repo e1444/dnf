@@ -1,10 +1,10 @@
 _target_: src.models.glow.DGLOWNetwork
 
 num_levels: 3
-steps_per_level: [2, 2, 2]
-hidden_channels: 256
-num_blocks: 6
-dropout: 0.0
+steps_per_level: [4, 4, 4]
+hidden_channels_per_level: [256, 256, 512]
+blocks_per_level: [6, 6, 10]
+dropout: 0.1
 actnorm_initialization: "data-dependent"
 invconv_initialization: "orthogonal"
 checkpoint_grads: false

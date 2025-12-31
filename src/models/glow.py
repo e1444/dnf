@@ -47,8 +47,8 @@ class DGLOWNetwork(nn.Module):
         input_shape: tuple[int, int, int],
         num_levels: int,
         steps_per_level: list[int],
-        hidden_channels: int,
-        num_blocks: int,
+        hidden_channels_per_level: list[int],
+        blocks_per_level: list[int],
         dropout: float,
         actnorm_initialization: str = "data-dependent",
         invconv_initialization: str = "orthogonal",
@@ -56,6 +56,8 @@ class DGLOWNetwork(nn.Module):
     ):
         super(DGLOWNetwork, self).__init__()
         assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
+        assert len(hidden_channels_per_level) == num_levels, "hidden_channels_per_level length must match num_levels"
+        assert len(blocks_per_level) == num_levels, "blocks_per_level length must match num_levels"
         
         self.squeeze = Squeeze()
         self.logit_transform = LogitTransform(alpha=0.05)
@@ -70,6 +72,8 @@ class DGLOWNetwork(nn.Module):
             H //= 2
             W //= 2
             
+            hidden_channels = hidden_channels_per_level[level_idx]
+            num_blocks = blocks_per_level[level_idx]
             level_flows = nn.ModuleList([
                 FlowStep(
                     C, 
