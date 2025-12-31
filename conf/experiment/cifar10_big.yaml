@@ -6,7 +6,7 @@ defaults:
 
 model:
   num_levels: 3
-  steps_per_level: [4, 4, 4]
+  steps_per_level: [8, 8, 8]
   hidden_channels_per_level: [256, 256, 512]
   blocks_per_level: [6, 6, 10]
   dropout: 0.1
