@@ -104,8 +104,7 @@ class ActNorm(nn.Module):
     def __init__(
         self,
         num_channels,
-        initialization="identity",
-        init_std: Optional[torch.Tensor] = None
+        initialization="identity"
     ):
         super().__init__()
         self.logs = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
@@ -113,10 +112,6 @@ class ActNorm(nn.Module):
         
         if initialization == "data-dependent":
             self.register_buffer("initialized", torch.tensor(0, dtype=torch.uint8))
-            if init_std is None:
-                init_std = torch.ones(num_channels)
-            self.init_std = init_std
-            self.init_std = self.init_std.view(1, -1, 1, 1)
         elif initialization == "identity":
             self.register_buffer("initialized", torch.tensor(1, dtype=torch.uint8))
         else:
@@ -128,7 +123,7 @@ class ActNorm(nn.Module):
                 mean = x.mean(dim=[0, 2, 3], keepdim=True)
                 std = x.std(dim=[0, 2, 3], keepdim=True)
                 # Initialize logs = log(1/std) = -log(std)
-                self.logs.data.copy_(torch.log(self.init_std) - torch.log(std + 1e-6))
+                self.logs.data.copy_(-torch.log(std + 1e-6))
                 self.bias.data.copy_(-mean * torch.exp(self.logs))
                 self.initialized.fill_(1)
 

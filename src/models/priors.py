@@ -61,13 +61,15 @@ class LowRankMVNPrior(nn.Module):
         
 
 class KPMVNPrior(nn.Module):
+    tau: torch.Tensor
+    
     def __init__(
         self,
+        C: int, H: int, W: int,
         loc: torch.Tensor,
         cov_ch: tuple,
         cov_sp: tuple,
-        tau: Union[float, torch.Tensor],
-        C: int, H: int, W: int,
+        tau: Union[float, torch.Tensor] = 1.0,
         jitter: float = 1e-6,
         eps: float = 1e-6
     ):
@@ -91,7 +93,7 @@ class KPMVNPrior(nn.Module):
         
         if not isinstance(tau, torch.Tensor):
             tau = torch.tensor(tau, dtype=torch.float32)
-        self.tau = nn.Parameter(tau)
+        self.register_buffer("tau", tau)
         
         self.jitter = jitter
         self.eps = eps
@@ -107,7 +109,7 @@ class KPMVNPrior(nn.Module):
             jitter=self.jitter
         )
         
-        log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
+        log_s = torch.clamp(self.tau, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
         scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
         return scaled_dist
@@ -129,14 +131,16 @@ class KPMVNPrior(nn.Module):
 
 
 class KPMVTPrior(nn.Module):
+    tau: torch.Tensor
+    
     def __init__(
         self,
+        C: int, H: int, W: int,
         loc: torch.Tensor,
         cov_ch: tuple,
         cov_sp: tuple,
-        tau: Union[float, torch.Tensor],
-        df: Union[float, torch.Tensor],
-        C: int, H: int, W: int,
+        tau: Union[float, torch.Tensor] = 1.0,
+        df: Union[float, torch.Tensor] = 4.0,
         jitter: float = 1e-6,
         eps: float = 1e-6
     ):
@@ -160,7 +164,7 @@ class KPMVTPrior(nn.Module):
         
         if not isinstance(tau, torch.Tensor):
             tau = torch.tensor(tau, dtype=torch.float32)
-        self.tau = nn.Parameter(tau)
+        self.register_buffer("tau", tau)
 
         if not isinstance(df, torch.Tensor):
             df = torch.tensor(df, dtype=torch.float32)
@@ -184,7 +188,7 @@ class KPMVTPrior(nn.Module):
             jitter=self.jitter
         )
         
-        log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
+        log_s = torch.clamp(self.tau, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
         scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
         return scaled_dist
@@ -207,13 +211,15 @@ class KPMVTPrior(nn.Module):
 
 
 class ConditionalKPMVNPrior(nn.Module):
+    tau: torch.Tensor
+    
     def __init__(
         self,
         h_channels: int,
         z_channels: int,
         H: int, W: int,
         rank: tuple[int, int],
-        tau: Union[float, torch.Tensor],
+        tau: Union[float, torch.Tensor] = 1.0,
         jitter: float = 1e-6,
         eps: float = 1e-6,
         dropout: float = 0.0,
@@ -230,7 +236,7 @@ class ConditionalKPMVNPrior(nn.Module):
         
         if not isinstance(tau, torch.Tensor):
             tau = torch.tensor(tau, dtype=torch.float32)
-        self.tau = nn.Parameter(tau)
+        self.register_buffer("tau", tau)
 
         self.blur = nn.Identity()
         if blur_sigma > 0.0:
@@ -285,12 +291,6 @@ class ConditionalKPMVNPrior(nn.Module):
         log_sp_D = self.sp_D_head(spatial_input).view(B, -1)
         sp_U = self.sp_U_head(spatial_input).permute(0, 2, 3, 1).reshape(B, self.S, self.rank_sp)
         
-        # Compute log determinants (B,)
-        ld_ch = KroneckerProductMVN._compute_log_det(torch.exp(log_ch_D) + self.eps, ch_U)
-        ld_sp = KroneckerProductMVN._compute_log_det(torch.exp(log_sp_D) + self.eps, sp_U)
-        
-        current_log_det = self.S * ld_ch + self.h_C * ld_sp
-        
         base_dist = KroneckerProductMVN(
             loc=torch.zeros(B, self.h_C * self.H * self.W, device=h.device, dtype=h.dtype),
             ch_cov=(ch_U, torch.exp(log_ch_D) + self.eps),
@@ -299,7 +299,7 @@ class ConditionalKPMVNPrior(nn.Module):
             jitter=self.jitter
         )
         
-        log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
+        log_s = torch.clamp(self.tau, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
         scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
         
@@ -310,14 +310,16 @@ class ConditionalKPMVNPrior(nn.Module):
     
              
 class ConditionalKPMVTPrior(nn.Module):
+    tau: torch.Tensor
+        
     def __init__(
         self,
         h_channels: int,
         z_channels: int,
         H: int, W: int,
         rank: tuple[int, int],
-        tau: Union[float, torch.Tensor],
-        df: Union[float, torch.Tensor],
+        tau: Union[float, torch.Tensor] = 1.0,
+        df: Union[float, torch.Tensor] = 4.0,
         jitter: float = 1e-6,
         eps: float = 1e-6,
         dropout: float = 0.0,
@@ -334,7 +336,7 @@ class ConditionalKPMVTPrior(nn.Module):
         
         if not isinstance(tau, torch.Tensor):
             tau = torch.tensor(tau, dtype=torch.float32)
-        self.tau = nn.Parameter(tau)
+        self.register_buffer("tau", tau)
 
         if not isinstance(df, torch.Tensor):
             df = torch.tensor(df, dtype=torch.float32)
@@ -393,12 +395,6 @@ class ConditionalKPMVTPrior(nn.Module):
         log_sp_D = self.sp_D_head(spatial_input).view(B, -1)
         sp_U = self.sp_U_head(spatial_input).permute(0, 2, 3, 1).reshape(B, self.S, self.rank_sp)
         
-        # Compute log determinants (B,)
-        ld_ch = KroneckerProductMVN._compute_log_det(torch.exp(log_ch_D) + self.eps, ch_U)
-        ld_sp = KroneckerProductMVN._compute_log_det(torch.exp(log_sp_D) + self.eps, sp_U)
-        
-        current_log_det = self.S * ld_ch + self.h_C * ld_sp
-        
         df = torch.exp(self.log_df) + 2.0
 
         base_dist = KroneckerProductMVT(
@@ -410,7 +406,7 @@ class ConditionalKPMVTPrior(nn.Module):
             jitter=self.jitter
         )
 
-        log_s = torch.clamp(self.tau / self.D_total, min=-15.0, max=15.0)
+        log_s = torch.clamp(self.tau, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
         scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
         
@@ -438,11 +434,13 @@ class ClassConditionalPrior(nn.Module):
 
 
 class ConditionalMixturePrior(nn.Module):
+    tau: torch.Tensor
+    
     def __init__(
         self,
         components: List[nn.Module],
         h_channels: int,
-        tau: Union[float, torch.Tensor],
+        tau: Union[float, torch.Tensor] = 1.0,
         backbone_features: int = 256,
         dropout: float = 0.0,
     ):
@@ -452,7 +450,7 @@ class ConditionalMixturePrior(nn.Module):
         
         if not isinstance(tau, torch.Tensor):
             tau = torch.tensor(tau, dtype=torch.float32)
-        self.tau = nn.Parameter(tau)
+        self.register_buffer("tau", tau)
         
         self.mixing_net = nn.Sequential(
             nn.Conv2d(h_channels, backbone_features, 3, padding=1),
@@ -474,7 +472,7 @@ class ConditionalMixturePrior(nn.Module):
         logits = self.mixing_net(h)
         mixture_dist = MixtureDistribution(dists, mixing_logits=logits)
         
-        log_s = torch.clamp(self.tau / mixture_dist.event_shape.numel(), min=-15.0, max=15.0)
+        log_s = torch.clamp(self.tau, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
         scaled_dist = ScaledDistribution(mixture_dist, loc=0.0, scale=global_scale)
         return scaled_dist

@@ -94,7 +94,6 @@ def kpmvn_simplex_init(
     rank: tuple[int, int],
     simplex_scale: float = 1.0,
     noise: float = 0.0,
-    tau_marginal: float = 1.0
 ) -> list[dict]:
     """
     Initialize Kronecker-Product Multivariate Normal Prior Parameters on Simplex
@@ -140,10 +139,8 @@ def kpmvn_simplex_init(
     loc = loc.view(K, D)
     loc = loc + torch.randn_like(loc) * noise
     
-    marg_var = torch.exp(torch.tensor(tau_marginal) / D)
-    comp_var = marg_var - (simplex_scale**2 / D)
+    comp_var = torch.tensor(1.0) - (simplex_scale**2 / D)
     comp_var = torch.clamp(comp_var, min=1e-6)
-    tau = D * torch.log(comp_var).item()
     
     U_ch = torch.zeros(K, C, rank_ch)
     D_ch = torch.ones(K, C)
@@ -160,7 +157,7 @@ def kpmvn_simplex_init(
             "C": C,
             "H": H,
             "W": W,
-            "tau": tau
+            "tau": torch.log(comp_var)
         })
     
     return theta
@@ -174,7 +171,6 @@ def kpmvt_simplex_init(
     df: float,
     simplex_scale: float = 1.0,
     noise: float = 0.0,
-    tau_marginal: float = 1.0
 ):
     """
     Initialize Kronecker-Product Multivariate Student T Prior Parameters on Simplex
@@ -222,10 +218,9 @@ def kpmvt_simplex_init(
     nu = df  # degrees of freedom used by MVT
 
     inflation = nu / (nu - 2)
-    marg_var = torch.exp(torch.tensor(tau_marginal) / D) / inflation
+    marg_var = torch.tensor(1.0) / inflation
     comp_var = marg_var - (simplex_scale**2 / D)
     comp_var = torch.clamp(comp_var, min=1e-6)
-    tau = D * torch.log(comp_var).item()
     
     U_ch = torch.zeros(K, C, rank_ch)
     D_ch = torch.ones(K, C)
@@ -243,7 +238,7 @@ def kpmvt_simplex_init(
             "C": C,
             "H": H,
             "W": W,
-            "tau": tau
+            "tau": torch.log(comp_var)
         })
     
     return theta

@@ -12,14 +12,11 @@ class FlowStep(nn.Module):
         dropout: float,
         actnorm_init="identity",
         invconv_init="orthogonal",
-        *,
-        actnorm_init_std: torch.Tensor
     ):
         super().__init__()
         self.actnorm = ActNorm(
             in_channels,
-            initialization=actnorm_init,
-            init_std=actnorm_init_std
+            initialization=actnorm_init
         )
         self.inv_conv = Invertible1x1Conv(
             in_channels,
@@ -50,7 +47,6 @@ class DGLOWNetwork(nn.Module):
         input_shape: tuple[int, int, int],
         num_levels: int,
         steps_per_level: list[int],
-        std_per_level: list[torch.Tensor],
         hidden_channels: int,
         num_blocks: int,
         dropout: float,
@@ -74,15 +70,6 @@ class DGLOWNetwork(nn.Module):
             H //= 2
             W //= 2
             
-            std_per_step = [
-                torch.ones(C, device=std_per_level[0].device) * torch.mean(std_per_level[level_idx])
-                for _ in range(self.steps_per_level[level_idx])
-            ]
-            if level_idx == num_levels - 1:
-                std_per_step[-1] = std_per_level[level_idx]
-            else:
-                std_per_step[-1][C // 2:] = std_per_level[level_idx]
-            
             level_flows = nn.ModuleList([
                 FlowStep(
                     C, 
@@ -90,7 +77,6 @@ class DGLOWNetwork(nn.Module):
                     num_blocks=num_blocks,
                     dropout=dropout,
                     actnorm_init=actnorm_initialization,
-                    actnorm_init_std=std_per_step[i],
                     invconv_init=invconv_initialization
                 ) for i in range(self.steps_per_level[level_idx])
             ])
