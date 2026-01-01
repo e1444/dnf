@@ -23,7 +23,7 @@ priors:
       eps: 1e-3
       jitter: 1e-4
   l2:
-    split: [16, 0, 32]
+    split: [24, 0, 24]
     rank: [8, 8]
     cls:
       df: 24.0

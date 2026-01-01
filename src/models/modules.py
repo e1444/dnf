@@ -599,6 +599,195 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
         return x, log_det
     
 
+class BlockAutoregressiveSpline(nn.Module):
+    """
+    Splits channels into blocks of size `block_size`.
+    Performs autoregressive rational quadratic spline transform WITHIN each block.
+    Weights are shared across blocks (treating blocks as batch dimension).
+    
+    This allows for "weakly multi-dimensional" splines that can rotate/mix 
+    local groups of channels without the O(bins^k) cost of full multi-dim splines.
+    """
+    def __init__(
+        self,
+        num_channels,
+        num_resnet_blocks=1,
+        hidden_channels=64,
+        block_size=2,
+        num_bins=8,
+        bound=3.0,
+        min_bin_width=1e-3,
+        min_bin_height=1e-3,
+        min_derivative=1e-3,
+        dropout=0.0,
+    ):
+        super().__init__()
+        if num_channels % block_size != 0:
+            raise ValueError(f"num_channels ({num_channels}) must be divisible by block_size ({block_size})")
+            
+        self.num_channels = num_channels
+        self.block_size = block_size
+        self.num_blocks = num_channels // block_size
+        self.num_bins = num_bins
+        self.bound = bound
+        self.min_bin_width = min_bin_width
+        self.min_bin_height = min_bin_height
+        self.min_derivative = min_derivative
+        
+        # Output dim for one channel's spline params
+        self.params_per_channel = 3 * num_bins + 1
+        
+        # 1. Parameters for the first channel in the block (unconditioned)
+        # We make them learnable but fixed for the input (like a bias)
+        # Shape: (1, params_per_channel, 1, 1) to broadcast
+        self.first_channel_params = nn.Parameter(torch.zeros(1, self.params_per_channel, 1, 1))
+        
+        # 2. Networks for subsequent channels
+        # We need (block_size - 1) small networks.
+        # Step i (1-based) takes i input channels and outputs params for the (i+1)-th channel.
+        self.ar_nets = nn.ModuleList()
+        for i in range(1, block_size):
+            # Input: i channels
+            # Output: params_per_channel
+            # Use CNNCouplingNet for better expressivity (Gated ResNet)
+            net = CNNCouplingNet(
+                in_channels=i,
+                hidden_channels=hidden_channels,
+                out_channels=self.params_per_channel,
+                num_blocks=num_resnet_blocks,
+                dropout=dropout
+            )
+            
+            # Initialize derivatives to identity (approx)
+            # The bias of the last layer corresponds to [widths, heights, derivatives]
+            # We want derivatives (last num_bins+1) to be unconstrained, but start near identity.
+            # The spline function handles the "identity" logic if params are zero?
+            # _rational_quadratic_spline uses softplus(derivs) + min_deriv.
+            # So zero input -> softplus(0) = log(2) approx 0.69 -> deriv ~ 0.7.
+            # To get deriv=1, we need softplus(x) = 1 - min_d.
+            # x = inverse_softplus(1 - min_d).
+            init_val = math.log(math.exp(1 - min_derivative) - 1)
+            with torch.no_grad():
+                # CNNCouplingNet initializes out_conv to zero.
+                # We just need to set the bias for derivatives.
+                net.out_conv.bias[-self.num_bins-1:].fill_(init_val)
+                
+            self.ar_nets.append(net)
+            
+        # Initialize first channel params similarly
+        with torch.no_grad():
+            self.first_channel_params.data[:, -self.num_bins-1:, :, :].fill_(init_val)
+
+
+    def _get_spline_params(self, params_tensor):
+        # params_tensor: (B, params_per_channel, H, W)
+        # permute to (B, H, W, params_per_channel)
+        params_tensor = params_tensor.permute(0, 2, 3, 1)
+        unnormalized_widths = params_tensor[..., :self.num_bins]
+        unnormalized_heights = params_tensor[..., self.num_bins:2*self.num_bins]
+        unnormalized_derivatives = params_tensor[..., 2*self.num_bins:]
+        return unnormalized_widths, unnormalized_heights, unnormalized_derivatives
+
+    def forward(self, x):
+        # x: (B, C, H, W)
+        B, C, H, W = x.shape
+        
+        # Reshape to (B * num_blocks, block_size, H, W)
+        x_reshaped = x.view(B, self.num_blocks, self.block_size, H, W)
+        x_reshaped = x_reshaped.view(B * self.num_blocks, self.block_size, H, W)
+        
+        outputs_list = []
+        total_log_det = 0
+        
+        # Iterate through the block
+        for i in range(self.block_size):
+            curr_x = x_reshaped[:, i] # (B*NB, H, W)
+            
+            if i == 0:
+                # Use fixed parameters
+                params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
+            else:
+                # Condition on previous channels 0..i-1
+                context = x_reshaped[:, :i] # (B*NB, i, H, W)
+                params = self.ar_nets[i-1](context)
+            
+            w, h, d = self._get_spline_params(params)
+            
+            curr_y, log_det = _rational_quadratic_spline(
+                inputs=curr_x,
+                unnormalized_widths=w,
+                unnormalized_heights=h,
+                unnormalized_derivatives=d,
+                inverse=False,
+                left=-self.bound, right=self.bound,
+                bottom=-self.bound, top=self.bound,
+                min_bin_width=self.min_bin_width,
+                min_bin_height=self.min_bin_height,
+                min_derivative=self.min_derivative,
+            )
+            
+            outputs_list.append(curr_y)
+            total_log_det = total_log_det + log_det.sum(dim=[1, 2]) # Sum over H, W
+            
+        # Stack outputs: (B*NB, block_size, H, W)
+        y_reshaped = torch.stack(outputs_list, dim=1)
+        
+        # Reshape back to (B, C, H, W)
+        y = y_reshaped.view(B, self.num_blocks, self.block_size, H, W).view(B, C, H, W)
+        
+        # Reshape log_det to (B,)
+        # total_log_det is currently (B*NB,)
+        log_det = total_log_det.view(B, self.num_blocks).sum(dim=1)
+        
+        return y, log_det
+
+    def inverse(self, y):
+        # y: (B, C, H, W)
+        B, C, H, W = y.shape
+        
+        # Reshape to (B * num_blocks, block_size, H, W)
+        y_reshaped = y.view(B, self.num_blocks, self.block_size, H, W)
+        y_reshaped = y_reshaped.view(B * self.num_blocks, self.block_size, H, W)
+        
+        # We need to reconstruct x sequentially
+        # Temporary buffer for reconstructed x
+        x_recon_buffer = torch.zeros_like(y_reshaped)
+        total_log_det = 0
+        
+        for i in range(self.block_size):
+            curr_y = y_reshaped[:, i]
+            
+            if i == 0:
+                params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
+            else:
+                # Condition on PREVIOUSLY RECONSTRUCTED x
+                context = x_recon_buffer[:, :i]
+                params = self.ar_nets[i-1](context)
+                
+            w, h, d = self._get_spline_params(params)
+            
+            curr_x, log_det = _rational_quadratic_spline(
+                inputs=curr_y,
+                unnormalized_widths=w,
+                unnormalized_heights=h,
+                unnormalized_derivatives=d,
+                inverse=True,
+                left=-self.bound, right=self.bound,
+                bottom=-self.bound, top=self.bound,
+                min_bin_width=self.min_bin_width,
+                min_bin_height=self.min_bin_height,
+                min_derivative=self.min_derivative,
+            )
+            
+            x_recon_buffer[:, i] = curr_x
+            total_log_det = total_log_det + log_det.sum(dim=[1, 2])
+
+        x = x_recon_buffer.view(B, self.num_blocks, self.block_size, H, W).view(B, C, H, W)
+        log_det = total_log_det.view(B, self.num_blocks).sum(dim=1)
+        
+        return x, log_det
+    
+
 class Invertible1x1Conv(nn.Module):
     p: torch.Tensor
     sign_s: torch.Tensor
@@ -651,7 +840,7 @@ class Invertible1x1Conv(nn.Module):
 
     def inverse(self, y):
         w = self.get_weight()
-        w_inv = torch.inverse(w.squeeze()).view(w.size(0), w.size(1), 1, 1)
+        w_inv = torch.linalg.inv(w.squeeze()).view(w.size(0), w.size(1), 1, 1)
         x = nn.functional.conv2d(y, w_inv)
         _, _, h, w_dim = y.size()
         log_det = -torch.sum(self.log_s) * h * w_dim
@@ -704,6 +893,53 @@ if __name__ == "__main__":
     with torch.no_grad():
         y, log_det_fwd = coupling(x)
         x_recon, log_det_inv = coupling.inverse(y)
+        
+    recon_diff = (x - x_recon).abs().max().item()
+    log_det_diff = (log_det_fwd + log_det_inv).abs().max().item()
+    
+    print(f"\nInvertibility Check (Random Weights):")
+    print(f"  Max diff (x - x_recon): {recon_diff:.6e}")
+    print(f"  Max log_det sum: {log_det_diff:.6e}")
+    
+    if recon_diff < 1e-4 and log_det_diff < 1e-4:
+        print("  [PASS] Invertibility looks correct.")
+    else:
+        print("  [FAIL] Invertibility failed.")
+        
+        print("\nRunning sanity checks for BlockAutoregressiveSpline...")
+    
+    C, H, W = 4, 16, 16
+    block_size = 2
+    ar_spline = BlockAutoregressiveSpline(num_channels=C, block_size=block_size, hidden_channels=32, num_bins=4)
+    
+    # 1. Check Identity Initialization
+    x = torch.randn(2, C, H, W)
+    with torch.no_grad():
+        y, log_det = ar_spline(x)
+        
+    diff = (x - y).abs().max().item()
+    log_det_max = log_det.abs().max().item()
+    
+    print(f"Identity Init Check:")
+    print(f"  Max diff (x - y): {diff:.6e}")
+    print(f"  Max log_det: {log_det_max:.6e}")
+    
+    if diff < 1e-4 and log_det_max < 1e-4:
+        print("  [PASS] Identity initialization looks correct.")
+    else:
+        print("  [FAIL] Identity initialization failed.")
+
+    # 2. Check Invertibility
+    # Perturb weights
+    with torch.no_grad():
+        ar_spline.first_channel_params.data.normal_(0, 0.1)
+        for net in ar_spline.ar_nets:
+            for p in net.parameters():
+                p.data.normal_(0, 0.01)
+                
+    with torch.no_grad():
+        y, log_det_fwd = ar_spline(x)
+        x_recon, log_det_inv = ar_spline.inverse(y)
         
     recon_diff = (x - x_recon).abs().max().item()
     log_det_diff = (log_det_fwd + log_det_inv).abs().max().item()

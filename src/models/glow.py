@@ -1,14 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
-from .modules import ActNorm, Invertible1x1Conv, AffineCoupling, PiecewiseRationalQuadraticCoupling, Squeeze, Split, LogitTransform
+from .modules import ActNorm, Invertible1x1Conv, AffineCoupling, PiecewiseRationalQuadraticCoupling, BlockAutoregressiveSpline, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
     def __init__(
         self,
         in_channels: int,
         hidden_channels: int,
-        num_blocks: int,
+        num_resnet_blocks: int,
+        block_size: int,
         dropout: float,
         actnorm_init="identity",
         invconv_init="orthogonal",
@@ -22,10 +23,11 @@ class FlowStep(nn.Module):
             in_channels,
             initialization=invconv_init
         )
-        self.coupling = PiecewiseRationalQuadraticCoupling(
-            in_channels, 
-            hidden_channels,
-            num_blocks=num_blocks,
+        self.coupling = BlockAutoregressiveSpline(
+            num_channels=in_channels, 
+            hidden_channels=hidden_channels,
+            num_resnet_blocks=num_resnet_blocks,
+            block_size=block_size,
             dropout=dropout
         )
 
@@ -47,8 +49,10 @@ class DGLOWNetwork(nn.Module):
         input_shape: tuple[int, int, int],
         num_levels: int,
         steps_per_level: list[int],
+        align_steps_per_level: list[int],
         hidden_channels_per_level: list[int],
-        blocks_per_level: list[int],
+        num_resnet_blocks_per_level: list[int],
+        block_size_per_level: list[int],
         dropout: float,
         actnorm_initialization: str = "data-dependent",
         invconv_initialization: str = "orthogonal",
@@ -57,13 +61,14 @@ class DGLOWNetwork(nn.Module):
         super(DGLOWNetwork, self).__init__()
         assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
         assert len(hidden_channels_per_level) == num_levels, "hidden_channels_per_level length must match num_levels"
-        assert len(blocks_per_level) == num_levels, "blocks_per_level length must match num_levels"
+        assert len(num_resnet_blocks_per_level) == num_levels, "num_resnet_blocks_per_level length must match num_levels"
         
         self.squeeze = Squeeze()
         self.logit_transform = LogitTransform(alpha=0.05)
         self.split_levels = nn.ModuleList()
         self.num_levels = num_levels
-        self.steps_per_level = steps_per_level  
+        self.steps_per_level = steps_per_level
+        self.align_steps_per_level = align_steps_per_level
         self.checkpoint_grads = checkpoint_grads
         
         C, H, W = input_shape
@@ -72,17 +77,33 @@ class DGLOWNetwork(nn.Module):
             H //= 2
             W //= 2
             
+            steps = self.steps_per_level[level_idx]
+            align_steps = self.align_steps_per_level[level_idx]
             hidden_channels = hidden_channels_per_level[level_idx]
-            num_blocks = blocks_per_level[level_idx]
+            num_blocks = num_resnet_blocks_per_level[level_idx]
+            block_size = block_size_per_level[level_idx]
             level_flows = nn.ModuleList([
                 FlowStep(
                     C, 
                     hidden_channels, 
-                    num_blocks=num_blocks,
+                    num_resnet_blocks=num_blocks,
+                    block_size=block_size,
                     dropout=dropout,
                     actnorm_init=actnorm_initialization,
                     invconv_init=invconv_initialization
-                ) for i in range(self.steps_per_level[level_idx])
+                ) for _ in range(steps)
+            ] + [
+                FlowStep(
+                    C, 
+                    hidden_channels, 
+                    num_resnet_blocks=num_blocks,
+                    block_size=2,
+                    dropout=dropout,
+                    actnorm_init=actnorm_initialization,
+                    invconv_init=invconv_initialization
+                ) for _ in range(align_steps)
+            ] + [
+                Invertible1x1Conv(C, initialization=invconv_initialization)
             ])
             self.split_levels.append(level_flows)
             
@@ -156,7 +177,7 @@ class DGLOWNetwork(nn.Module):
     
     @property
     def total_steps(self):
-        return sum(self.steps_per_level)
+        return sum(self.steps_per_level) + sum(self.align_steps_per_level)
     
     @staticmethod
     def output_shapes(input_shape: tuple[int, int, int], num_levels: int):
