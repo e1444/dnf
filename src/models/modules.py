@@ -613,8 +613,11 @@ class BlockAutoregressiveSpline(nn.Module):
         # x: (B, C, H, W)
         B, C, H, W = x.shape
         
+        # Reshape to (B * num_blocks, block_size, H, W)
         x_reshaped = x.view(B, self.num_blocks, self.block_size, H, W)
-        x_reshaped = x_reshaped.view(B * self.num_blocks, self.block_size, H, W)
+        x_reshaped = x_reshaped.permute(0, 1, 3, 4, 2).contiguous() # (B, NB, H, W, BS)
+        x_reshaped = x_reshaped.view(B * self.num_blocks, H, W, self.block_size) # (B*NB, H, W, BS)
+        x_reshaped = x_reshaped.permute(0, 3, 1, 2) # (B*NB, BS, H, W)
         
         # Handle context
         if self.context_channels > 0:
