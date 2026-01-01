@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
-from src.models.modules import ActNorm, Invertible1x1Conv, AffineCoupling, PiecewiseRationalQuadraticCoupling, BlockAutoregressiveSpline, Squeeze, Split, LogitTransform
+from src.models.modules import ActNorm, Invertible1x1Conv, AffineCoupling, PiecewiseRationalQuadraticCoupling, BlockAutoregressiveSpline, BlockAutoregressiveCoupling, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
     def __init__(
@@ -23,8 +23,8 @@ class FlowStep(nn.Module):
             in_channels,
             initialization=invconv_init
         )
-        self.coupling = BlockAutoregressiveSpline(
-            num_channels=in_channels, 
+        self.coupling = BlockAutoregressiveCoupling(
+            in_channels=in_channels, 
             hidden_channels=hidden_channels,
             num_resnet_blocks=num_resnet_blocks,
             block_size=block_size,

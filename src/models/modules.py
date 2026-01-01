@@ -80,15 +80,14 @@ class LogitTransform(nn.Module):
         )
         return y, log_det
 
-    def inverse(self, y):
-        s = torch.sigmoid(y)
-        x = (s - self.alpha) / (1 - 2 * self.alpha)
+    def inverse(self, y, context=None):
+        y_a, y_b = y.split([self.split_channels, y.size(1) - self.split_channels], dim=1)
         
-        log_det = -torch.sum(
-            torch.log(torch.tensor(1 - 2 * self.alpha, device=y.device))
-            - torch.log(s) - torch.log(1 - s),
-            dim=[1, 2, 3]
-        )
+        spline_context = self.context_net(y_b, context)
+        x_a, log_det = self.block_ar.inverse(y_a, context=spline_context)
+        
+        x = torch.cat([x_a, y_b], dim=1)
+        
         return x, log_det
 
 
@@ -446,13 +445,6 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
             dropout=dropout
         )
         
-        # Initialize last layer to zero (already done in CNNCouplingNet)
-        # BUT we need to set the bias for derivatives to give identity
-        # softplus(bias) + min_derivative = 1
-        # softplus(bias) = 1 - min_derivative
-        # bias = inverse_softplus(1 - min_derivative)
-        # bias = log(exp(1 - min_derivative) - 1)
-        
         init_val = math.log(math.exp(1 - min_derivative) - 1)
         
         with torch.no_grad():
@@ -544,6 +536,7 @@ class BlockAutoregressiveSpline(nn.Module):
         min_bin_height=1e-3,
         min_derivative=1e-3,
         dropout=0.0,
+        context_channels=0,
     ):
         super().__init__()
         if num_channels % block_size != 0:
@@ -557,40 +550,55 @@ class BlockAutoregressiveSpline(nn.Module):
         self.min_bin_width = min_bin_width
         self.min_bin_height = min_bin_height
         self.min_derivative = min_derivative
+        self.context_channels = context_channels
         
-        # Scale hidden_channels to avoid memory explosion
-        # We aim to keep total activations roughly constant:
-        # num_blocks * local_hidden ~= global_hidden
-        # We enforce a minimum of 32 channels to ensure expressivity.
-        self.hidden_channels = min(hidden_channels, max(hidden_channels // self.num_blocks, 32))
+        # Safer hidden channel scaling to prevent aggressive bottlenecking
+        self.hidden_channels = max(
+            min(hidden_channels, hidden_channels // self.num_blocks), 
+            hidden_channels // 8
+        )
         
         # Output dim for one channel's spline params
         self.params_per_channel = 3 * num_bins + 1
         
-        # Parameters for the first channel in the block (unconditioned)
-        self.first_channel_params = nn.Parameter(torch.zeros(1, self.params_per_channel, 1, 1))
+        # Initialize derivatives to identity (approx)
+        init_val = math.log(math.exp(1 - min_derivative) - 1)
+
+        # 1. Parameters for the first channel in the block
+        if context_channels > 0:
+            # If conditioned, the first channel is predicted from context
+            self.first_channel_net = CNNCouplingNet(
+                in_channels=context_channels,
+                hidden_channels=self.hidden_channels,
+                out_channels=self.params_per_channel,
+                num_blocks=num_resnet_blocks,
+                dropout=dropout
+            )
+            with torch.no_grad():
+                self.first_channel_net.out_conv.bias[-self.num_bins-1:].fill_(init_val)
+            self.first_channel_params = None
+        else:
+            # Unconditioned: learnable fixed parameters
+            self.first_channel_params = nn.Parameter(torch.zeros(1, self.params_per_channel, 1, 1))
+            with torch.no_grad():
+                self.first_channel_params.data[:, -self.num_bins-1:, :, :].fill_(init_val)
+            self.first_channel_net = None
         
-        # Networks for subsequent channels
+        # 2. Networks for subsequent channels
         self.ar_nets = nn.ModuleList()
         for i in range(1, block_size):
             net = CNNCouplingNet(
-                in_channels=i,
+                in_channels=i + context_channels,
                 hidden_channels=self.hidden_channels,
                 out_channels=self.params_per_channel,
                 num_blocks=num_resnet_blocks,
                 dropout=dropout
             )
             
-            # Initialize derivatives to identity (approx)
-            init_val = math.log(math.exp(1 - min_derivative) - 1)
             with torch.no_grad():
                 net.out_conv.bias[-self.num_bins-1:].fill_(init_val)
                 
             self.ar_nets.append(net)
-            
-        with torch.no_grad():
-            self.first_channel_params.data[:, -self.num_bins-1:, :, :].fill_(init_val)
-
 
     def _get_spline_params(self, params_tensor):
         # params_tensor: (B, params_per_channel, H, W)
@@ -601,24 +609,39 @@ class BlockAutoregressiveSpline(nn.Module):
         unnormalized_derivatives = params_tensor[..., 2*self.num_bins:]
         return unnormalized_widths, unnormalized_heights, unnormalized_derivatives
 
-    def forward(self, x):
+    def forward(self, x, context=None):
         # x: (B, C, H, W)
         B, C, H, W = x.shape
         
         x_reshaped = x.view(B, self.num_blocks, self.block_size, H, W)
         x_reshaped = x_reshaped.view(B * self.num_blocks, self.block_size, H, W)
         
+        # Handle context
+        if self.context_channels > 0:
+            if context is None:
+                raise ValueError("Context required but not provided")
+            # context: (B, C_ctx, H, W)
+            # We need to expand context to (B * num_blocks, C_ctx, H, W)
+            context_expanded = context.repeat_interleave(self.num_blocks, dim=0)
+        else:
+            context_expanded = None
+        
         outputs_list = []
-        total_log_det = 0
+        log_dets_list = []
         
         for i in range(self.block_size):
             curr_x = x_reshaped[:, i] # (B*NB, H, W)
             
             if i == 0:
-                params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
+                if self.context_channels > 0:
+                    params = self.first_channel_net(context_expanded)
+                else:
+                    params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
             else:
-                context = x_reshaped[:, :i] # (B*NB, i, H, W)
-                params = self.ar_nets[i-1](context)
+                context_input = x_reshaped[:, :i] # (B*NB, i, H, W)
+                if self.context_channels > 0:
+                    context_input = torch.cat([context_input, context_expanded], dim=1)
+                params = self.ar_nets[i-1](context_input)
             
             w, h, d = self._get_spline_params(params)
             
@@ -636,22 +659,34 @@ class BlockAutoregressiveSpline(nn.Module):
             )
             
             outputs_list.append(curr_y)
-            total_log_det = total_log_det + log_det.sum(dim=[1, 2]) # Sum over H, W
+            log_dets_list.append(log_det.sum(dim=[1, 2])) # Sum over H, W
             
         y_reshaped = torch.stack(outputs_list, dim=1)
         y = y_reshaped.view(B, self.num_blocks, self.block_size, H, W).view(B, C, H, W)
         
-        log_det = total_log_det.view(B, self.num_blocks).sum(dim=1)
+        # Reshape and sum log_dets
+        # Stacked log_dets_list has shape (block_size, B*num_blocks)
+        # We transpose to (B*num_blocks, block_size) then sum over blocks and channels
+        total_log_det = torch.stack(log_dets_list, dim=1) # (B*NB, BS)
+        log_det = total_log_det.view(B, self.num_blocks, self.block_size).sum(dim=[1, 2])
         
         return y, log_det
 
-    def inverse(self, y):
+    def inverse(self, y, context=None):
         # y: (B, C, H, W)
         B, C, H, W = y.shape
         
         # Reshape to (B * num_blocks, block_size, H, W)
         y_reshaped = y.view(B, self.num_blocks, self.block_size, H, W)
         y_reshaped = y_reshaped.view(B * self.num_blocks, self.block_size, H, W)
+        
+        # Handle context
+        if self.context_channels > 0:
+            if context is None:
+                raise ValueError("Context required but not provided")
+            context_expanded = context.repeat_interleave(self.num_blocks, dim=0)
+        else:
+            context_expanded = None
         
         # We need to reconstruct x sequentially
         # Temporary buffer for reconstructed x
@@ -662,11 +697,16 @@ class BlockAutoregressiveSpline(nn.Module):
             curr_y = y_reshaped[:, i]
             
             if i == 0:
-                params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
+                if self.context_channels > 0:
+                    params = self.first_channel_net(context_expanded)
+                else:
+                    params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
             else:
                 # Condition on PREVIOUSLY RECONSTRUCTED x
-                context = x_recon_buffer[:, :i]
-                params = self.ar_nets[i-1](context)
+                context_input = x_recon_buffer[:, :i]
+                if self.context_channels > 0:
+                    context_input = torch.cat([context_input, context_expanded], dim=1)
+                params = self.ar_nets[i-1](context_input)
                 
             w, h, d = self._get_spline_params(params)
             
@@ -691,6 +731,69 @@ class BlockAutoregressiveSpline(nn.Module):
         
         return x, log_det
     
+
+class BlockAutoregressiveCoupling(nn.Module):
+    """
+    Coupling layer where the transform is a BlockAutoregressiveSpline conditioned on the other half.
+    This combines the spatial receptive field of coupling layers (via the context network)
+    with the semantic disentanglement of Block-AR splines.
+    """
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels=512,
+        num_resnet_blocks=2,
+        block_size=2,
+        num_bins=8,
+        dropout=0.0,
+    ):
+        super().__init__()
+        self.in_channels = in_channels
+        self.split_size = in_channels // 2
+        
+        # Context network to extract spatial features from x_a
+        # We use CNNCouplingNet but we want it to output features, not params.
+        # We set out_channels to hidden_channels to provide rich context.
+        self.context_net = CNNCouplingNet(
+            in_channels=self.split_size,
+            hidden_channels=hidden_channels,
+            out_channels=hidden_channels,
+            num_blocks=num_resnet_blocks,
+            dropout=0.0, # Dropout must be zero for a deterministic inverse
+        )
+        
+        self.block_ar = BlockAutoregressiveSpline(
+            num_channels=self.split_size,
+            num_resnet_blocks=num_resnet_blocks,
+            hidden_channels=hidden_channels,
+            block_size=block_size,
+            num_bins=num_bins,
+            dropout=dropout,
+            context_channels=hidden_channels
+        )
+
+    def forward(self, x):
+        x_a, x_b = x.split(self.split_size, dim=1)
+        
+        # Compute context features
+        context = self.context_net(x_a)
+        
+        # Transform x_b conditioned on context
+        y_b, log_det = self.block_ar(x_b, context=context)
+        
+        y = torch.cat([x_a, y_b], dim=1)
+        return y, log_det
+
+    def inverse(self, y):
+        y_a, y_b = y.split(self.split_size, dim=1)
+        
+        context = self.context_net(y_a)
+        
+        x_b, log_det = self.block_ar.inverse(y_b, context=context)
+        
+        x = torch.cat([y_a, x_b], dim=1)
+        return x, log_det
+
 
 class Invertible1x1Conv(nn.Module):
     p: torch.Tensor
@@ -806,7 +909,7 @@ if __name__ == "__main__":
     else:
         print("  [FAIL] Invertibility failed.")
         
-        print("\nRunning sanity checks for BlockAutoregressiveSpline...")
+    print("\nRunning sanity checks for BlockAutoregressiveSpline...")
     
     C, H, W = 4, 16, 16
     block_size = 2
@@ -840,6 +943,53 @@ if __name__ == "__main__":
     with torch.no_grad():
         y, log_det_fwd = ar_spline(x)
         x_recon, log_det_inv = ar_spline.inverse(y)
+        
+    recon_diff = (x - x_recon).abs().max().item()
+    log_det_diff = (log_det_fwd + log_det_inv).abs().max().item()
+    
+    print(f"\nInvertibility Check (Random Weights):")
+    print(f"  Max diff (x - x_recon): {recon_diff:.6e}")
+    print(f"  Max log_det sum: {log_det_diff:.6e}")
+    
+    if recon_diff < 1e-3 and log_det_diff < 1e-3:
+        print("  [PASS] Invertibility looks correct.")
+    else:
+        print("  [FAIL] Invertibility failed.")
+
+    print("\nRunning sanity checks for BlockAutoregressiveCoupling...")
+    
+    C, H, W = 4, 16, 16
+    coupling = BlockAutoregressiveCoupling(in_channels=C, hidden_channels=32, block_size=2, num_bins=4)
+    
+    # 1. Check Identity Initialization
+    x = torch.randn(2, C, H, W)
+    with torch.no_grad():
+        y, log_det = coupling(x)
+        
+    diff = (x - y).abs().max().item()
+    log_det_max = log_det.abs().max().item()
+    
+    print(f"Identity Init Check:")
+    print(f"  Max diff (x - y): {diff:.6e}")
+    print(f"  Max log_det: {log_det_max:.6e}")
+    
+    if diff < 1e-4 and log_det_max < 1e-4:
+        print("  [PASS] Identity initialization looks correct.")
+    else:
+        print("  [FAIL] Identity initialization failed.")
+
+    # 2. Check Invertibility
+    # Perturb weights
+    with torch.no_grad():
+        coupling.context_net.out_conv.weight.data.normal_(0, 0.01)
+        coupling.block_ar.first_channel_net.out_conv.weight.data.normal_(0, 0.01)
+        for net in coupling.block_ar.ar_nets:
+            for p in net.parameters():
+                p.data.normal_(0, 0.01)
+                
+    with torch.no_grad():
+        y, log_det_fwd = coupling(x)
+        x_recon, log_det_inv = coupling.inverse(y)
         
     recon_diff = (x - x_recon).abs().max().item()
     log_det_diff = (log_det_fwd + log_det_inv).abs().max().item()
