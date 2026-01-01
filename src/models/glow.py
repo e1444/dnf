@@ -55,6 +55,7 @@ class DGLOWNetwork(nn.Module):
         input_shape: tuple[int, int, int],
         num_levels: int,
         steps_per_level: list[int],
+        align_steps_per_level: list[int],
         hidden_channels_per_level: list[int],
         num_resnet_blocks_per_level: list[int],
         block_size_per_level: list[int],
@@ -80,6 +81,7 @@ class DGLOWNetwork(nn.Module):
             W //= 2
             
             steps = steps_per_level[level_idx]
+            align_steps = align_steps_per_level[level_idx]
             hidden_channels = hidden_channels_per_level[level_idx]
             num_blocks = num_resnet_blocks_per_level[level_idx]
             block_size = block_size_per_level[level_idx]
@@ -91,6 +93,15 @@ class DGLOWNetwork(nn.Module):
                     hidden_channels=hidden_channels,
                     num_resnet_blocks=num_blocks,
                     block_size=block_size,
+                    dropout=dropout
+                ))
+                
+            for _ in range(align_steps):
+                level_flows.append(FlowStep(
+                    in_channels=C, 
+                    hidden_channels=hidden_channels,
+                    num_resnet_blocks=num_blocks,
+                    block_size=2,
                     dropout=dropout
                 ))
             
@@ -107,7 +118,7 @@ class DGLOWNetwork(nn.Module):
         h, log_det = self.logit_transform(x)
         log_dets.append(log_det)
         
-        latents = []
+        outs = []
         
         level_log_det = torch.zeros(x.size(0), device=x.device)
         
@@ -127,17 +138,17 @@ class DGLOWNetwork(nn.Module):
 
             else: # This is a Split layer
                 z, h, log_det_split = level_module(h) # Split h into z (latent) and h (goes to next level)
-                latents.append(z)
+                outs.append((h, z)) # Append tuple of (h_next, z_current)
                 
                 level_log_det += log_det_split
                 log_dets.append(level_log_det)
                 level_log_det = torch.zeros(x.size(0), device=x.device)
 
-        latents.append(h)  # Final latent
+        outs.append((None, h))  # Final latent
         log_dets.append(level_log_det)
         
         log_dets = torch.stack(log_dets, dim=0)
-        return latents, log_dets
+        return outs, log_dets
     
     def inverse(self, z_list):
         total_log_det = torch.zeros(z_list[0].shape[0], device=z_list[0].device)

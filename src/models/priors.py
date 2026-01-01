@@ -4,7 +4,7 @@ from torch.distributions import LowRankMultivariateNormal
 
 from src.distributions.kpmvn import KroneckerProductMVN
 from src.distributions.kpmvt import KroneckerProductMVT
-from src.models.modules import AttentionPooling, GaussianBlurLayer
+from src.models.modules import AttentionPooling
 from src.utils.dist_wrapper import FlattenedDistribution, ScaledDistribution, MixtureDistribution
 
 from typing import List, Union
@@ -223,7 +223,6 @@ class ConditionalKPMVNPrior(nn.Module):
         jitter: float = 1e-6,
         eps: float = 1e-6,
         dropout: float = 0.0,
-        blur_sigma: float = 0.0,
         backbone_features: int = 256,
     ):
         super().__init__()
@@ -237,11 +236,7 @@ class ConditionalKPMVNPrior(nn.Module):
         if not isinstance(tau, torch.Tensor):
             tau = torch.tensor(tau, dtype=torch.float32)
         self.register_buffer("tau", tau)
-
-        self.blur = nn.Identity()
-        if blur_sigma > 0.0:
-            self.blur = GaussianBlurLayer(channels=z_channels, kernel_size=5, sigma=blur_sigma)
-
+        
         self.backbone = nn.Sequential(
             nn.Conv2d(z_channels, backbone_features, 3, padding=1),
             nn.ReLU(),
@@ -275,7 +270,6 @@ class ConditionalKPMVNPrior(nn.Module):
 
     def forward(self, h: torch.Tensor) -> torch.distributions.Distribution:
         B = h.shape[0]
-        h = self.blur(h)
         
         shared_features = self.backbone(h)
         pooled_features = self.attention_pool(shared_features)
@@ -323,7 +317,6 @@ class ConditionalKPMVTPrior(nn.Module):
         jitter: float = 1e-6,
         eps: float = 1e-6,
         dropout: float = 0.0,
-        blur_sigma: float = 0.0,
         backbone_features: int = 256,
     ):
         super().__init__()
@@ -341,10 +334,6 @@ class ConditionalKPMVTPrior(nn.Module):
         if not isinstance(df, torch.Tensor):
             df = torch.tensor(df, dtype=torch.float32)
         self.log_df = nn.Parameter(torch.log(df))
-
-        self.blur = nn.Identity()
-        if blur_sigma > 0.0:
-            self.blur = GaussianBlurLayer(channels=z_channels, kernel_size=5, sigma=blur_sigma)
 
         self.backbone = nn.Sequential(
             nn.Conv2d(z_channels, backbone_features, 3, padding=1),
@@ -379,7 +368,6 @@ class ConditionalKPMVTPrior(nn.Module):
 
     def forward(self, h: torch.Tensor) -> torch.distributions.Distribution:
         B = h.shape[0]
-        h = self.blur(h)
         
         shared_features = self.backbone(h)
         pooled_features = self.attention_pool(shared_features)
