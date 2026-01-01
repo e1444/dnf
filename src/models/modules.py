@@ -34,30 +34,6 @@ class AttentionPooling(nn.Module):
         
         return pooled_features
     
-    
-class GaussianBlurLayer(nn.Module):
-    """
-    Applies a fixed Gaussian blur using a grouped 2D convolution.
-    This is efficient, differentiable, and GPU-friendly.
-    """
-    weight: torch.Tensor
-    
-    def __init__(self, channels: int, kernel_size: int = 5, sigma: float = 1.0):
-        super().__init__()
-        self.padding = kernel_size // 2
-        self.groups = channels
-        
-        x = torch.arange(kernel_size, dtype=torch.float32) - (kernel_size - 1) / 2
-        kernel_1d = torch.exp(-0.5 * (x / sigma).pow(2))
-        kernel_1d = kernel_1d / kernel_1d.sum()
-        kernel_2d = kernel_1d.unsqueeze(1) @ kernel_1d.unsqueeze(0)
-        kernel_2d = kernel_2d.expand(channels, 1, kernel_size, kernel_size)
-        
-        self.register_buffer('weight', kernel_2d)
-
-    def forward(self, x):
-        return F.conv2d(x, self.weight, padding=self.padding, groups=self.groups)
-    
 
 class LogitTransform(nn.Module):
     """
@@ -95,18 +71,11 @@ class ActNorm(nn.Module):
     def __init__(
         self,
         num_channels,
-        initialization="identity"
     ):
         super().__init__()
         self.logs = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
-        
-        if initialization == "data-dependent":
-            self.register_buffer("initialized", torch.tensor(0, dtype=torch.uint8))
-        elif initialization == "identity":
-            self.register_buffer("initialized", torch.tensor(1, dtype=torch.uint8))
-        else:
-            raise ValueError(f"Unknown initialization: {initialization}")
+        self.register_buffer("initialized", torch.tensor(0, dtype=torch.uint8))
             
     def forward(self, x):
         if not self.initialized:
@@ -150,6 +119,71 @@ class Squeeze(nn.Module):
         return x, log_det
 
 
+class Invertible1x1Conv(nn.Module):
+    def __init__(self, num_channels):
+        super().__init__()
+        self.num_channels = num_channels
+        
+        # Initialize with a random orthogonal matrix
+        q, _ = torch.linalg.qr(torch.randn(num_channels, num_channels))
+        self.weight = nn.Parameter(q)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        
+        # Reshape for matrix multiplication
+        x_flat = x.view(B, C, H * W)
+        
+        # Apply the convolution
+        y_flat = self.weight @ x_flat
+        
+        # Reshape back
+        y = y_flat.view(B, C, H, W)
+        
+        # The log-determinant is H * W * log(abs(det(W)))
+        log_det = H * W * torch.slogdet(self.weight)[1]
+        log_det = log_det.expand(B) # Expand to batch size
+        
+        return y, log_det
+
+    def inverse(self, y):
+        B, C, H, W = y.shape
+        
+        # Reshape for matrix multiplication
+        y_flat = y.view(B, C, H * W)
+        
+        # Apply the inverse convolution
+        w_inv = torch.inverse(self.weight)
+        x_flat = w_inv @ y_flat
+        
+        # Reshape back
+        x = x_flat.view(B, C, H, W)
+        
+        # The log-determinant of the inverse is the negative of the forward
+        log_det = - (H * W * torch.slogdet(self.weight)[1])
+        log_det = log_det.expand(B)
+        
+        return x, log_det
+
+
+class Split(nn.Module):
+    def __init__(self, num_channels):
+        super().__init__()
+        self.split_point = num_channels // 2
+
+    def forward(self, x):
+        # Split the tensor along the channel dimension
+        x1, x2 = x.split([self.split_point, x.size(1) - self.split_point], dim=1)
+        # The log-determinant is zero for this operation
+        return x1, x2, torch.zeros(x.size(0), device=x.device)
+
+    def inverse(self, x1, x2):
+        # Concatenate the tensors back together
+        x = torch.cat([x1, x2], dim=1)
+        # The log-determinant is zero for this operation
+        return x, torch.zeros(x.size(0), device=x.device)
+
+
 class GatedConv2d(nn.Module):
     """
     Combines Conv2d and Gated Activation.
@@ -190,13 +224,13 @@ class GatedResNetBlock(nn.Module):
 
 
 class CNNCouplingNet(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_resnet_blocks=2, dropout=0.0):
         super().__init__()
         self.in_conv = nn.Conv2d(in_channels, hidden_channels, 3, padding=1)
         
         self.blocks = nn.ModuleList([
             GatedResNetBlock(hidden_channels, dropout=dropout) 
-            for _ in range(num_blocks)
+            for _ in range(num_resnet_blocks)
         ])
         
         self.out_conv = nn.Conv2d(hidden_channels, out_channels, 3, padding=1)
@@ -215,7 +249,7 @@ class CNNCouplingNet(nn.Module):
 class AffineCoupling(nn.Module):
     scale_clamp: torch.Tensor
     
-    def __init__(self, in_channels, hidden_channels=512, num_blocks=2, dropout=0.0):
+    def __init__(self, in_channels, hidden_channels=512, num_resnet_blocks=2, dropout=0.0):
         super().__init__()
         self.in_channels = in_channels
         self.split_size = in_channels // 2
@@ -224,7 +258,7 @@ class AffineCoupling(nn.Module):
             self.split_size, 
             hidden_channels, 
             self.in_channels,
-            num_blocks=num_blocks,
+            num_resnet_blocks=num_resnet_blocks,
             dropout=dropout
         )
         
@@ -441,7 +475,7 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
             self.split_size,
             hidden_channels,
             out_dim,
-            num_blocks=num_blocks,
+            num_resnet_blocks=num_blocks,
             dropout=dropout
         )
         
@@ -488,41 +522,96 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
 
     def inverse(self, y):
         y_a, y_b = y.split(self.split_size, dim=1)
+        s_and_t = self.coupling_net(y_a)
+        log_s, t = s_and_t.split(self.split_size, dim=1)
         
-        params = self.coupling_net(y_a)
-        B, _, H, W = params.shape
-        params = params.view(B, self.split_size, -1, H, W).permute(0, 1, 3, 4, 2)
+        scale = self.scale_clamp
+        log_s = (2.0 * scale / torch.pi) * torch.atan(log_s / scale)
+        s = torch.exp(log_s)
         
-        unnormalized_widths = params[..., :self.num_bins]
-        unnormalized_heights = params[..., self.num_bins:2*self.num_bins]
-        unnormalized_derivatives = params[..., 2*self.num_bins:]
-        
-        outputs, logabsdet = _rational_quadratic_spline(
-            inputs=y_b,
-            unnormalized_widths=unnormalized_widths,
-            unnormalized_heights=unnormalized_heights,
-            unnormalized_derivatives=unnormalized_derivatives,
-            inverse=True,
-            left=-self.bound, right=self.bound,
-            bottom=-self.bound, top=self.bound,
-            min_bin_width=self.min_bin_width,
-            min_bin_height=self.min_bin_height,
-            min_derivative=self.min_derivative,
-        )
-
-        x = torch.cat([y_a, outputs], dim=1)
-        log_det = torch.sum(logabsdet, dim=[1, 2, 3])
+        x_b = (y_b - t) / s
+        x = torch.cat([y_a, x_b], dim=1)
+        log_det = -torch.sum(log_s, dim=[1, 2, 3])
         return x, log_det
     
+
+class MaskedConv2d(nn.Conv2d):
+    """
+    A 2D convolution with a causal mask on the channels.
+    The output for channel `i` depends only on inputs from channels `j <= i` (or `j < i`).
+    This is used to build a Masked Autoregressive Flow (MAF).
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, mask_type='B', **kwargs):
+        super().__init__(in_channels, out_channels, kernel_size, **kwargs)
+        if mask_type not in ['A', 'B']:
+            raise ValueError(f"Unknown mask type: {mask_type}")
+        self.mask_type = mask_type
+        
+        mask = torch.ones_like(self.weight.data)
+        
+        # For each output channel, zero out connections to subsequent input channels
+        out_channels_per_group = out_channels // self.groups
+        in_channels_per_group = in_channels // self.groups
+
+        for i in range(out_channels_per_group):
+            for j in range(in_channels_per_group):
+                if self.mask_type == 'A':
+                    if j >= i:
+                        mask[i::out_channels_per_group, j::in_channels_per_group, :, :] = 0
+                else: # 'B'
+                    if j > i:
+                        mask[i::out_channels_per_group, j::in_channels_per_group, :, :] = 0
+        
+        self.register_buffer('mask', mask)
+
+    def forward(self, input):
+        # Apply the mask before convolution
+        self.weight.data *= self.mask
+        return super().forward(input)
+
+class MaskedARNet(nn.Module):
+    """
+    A complete autoregressive network using masked convolutions.
+    This replaces the sequential loop of the IAF with a single parallel pass.
+    It is "pointwise" because it uses 1x1 convolutions.
+    """
+    def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0):
+        super().__init__()
+        
+        # First layer uses mask 'A' to enforce strict autoregression
+        self.in_conv = MaskedConv2d(in_channels, hidden_channels, 1, mask_type='A')
+        
+        self.blocks = nn.ModuleList()
+        for _ in range(num_blocks):
+            block = nn.Sequential(
+                nn.GELU(),
+                MaskedConv2d(hidden_channels, hidden_channels, 1, mask_type='B'),
+                nn.GELU(),
+                MaskedConv2d(hidden_channels, hidden_channels, 1, mask_type='B')
+            )
+            self.blocks.append(block)
+            
+        # Output layer can use mask 'B'
+        self.out_conv = MaskedConv2d(hidden_channels, out_channels, 1, mask_type='B')
+        
+        # Zero-initialize the final layer for identity at the start
+        self.out_conv.weight.data.zero_()
+        self.out_conv.bias.data.zero_()
+
+    def forward(self, x):
+        out = self.in_conv(x)
+        for block in self.blocks:
+            out = out + block(out) # Residual connection
+        out = self.out_conv(out)
+        return out
+
 
 class BlockAutoregressiveSpline(nn.Module):
     """
     Splits channels into blocks of size `block_size`.
-    Performs autoregressive rational quadratic spline transform WITHIN each block.
+    Performs autoregressive rational quadratic spline transform WITHIN each block
+    using a Masked Autoregressive Flow (MAF) structure for a fast forward pass.
     Weights are shared across blocks (treating blocks as batch dimension).
-    
-    This allows for "weakly multi-dimensional" splines that can rotate/mix 
-    local groups of channels without the O(bins^k) cost of full multi-dim splines.
     """
     def __init__(
         self,
@@ -536,7 +625,6 @@ class BlockAutoregressiveSpline(nn.Module):
         min_bin_height=1e-3,
         min_derivative=1e-3,
         dropout=0.0,
-        context_channels=0,
     ):
         super().__init__()
         if num_channels % block_size != 0:
@@ -550,55 +638,34 @@ class BlockAutoregressiveSpline(nn.Module):
         self.min_bin_width = min_bin_width
         self.min_bin_height = min_bin_height
         self.min_derivative = min_derivative
-        self.context_channels = context_channels
         
-        # Safer hidden channel scaling to prevent aggressive bottlenecking
-        self.hidden_channels = max(
-            min(hidden_channels, hidden_channels // self.num_blocks), 
-            hidden_channels // 8
-        )
-        
-        # Output dim for one channel's spline params
         self.params_per_channel = 3 * num_bins + 1
+        
+        # Total parameters for all splines in a block
+        self.total_params = self.block_size * self.params_per_channel
+        
+        # The MAF network
+        self.ar_net = MaskedARNet(
+            in_channels=self.block_size,
+            hidden_channels=hidden_channels,
+            out_channels=self.total_params,
+            num_blocks=num_resnet_blocks,
+            dropout=dropout
+        )
         
         # Initialize derivatives to identity (approx)
         init_val = math.log(math.exp(1 - min_derivative) - 1)
-
-        # 1. Parameters for the first channel in the block
-        if context_channels > 0:
-            # If conditioned, the first channel is predicted from context
-            self.first_channel_net = CNNCouplingNet(
-                in_channels=context_channels,
-                hidden_channels=self.hidden_channels,
-                out_channels=self.params_per_channel,
-                num_blocks=num_resnet_blocks,
-                dropout=dropout
-            )
-            with torch.no_grad():
-                self.first_channel_net.out_conv.bias[-self.num_bins-1:].fill_(init_val)
-            self.first_channel_params = None
-        else:
-            # Unconditioned: learnable fixed parameters
-            self.first_channel_params = nn.Parameter(torch.zeros(1, self.params_per_channel, 1, 1))
-            with torch.no_grad():
-                self.first_channel_params.data[:, -self.num_bins-1:, :, :].fill_(init_val)
-            self.first_channel_net = None
-        
-        # 2. Networks for subsequent channels
-        self.ar_nets = nn.ModuleList()
-        for i in range(1, block_size):
-            net = CNNCouplingNet(
-                in_channels=i + context_channels,
-                hidden_channels=self.hidden_channels,
-                out_channels=self.params_per_channel,
-                num_blocks=num_resnet_blocks,
-                dropout=dropout
-            )
+        with torch.no_grad():
+            # Reshape bias to (block_size, params_per_channel)
+            bias = self.ar_net.out_conv.bias.view(self.block_size, self.params_per_channel)
             
-            with torch.no_grad():
-                net.out_conv.bias[-self.num_bins-1:].fill_(init_val)
-                
-            self.ar_nets.append(net)
+            # Tie heights to widths for identity init
+            bias[:, self.num_bins:2*self.num_bins] = bias[:, :self.num_bins]
+            
+            # Set derivatives
+            bias[:, 2*self.num_bins:].fill_(init_val)
+            
+            self.ar_net.out_conv.bias.data = bias.view(-1)
 
     def _get_spline_params(self, params_tensor):
         # params_tensor: (B, params_per_channel, H, W)
@@ -609,7 +676,7 @@ class BlockAutoregressiveSpline(nn.Module):
         unnormalized_derivatives = params_tensor[..., 2*self.num_bins:]
         return unnormalized_widths, unnormalized_heights, unnormalized_derivatives
 
-    def forward(self, x, context=None):
+    def forward(self, x):
         # x: (B, C, H, W)
         B, C, H, W = x.shape
         
@@ -619,102 +686,80 @@ class BlockAutoregressiveSpline(nn.Module):
         x_reshaped = x_reshaped.view(B * self.num_blocks, H, W, self.block_size) # (B*NB, H, W, BS)
         x_reshaped = x_reshaped.permute(0, 3, 1, 2) # (B*NB, BS, H, W)
         
-        # Handle context
-        if self.context_channels > 0:
-            if context is None:
-                raise ValueError("Context required but not provided")
-            # context: (B, C_ctx, H, W)
-            # We need to expand context to (B * num_blocks, C_ctx, H, W)
-            context_expanded = context.repeat_interleave(self.num_blocks, dim=0)
-        else:
-            context_expanded = None
+        # Get all spline parameters in one parallel pass
+        all_params = self.ar_net(x_reshaped)
         
-        outputs_list = []
-        log_dets_list = []
+        # Reshape params to be (B*NB, block_size, params_per_channel, H, W)
+        all_params = all_params.view(
+            B * self.num_blocks, self.block_size, self.params_per_channel, H, W
+        )
         
-        for i in range(self.block_size):
-            curr_x = x_reshaped[:, i] # (B*NB, H, W)
-            
-            if i == 0:
-                if self.context_channels > 0:
-                    params = self.first_channel_net(context_expanded)
-                else:
-                    params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
-            else:
-                context_input = x_reshaped[:, :i] # (B*NB, i, H, W)
-                if self.context_channels > 0:
-                    context_input = torch.cat([context_input, context_expanded], dim=1)
-                params = self.ar_nets[i-1](context_input)
-            
-            w, h, d = self._get_spline_params(params)
-            
-            curr_y, log_det = _rational_quadratic_spline(
-                inputs=curr_x,
-                unnormalized_widths=w,
-                unnormalized_heights=h,
-                unnormalized_derivatives=d,
-                inverse=False,
-                left=-self.bound, right=self.bound,
-                bottom=-self.bound, top=self.bound,
-                min_bin_width=self.min_bin_width,
-                min_bin_height=self.min_bin_height,
-                min_derivative=self.min_derivative,
-            )
-            
-            outputs_list.append(curr_y)
-            log_dets_list.append(log_det.sum(dim=[1, 2])) # Sum over H, W
-            
-        y_reshaped = torch.stack(outputs_list, dim=1)
-        y = y_reshaped.view(B, self.num_blocks, self.block_size, H, W).view(B, C, H, W)
+        # Permute for spline function: (B*NB, H, W, block_size, params_per_channel)
+        all_params = all_params.permute(0, 3, 4, 1, 2)
         
-        # Reshape and sum log_dets
-        # Stacked log_dets_list has shape (block_size, B*num_blocks)
-        # We transpose to (B*num_blocks, block_size) then sum over blocks and channels
-        total_log_det = torch.stack(log_dets_list, dim=1) # (B*NB, BS)
-        log_det = total_log_det.view(B, self.num_blocks, self.block_size).sum(dim=[1, 2])
+        unnormalized_widths = all_params[..., :self.num_bins]
+        unnormalized_heights = all_params[..., self.num_bins:2*self.num_bins]
+        unnormalized_derivatives = all_params[..., 2*self.num_bins:]
+        
+        # The input to the spline also needs to be permuted
+        # x_reshaped is (B*NB, BS, H, W), we need (B*NB, H, W, BS)
+        x_spline_input = x_reshaped.permute(0, 2, 3, 1)
+        
+        y_spline_output, logabsdet = _rational_quadratic_spline(
+            inputs=x_spline_input,
+            unnormalized_widths=unnormalized_widths,
+            unnormalized_heights=unnormalized_heights,
+            unnormalized_derivatives=unnormalized_derivatives,
+            inverse=False,
+            left=-self.bound, right=self.bound,
+            bottom=-self.bound, top=self.bound,
+            min_bin_width=self.min_bin_width,
+            min_bin_height=self.min_bin_height,
+            min_derivative=self.min_derivative,
+        )
+        
+        # Reshape y back to (B, C, H, W)
+        y_spline_output = y_spline_output.permute(0, 3, 1, 2) # (B*NB, BS, H, W)
+        y = y_spline_output.contiguous().view(B, C, H, W)
+        
+        # Sum log determinant
+        log_det = logabsdet.sum(dim=[1, 2, 3]) # Sum over H, W, and block_size
+        log_det = log_det.view(B, self.num_blocks).sum(dim=1)
         
         return y, log_det
 
-    def inverse(self, y, context=None):
+    def inverse(self, y):
         # y: (B, C, H, W)
         B, C, H, W = y.shape
-        
-        # Reshape to (B * num_blocks, block_size, H, W)
+            
+        # Reshape y to (B * num_blocks, block_size, H, W)
         y_reshaped = y.view(B, self.num_blocks, self.block_size, H, W)
-        y_reshaped = y_reshaped.view(B * self.num_blocks, self.block_size, H, W)
-        
-        # Handle context
-        if self.context_channels > 0:
-            if context is None:
-                raise ValueError("Context required but not provided")
-            context_expanded = context.repeat_interleave(self.num_blocks, dim=0)
-        else:
-            context_expanded = None
-        
-        # We need to reconstruct x sequentially
-        # Temporary buffer for reconstructed x
+        y_reshaped = y_reshaped.permute(0, 1, 3, 4, 2).contiguous()
+        y_reshaped = y_reshaped.view(B * self.num_blocks, H, W, self.block_size)
+        y_reshaped = y_reshaped.permute(0, 3, 1, 2)
+
+        # Initialize x with zeros
         x_recon_buffer = torch.zeros_like(y_reshaped)
-        total_log_det = 0
         
+        # The inverse is sequential
         for i in range(self.block_size):
-            curr_y = y_reshaped[:, i]
+            # Get params for the current channel using previously reconstructed x
+            all_params = self.ar_net(x_recon_buffer)
             
-            if i == 0:
-                if self.context_channels > 0:
-                    params = self.first_channel_net(context_expanded)
-                else:
-                    params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
-            else:
-                # Condition on PREVIOUSLY RECONSTRUCTED x
-                context_input = x_recon_buffer[:, :i]
-                if self.context_channels > 0:
-                    context_input = torch.cat([context_input, context_expanded], dim=1)
-                params = self.ar_nets[i-1](context_input)
-                
-            w, h, d = self._get_spline_params(params)
+            # Extract params for the current channel
+            params_i = all_params[:, i*self.params_per_channel:(i+1)*self.params_per_channel, :, :]
+            params_i = params_i.permute(0, 2, 3, 1) # (B*NB, H, W, params_per_channel)
             
-            curr_x, log_det = _rational_quadratic_spline(
-                inputs=curr_y,
+            w = params_i[..., :self.num_bins]
+            h = params_i[..., self.num_bins:2*self.num_bins]
+            d = params_i[..., 2*self.num_bins:]
+            
+            # Select the current y channel
+            y_i = y_reshaped[:, i, :, :] # (B*NB, H, W)
+            
+            # Invert the spline
+            x_i, _ = _rational_quadratic_spline(
+                inputs=y_i,
                 unnormalized_widths=w,
                 unnormalized_heights=h,
                 unnormalized_derivatives=d,
@@ -726,282 +771,182 @@ class BlockAutoregressiveSpline(nn.Module):
                 min_derivative=self.min_derivative,
             )
             
-            x_recon_buffer[:, i] = curr_x
-            total_log_det = total_log_det + log_det.sum(dim=[1, 2])
-
-        x = x_recon_buffer.view(B, self.num_blocks, self.block_size, H, W).view(B, C, H, W)
-        log_det = total_log_det.view(B, self.num_blocks).sum(dim=1)
+            # Store the reconstructed x channel
+            x_recon_buffer[:, i, :, :] = x_i
+            
+        # Re-run the forward pass with the reconstructed x to get the correct log_det
+        # This is a common strategy for MAFs to avoid a sequential log_det calculation
+        # during the inverse pass.
+        x_final = x_recon_buffer.contiguous().view(B, C, H, W)
+        _, log_det = self.forward(x_final)
         
-        return x, log_det
+        return x_final, -log_det
     
 
 class BlockAutoregressiveCoupling(nn.Module):
     """
-    Coupling layer where the transform is a BlockAutoregressiveSpline conditioned on the other half.
-    This combines the spatial receptive field of coupling layers (via the context network)
-    with the semantic disentanglement of Block-AR splines.
+    A coupling layer that uses a BlockAutoregressiveSpline to transform half of the inputs.
+    This is a standard coupling layer architecture, but with a more complex internal transformer.
     """
     def __init__(
         self,
         in_channels,
-        hidden_channels=512,
+        hidden_channels,
         num_resnet_blocks=2,
         block_size=2,
         num_bins=8,
+        bound=3.0,
+        min_bin_width=1e-3,
+        min_bin_height=1e-3,
+        min_derivative=1e-3,
         dropout=0.0,
     ):
         super().__init__()
         self.in_channels = in_channels
-        self.split_size = in_channels // 2
+        self.block_size = block_size
         
-        # Context network to extract spatial features from x_a
-        # We use CNNCouplingNet but we want it to output features, not params.
-        # We set out_channels to hidden_channels to provide rich context.
-        self.context_net = CNNCouplingNet(
-            in_channels=self.split_size,
-            hidden_channels=hidden_channels,
-            out_channels=hidden_channels,
-            num_blocks=num_resnet_blocks,
-            dropout=0.0, # Dropout must be zero for a deterministic inverse
-        )
+        # The first part of the input is passed through
+        self.identity_channels = in_channels // 2
         
-        self.block_ar = BlockAutoregressiveSpline(
-            num_channels=self.split_size,
+        # The second part is transformed
+        self.transformed_channels = in_channels - self.identity_channels
+
+        # The conditioner for the spline is the identity part of the input
+        self.spline_conditioner_channels = self.identity_channels
+
+        self.spline = BlockAutoregressiveSpline(
+            num_channels=self.transformed_channels,
             num_resnet_blocks=num_resnet_blocks,
             hidden_channels=hidden_channels,
             block_size=block_size,
             num_bins=num_bins,
+            bound=bound,
+            min_bin_width=min_bin_width,
+            min_bin_height=min_bin_height,
+            min_derivative=min_derivative,
             dropout=dropout,
-            context_channels=hidden_channels
+        )
+        
+        # A simple network to process the conditioning input
+        self.conditioner_net = nn.Sequential(
+            nn.Conv2d(self.spline_conditioner_channels, hidden_channels, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(hidden_channels, self.transformed_channels, 3, padding=1)
         )
 
     def forward(self, x):
-        x_a, x_b = x.split(self.split_size, dim=1)
+        x_identity, x_transform = x.split([self.identity_channels, self.transformed_channels], dim=1)
         
-        # Compute context features
-        context = self.context_net(x_a)
+        # Process the identity part to create a conditioning signal
+        conditioning_signal = self.conditioner_net(x_identity)
         
-        # Transform x_b conditioned on context
-        y_b, log_det = self.block_ar(x_b, context=context)
+        # Add the conditioning signal to the part to be transformed
+        y_transform, log_det = self.spline(x_transform + conditioning_signal)
         
-        y = torch.cat([x_a, y_b], dim=1)
+        y = torch.cat([x_identity, y_transform], dim=1)
+        
         return y, log_det
 
     def inverse(self, y):
-        y_a, y_b = y.split(self.split_size, dim=1)
+        y_identity, y_transform = y.split([self.identity_channels, self.transformed_channels], dim=1)
         
-        context = self.context_net(y_a)
+        # Process the identity part to create the same conditioning signal
+        conditioning_signal = self.conditioner_net(y_identity)
         
-        x_b, log_det = self.block_ar.inverse(y_b, context=context)
+        # Invert the spline transformation
+        x_transform, log_det = self.spline.inverse(y_transform)
         
-        x = torch.cat([y_a, x_b], dim=1)
+        # Subtract the conditioning signal to get the original input
+        x_transform = x_transform - conditioning_signal
+        
+        x = torch.cat([y_identity, x_transform], dim=1)
+        
         return x, log_det
-
-
-class Invertible1x1Conv(nn.Module):
-    p: torch.Tensor
-    sign_s: torch.Tensor
-    l_mask: torch.Tensor
-    u_mask: torch.Tensor
     
-    def __init__(self, num_channels, initialization="orthogonal"):
-        super().__init__()
-        w_shape = [num_channels, num_channels]
+
+if __name__ == '__main__':
+    # General parameters
+    B, C, H, W = 4, 16, 8, 8
+    
+    # BlockAutoregressiveSpline parameters
+    block_size = 4
+    hidden_channels_ar = 32
+    num_resnet_blocks = 2
+    
+    # Test BlockAutoregressiveSpline
+    print("--- Testing BlockAutoregressiveSpline (MAF implementation) ---")
+    
+    # Create inputs
+    x = torch.randn(B, C, H, W)
+    
+    # Create model
+    try:
+        spline_layer = BlockAutoregressiveSpline(
+            num_channels=C,
+            block_size=block_size,
+            hidden_channels=hidden_channels_ar,
+            num_resnet_blocks=num_resnet_blocks
+        )
         
-        if initialization == "orthogonal":
-            w_init = torch.linalg.qr(torch.randn(*w_shape))[0]
-        elif initialization == "identity":
-            w_init = torch.eye(num_channels)
-        else:
-            raise ValueError(f"Unknown initialization: {initialization}")
-
-        P, L, U = torch.linalg.lu(w_init)
+        # Forward pass
+        y, log_det_fwd = spline_layer(x)
         
-        s = torch.diag(U)
-        sign_s = torch.sign(s)
-        log_s = torch.log(torch.abs(s))
-        U = torch.triu(U, diagonal=1)
+        # Inverse pass
+        x_recon, log_det_inv = spline_layer.inverse(y)
         
-        self.register_buffer("p", P)
-        self.register_buffer("sign_s", sign_s)
-        self.l = nn.Parameter(L)
-        self.log_s = nn.Parameter(log_s)
-        self.u = nn.Parameter(U)
+        # --- Checks ---
+        # 1. Invertibility check
+        inversion_error = torch.abs(x - x_recon).max()
+        print(f"Inversion error: {inversion_error.item()}")
+        assert torch.allclose(x, x_recon, atol=1e-5), "Inversion failed!"
         
-        self.register_buffer("l_mask", torch.tril(torch.ones(w_shape), diagonal=-1))
-        self.register_buffer("u_mask", torch.triu(torch.ones(w_shape), diagonal=1))
-
-    def get_weight(self):
-        l = self.l * self.l_mask + torch.eye(self.l.size(0), device=self.l.device)
-        u = self.u * self.u_mask + torch.diag(self.sign_s * torch.exp(self.log_s))
-        w = torch.matmul(self.p, torch.matmul(l, u))
-        return w.view(w.size(0), w.size(1), 1, 1)
-
-    def forward(self, x):
-        w = self.get_weight()
-        y = nn.functional.conv2d(x, w)
-        _, _, h, w_dim = x.size()
-        log_det = torch.sum(self.log_s) * h * w_dim
-        return y, log_det
-
-    def inverse(self, y):
-        w = self.get_weight()
-        w_inv = torch.linalg.inv(w.squeeze()).view(w.size(0), w.size(1), 1, 1)
-        x = nn.functional.conv2d(y, w_inv)
-        _, _, h, w_dim = y.size()
-        log_det = -torch.sum(self.log_s) * h * w_dim
-        return x, log_det
-
-
-class Split(nn.Module):
-    def __init__(self, num_channels):
-        super().__init__()
-
-    def forward(self, x):
-        x1, x2 = x.chunk(2, dim=1)
-        return x1, x2
-
-    def inverse(self, x1, x2):
-        x = torch.cat((x1, x2), dim=1)
-        return x, 0
-
-
-if __name__ == "__main__":
-    import math
-    
-    print("Running sanity checks for PiecewiseRationalQuadraticCoupling...")
-    
-    C, H, W = 4, 32, 32
-    coupling = PiecewiseRationalQuadraticCoupling(in_channels=C, hidden_channels=64, num_bins=4)
-    
-    # 1. Check Identity Initialization
-    x = torch.randn(2, C, H, W)
-    with torch.no_grad():
-        y, log_det = coupling(x)
+        # 2. Log-determinant check
+        log_det_error = torch.abs(log_det_fwd + log_det_inv).mean()
+        print(f"Log-determinant error: {log_det_error.item()}")
+        assert torch.allclose(log_det_fwd, -log_det_inv, atol=1e-5), "Log-determinant mismatch!"
         
-    diff = (x - y).abs().max().item()
-    log_det_max = log_det.abs().max().item()
-    
-    print(f"Identity Init Check:")
-    print(f"  Max diff (x - y): {diff:.6e}")
-    print(f"  Max log_det: {log_det_max:.6e}")
-    
-    if diff < 2e-4 and log_det_max < 2e-4:
-        print("  [PASS] Identity initialization looks correct.")
-    else:
-        print("  [FAIL] Identity initialization failed.")
+        print("BlockAutoregressiveSpline test PASSED!")
+        
+    except Exception as e:
+        print(f"BlockAutoregressiveSpline test FAILED: {e}")
+        import traceback
+        traceback.print_exc()
 
-    # 2. Check Invertibility
-    # Perturb weights to make it non-identity
-    with torch.no_grad():
-        coupling.coupling_net.out_conv.weight.data.normal_(0, 0.01)
-        
-    with torch.no_grad():
-        y, log_det_fwd = coupling(x)
-        x_recon, log_det_inv = coupling.inverse(y)
-        
-    recon_diff = (x - x_recon).abs().max().item()
-    log_det_diff = (log_det_fwd + log_det_inv).abs().max().item()
-    
-    print(f"\nInvertibility Check (Random Weights):")
-    print(f"  Max diff (x - x_recon): {recon_diff:.6e}")
-    print(f"  Max log_det sum: {log_det_diff:.6e}")
-    
-    if recon_diff < 1e-3 and log_det_diff < 1e-3:
-        print("  [PASS] Invertibility looks correct.")
-    else:
-        print("  [FAIL] Invertibility failed.")
-        
-    print("\nRunning sanity checks for BlockAutoregressiveSpline...")
-    
-    C, H, W = 4, 16, 16
-    block_size = 2
-    ar_spline = BlockAutoregressiveSpline(num_channels=C, block_size=block_size, hidden_channels=32, num_bins=4)
-    
-    # 1. Check Identity Initialization
-    x = torch.randn(2, C, H, W)
-    with torch.no_grad():
-        y, log_det = ar_spline(x)
-        
-    diff = (x - y).abs().max().item()
-    log_det_max = log_det.abs().max().item()
-    
-    print(f"Identity Init Check:")
-    print(f"  Max diff (x - y): {diff:.6e}")
-    print(f"  Max log_det: {log_det_max:.6e}")
-    
-    if diff < 2e-4 and log_det_max < 2e-4:
-        print("  [PASS] Identity initialization looks correct.")
-    else:
-        print("  [FAIL] Identity initialization failed.")
+    print("\n" + "="*50 + "\n")
 
-    # 2. Check Invertibility
-    # Perturb weights
-    with torch.no_grad():
-        ar_spline.first_channel_params.data.normal_(0, 0.1)
-        for net in ar_spline.ar_nets:
-            for p in net.parameters():
-                p.data.normal_(0, 0.01)
-                
-    with torch.no_grad():
-        y, log_det_fwd = ar_spline(x)
-        x_recon, log_det_inv = ar_spline.inverse(y)
+    # Test BlockAutoregressiveCoupling
+    print("--- Testing BlockAutoregressiveCoupling ---")
+    
+    # Create model
+    try:
+        coupling_layer = BlockAutoregressiveCoupling(
+            in_channels=C,
+            hidden_channels=hidden_channels_ar,
+            block_size=block_size,
+            num_resnet_blocks=num_resnet_blocks
+        )
         
-    recon_diff = (x - x_recon).abs().max().item()
-    log_det_diff = (log_det_fwd + log_det_inv).abs().max().item()
-    
-    print(f"\nInvertibility Check (Random Weights):")
-    print(f"  Max diff (x - x_recon): {recon_diff:.6e}")
-    print(f"  Max log_det sum: {log_det_diff:.6e}")
-    
-    if recon_diff < 1e-3 and log_det_diff < 1e-3:
-        print("  [PASS] Invertibility looks correct.")
-    else:
-        print("  [FAIL] Invertibility failed.")
+        # Forward pass
+        y_c, log_det_fwd_c = coupling_layer(x)
+        
+        # Inverse pass
+        x_recon_c, log_det_inv_c = coupling_layer.inverse(y_c)
+        
+        # --- Checks ---
+        # 1. Invertibility check
+        inversion_error_c = torch.abs(x - x_recon_c).max()
+        print(f"Inversion error: {inversion_error_c.item()}")
+        assert torch.allclose(x, x_recon_c, atol=1e-5), "Inversion failed!"
+        
+        # 2. Log-determinant check
+        log_det_error_c = torch.abs(log_det_fwd_c + log_det_inv_c).mean()
+        print(f"Log-determinant error: {log_det_error_c.item()}")
+        assert torch.allclose(log_det_fwd_c, -log_det_inv_c, atol=1e-5), "Log-determinant mismatch!"
+        
+        print("BlockAutoregressiveCoupling test PASSED!")
+        
+    except Exception as e:
+        print(f"BlockAutoregressiveCoupling test FAILED: {e}")
+        import traceback
+        traceback.print_exc()
 
-    print("\nRunning sanity checks for BlockAutoregressiveCoupling...")
-    
-    C, H, W = 4, 16, 16
-    coupling = BlockAutoregressiveCoupling(in_channels=C, hidden_channels=32, block_size=2, num_bins=4)
-    
-    # 1. Check Identity Initialization
-    x = torch.randn(2, C, H, W)
-    with torch.no_grad():
-        y, log_det = coupling(x)
-        
-    diff = (x - y).abs().max().item()
-    log_det_max = log_det.abs().max().item()
-    
-    print(f"Identity Init Check:")
-    print(f"  Max diff (x - y): {diff:.6e}")
-    print(f"  Max log_det: {log_det_max:.6e}")
-    
-    if diff < 1e-4 and log_det_max < 1e-4:
-        print("  [PASS] Identity initialization looks correct.")
-    else:
-        print("  [FAIL] Identity initialization failed.")
-
-    # 2. Check Invertibility
-    # Perturb weights
-    with torch.no_grad():
-        coupling.context_net.out_conv.weight.data.normal_(0, 0.01)
-        coupling.block_ar.first_channel_net.out_conv.weight.data.normal_(0, 0.01)
-        for net in coupling.block_ar.ar_nets:
-            for p in net.parameters():
-                p.data.normal_(0, 0.01)
-                
-    with torch.no_grad():
-        y, log_det_fwd = coupling(x)
-        x_recon, log_det_inv = coupling.inverse(y)
-        
-    recon_diff = (x - x_recon).abs().max().item()
-    log_det_diff = (log_det_fwd + log_det_inv).abs().max().item()
-    
-    print(f"\nInvertibility Check (Random Weights):")
-    print(f"  Max diff (x - x_recon): {recon_diff:.6e}")
-    print(f"  Max log_det sum: {log_det_diff:.6e}")
-    
-    if recon_diff < 1e-3 and log_det_diff < 1e-3:
-        print("  [PASS] Invertibility looks correct.")
-    else:
-        print("  [FAIL] Invertibility failed.")

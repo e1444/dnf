@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
-from src.models.modules import ActNorm, Invertible1x1Conv, AffineCoupling, PiecewiseRationalQuadraticCoupling, BlockAutoregressiveSpline, BlockAutoregressiveCoupling, Squeeze, Split, LogitTransform
+from src.models.modules import ActNorm, Invertible1x1Conv, AffineCoupling, BlockAutoregressiveCoupling, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
     def __init__(
@@ -11,20 +11,23 @@ class FlowStep(nn.Module):
         num_resnet_blocks: int,
         block_size: int,
         dropout: float,
-        actnorm_init="identity",
-        invconv_init="orthogonal",
     ):
         super().__init__()
         self.actnorm = ActNorm(
             in_channels,
-            initialization=actnorm_init
         )
         self.inv_conv = Invertible1x1Conv(
             in_channels,
-            initialization=invconv_init
         )
-        self.coupling = BlockAutoregressiveCoupling(
-            in_channels=in_channels, 
+        self.coupling1 = AffineCoupling(
+            in_channels=in_channels,
+            hidden_channels=hidden_channels,
+            num_resnet_blocks=num_resnet_blocks,
+            dropout=dropout,
+        )
+        
+        self.coupling2 = BlockAutoregressiveCoupling(
+            in_channels=in_channels,
             hidden_channels=hidden_channels,
             num_resnet_blocks=num_resnet_blocks,
             block_size=block_size,
@@ -34,14 +37,17 @@ class FlowStep(nn.Module):
     def forward(self, x):
         x, log_det_act = self.actnorm(x)
         x, log_det_conv = self.inv_conv(x)
-        x, log_det_coup = self.coupling(x)
-        return x, log_det_act + log_det_conv + log_det_coup
+        x, log_det_coup1 = self.coupling1(x)
+        x, log_det_coup2 = self.coupling2(x)
+        return x, log_det_act + log_det_conv + log_det_coup1 + log_det_coup2
     
     def inverse(self, z):
-        z, log_det_coup = self.coupling.inverse(z)
+        z, log_det_coup2 = self.coupling2.inverse(z)
+        z, log_det_coup1 = self.coupling1.inverse(z)
         z, log_det_conv = self.inv_conv.inverse(z)
         z, log_det_act = self.actnorm.inverse(z)
-        return z, log_det_act + log_det_conv + log_det_coup
+        return z, log_det_act + log_det_conv + log_det_coup1 + log_det_coup2
+
 
 class DGLOWNetwork(nn.Module):
     def __init__(
@@ -49,14 +55,11 @@ class DGLOWNetwork(nn.Module):
         input_shape: tuple[int, int, int],
         num_levels: int,
         steps_per_level: list[int],
-        align_steps_per_level: list[int],
         hidden_channels_per_level: list[int],
         num_resnet_blocks_per_level: list[int],
         block_size_per_level: list[int],
         dropout: float,
-        actnorm_initialization: str = "data-dependent",
-        invconv_initialization: str = "orthogonal",
-        checkpoint_grads: bool = False
+        checkpoint_grads: bool = False,
     ):
         super(DGLOWNetwork, self).__init__()
         assert len(steps_per_level) == num_levels, "steps_per_level length must match num_levels"
@@ -65,119 +68,102 @@ class DGLOWNetwork(nn.Module):
         
         self.squeeze = Squeeze()
         self.logit_transform = LogitTransform(alpha=0.05)
-        self.split_levels = nn.ModuleList()
+        self.levels = nn.ModuleList()
         self.num_levels = num_levels
-        self.steps_per_level = steps_per_level
-        self.align_steps_per_level = align_steps_per_level
         self.checkpoint_grads = checkpoint_grads
         
         C, H, W = input_shape
+        
         for level_idx in range(num_levels):
             C *= 4  # After Squeeze
             H //= 2
             W //= 2
             
-            steps = self.steps_per_level[level_idx]
-            align_steps = self.align_steps_per_level[level_idx]
+            steps = steps_per_level[level_idx]
             hidden_channels = hidden_channels_per_level[level_idx]
             num_blocks = num_resnet_blocks_per_level[level_idx]
             block_size = block_size_per_level[level_idx]
-            level_flows = nn.ModuleList([
-                FlowStep(
-                    C, 
-                    hidden_channels, 
+
+            level_flows = nn.ModuleList()
+            for _ in range(steps):
+                level_flows.append(FlowStep(
+                    in_channels=C, 
+                    hidden_channels=hidden_channels,
                     num_resnet_blocks=num_blocks,
                     block_size=block_size,
-                    dropout=dropout,
-                    actnorm_init=actnorm_initialization,
-                    invconv_init=invconv_initialization
-                ) for _ in range(steps)
-            ] + [
-                FlowStep(
-                    C, 
-                    hidden_channels, 
-                    num_resnet_blocks=num_blocks,
-                    block_size=2,
-                    dropout=dropout,
-                    actnorm_init=actnorm_initialization,
-                    invconv_init=invconv_initialization
-                ) for _ in range(align_steps)
-            ] + [
-                Invertible1x1Conv(C, initialization=invconv_initialization)
-            ])
-            self.split_levels.append(level_flows)
+                    dropout=dropout
+                ))
+            
+            level_flows.append(Invertible1x1Conv(C))
+            self.levels.append(level_flows)
             
             if level_idx < num_levels - 1:
                 split = Split(C)
-                self.split_levels.append(split)
-                C //= 2  # After Split
-    
+                self.levels.append(split)
+                C //= 2
+
     def forward(self, x):
-        """
-        Split input x into latent variables at each level where
-        
-        h^(i) -> (h^(i+1), z^(i))
-        h^(L) -> (z^(L),)
-
-        Args:
-            x: Input tensor of shape (B, C, H, W)
-
-        Returns:
-            outs: List of tuples (h, z) per level; for final level (None, z)
-            log_dets: Tensor of shape (num_levels + 1, B) with log-determinants per level and final
-        """
         log_dets = []
         h, log_det = self.logit_transform(x)
         log_dets.append(log_det)
         
-        outs = []
+        latents = []
+        
         level_log_det = torch.zeros(x.size(0), device=x.device)
-        for level in self.split_levels:
-            if isinstance(level, nn.ModuleList): # Flow steps
-                h, log_det = self.squeeze(h)
-                level_log_det = level_log_det + log_det
+        
+        for i, level_module in enumerate(self.levels):
+            is_flow_level = isinstance(level_module, nn.ModuleList)
+            
+            if is_flow_level:
+                h, log_det_squeeze = self.squeeze(h)
+                level_log_det += log_det_squeeze
                 
-                for flow_step in level:
+                for flow_step in level_module:
                     if self.checkpoint_grads and h.requires_grad:
-                        h, log_det = checkpoint.checkpoint(flow_step, h, use_reentrant=False)   # type: ignore
+                        h, log_det = checkpoint.checkpoint(flow_step, h, use_reentrant=False)
                     else:
                         h, log_det = flow_step(h)
-                    level_log_det = level_log_det + log_det
-            elif isinstance(level, Split): # Split
-                h, z = level(h)
-                outs.append((h, z))             # Store (h^(i+1), z^(i))
+                    level_log_det += log_det
+
+            else: # This is a Split layer
+                z, h, log_det_split = level_module(h) # Split h into z (latent) and h (goes to next level)
+                latents.append(z)
+                
+                level_log_det += log_det_split
                 log_dets.append(level_log_det)
                 level_log_det = torch.zeros(x.size(0), device=x.device)
 
-        outs.append((None, h))  # Final latent without split
+        latents.append(h)  # Final latent
         log_dets.append(level_log_det)
-        log_dets = torch.stack(log_dets, dim=0) # (num_levels + 1, B)
-        return outs, log_dets
-    
-    def inverse(self, z):
-        total_log_det = torch.zeros(z[0].shape[0], device=z[0].device)
-        x = z.pop()
         
-        for level in reversed(self.split_levels):
-            if isinstance(level, nn.ModuleList): # Flow steps
-                for flow_step in reversed(level):
-                    x, log_det = flow_step.inverse(x)   # type: ignore
+        log_dets = torch.stack(log_dets, dim=0)
+        return latents, log_dets
+    
+    def inverse(self, z_list):
+        total_log_det = torch.zeros(z_list[0].shape[0], device=z_list[0].device)
+        
+        h = z_list.pop() # Start with the final, most semantic latent
+        
+        for i in range(len(self.levels) - 1, -1, -1):
+            level_module = self.levels[i]
+            
+            if isinstance(level_module, nn.ModuleList): # Flow steps
+                for flow_step in reversed(level_module):
+                    h, log_det = flow_step.inverse(h)
                     total_log_det += log_det
                     
-                x, log_det_squeeze = self.squeeze.inverse(x)
+                h, log_det_squeeze = self.squeeze.inverse(h)
                 total_log_det += log_det_squeeze
-            elif isinstance(level, Split): # Split
-                x, log_det = level.inverse(x, z.pop())
-                total_log_det += log_det
                 
-        x, log_det = self.logit_transform.inverse(x)
-        total_log_det += log_det
+            elif isinstance(level_module, Split): # Split layer
+                z = z_list.pop()
+                h, log_det_split = level_module.inverse(z, h) # Combine z and h
+                total_log_det += log_det_split
+                
+        x, log_det_logit = self.logit_transform.inverse(h)
+        total_log_det += log_det_logit
 
         return x, total_log_det
-    
-    @property
-    def total_steps(self):
-        return sum(self.steps_per_level) + sum(self.align_steps_per_level)
     
     @staticmethod
     def output_shapes(input_shape: tuple[int, int, int], num_levels: int):
