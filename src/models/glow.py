@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
-from .modules import ActNorm, Invertible1x1Conv, AffineCoupling, PiecewiseRationalQuadraticCoupling, BlockAutoregressiveSpline, Squeeze, Split, LogitTransform
+from src.models.modules import ActNorm, Invertible1x1Conv, AffineCoupling, PiecewiseRationalQuadraticCoupling, BlockAutoregressiveSpline, Squeeze, Split, LogitTransform
 
 class FlowStep(nn.Module):
     def __init__(

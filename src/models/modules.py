@@ -23,15 +23,12 @@ class AttentionPooling(nn.Module):
         Returns:
             Pooled feature vector of shape (B, C)
         """
-        # Compute attention logits
         attention_logits = self.attention_conv(x) # (B, C, H, W)
         
-        # Flatten spatial dimensions and apply softmax
         B, C, H, W = attention_logits.shape
         attention_logits_flat = attention_logits.view(B, C, H * W)
         attention_weights = nn.functional.softmax(attention_logits_flat, dim=-1) # (B, C, H*W)
         
-        # Compute weighted average
         x_flat = x.view(B, C, H * W)
         pooled_features = torch.sum(x_flat * attention_weights, dim=-1) # (B, C)
         
@@ -76,9 +73,6 @@ class LogitTransform(nn.Module):
         s = self.alpha + (1 - 2 * self.alpha) * x
         y = torch.log(s) - torch.log(1 - s)
         
-        # Log-det calculation
-        # d/dx logit(s) = (1-2a) / (s(1-s))
-        # log_det = log(1-2a) - log(s) - log(1-s)
         log_det = torch.sum(
             torch.log(torch.tensor(1 - 2 * self.alpha, device=x.device))
             - torch.log(s) - torch.log(1 - s),
@@ -87,11 +81,9 @@ class LogitTransform(nn.Module):
         return y, log_det
 
     def inverse(self, y):
-        # y in (-inf, inf)
         s = torch.sigmoid(y)
         x = (s - self.alpha) / (1 - 2 * self.alpha)
         
-        # Log-det is negative of forward
         log_det = -torch.sum(
             torch.log(torch.tensor(1 - 2 * self.alpha, device=y.device))
             - torch.log(s) - torch.log(1 - s),
@@ -122,20 +114,16 @@ class ActNorm(nn.Module):
             with torch.no_grad():
                 mean = x.mean(dim=[0, 2, 3], keepdim=True)
                 std = x.std(dim=[0, 2, 3], keepdim=True)
-                # Initialize logs = log(1/std) = -log(std)
                 self.logs.data.copy_(-torch.log(std + 1e-6))
                 self.bias.data.copy_(-mean * torch.exp(self.logs))
                 self.initialized.fill_(1)
 
-        # y = x * exp(logs) + bias
         y = torch.exp(self.logs) * x + self.bias
         _, _, h, w = x.size()
-        # log_det = sum(logs) * h * w
         log_det = torch.sum(self.logs) * h * w
         return y, log_det
 
     def inverse(self, y):
-        # x = (y - bias) * exp(-logs)
         x = (y - self.bias) * torch.exp(-self.logs)
         _, _, h, w = y.size()
         log_det = -torch.sum(self.logs) * h * w
@@ -151,7 +139,6 @@ class Squeeze(nn.Module):
         x = x.view(b, c, h // 2, 2, w // 2, 2)
         x = x.permute(0, 1, 3, 5, 2, 4).contiguous()
         x = x.view(b, c * 4, h // 2, w // 2)
-        # Return a zero tensor with shape (batch_size,) on the correct device
         log_det = torch.zeros(b, device=x.device)
         return x, log_det
     
@@ -160,7 +147,6 @@ class Squeeze(nn.Module):
         x = x.view(b, c // 4, 2, 2, h, w)
         x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
         x = x.view(b, c // 4, h * 2, w * 2)
-        # Return a zero tensor with shape (batch_size,) on the correct device
         log_det = torch.zeros(b, device=x.device)
         return x, log_det
 
@@ -207,16 +193,13 @@ class GatedResNetBlock(nn.Module):
 class CNNCouplingNet(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0):
         super().__init__()
-        # Initial projection
         self.in_conv = nn.Conv2d(in_channels, hidden_channels, 3, padding=1)
         
-        # Stack of Residual Blocks
         self.blocks = nn.ModuleList([
             GatedResNetBlock(hidden_channels, dropout=dropout) 
             for _ in range(num_blocks)
         ])
         
-        # Final projection to output parameters (s, t)
         self.out_conv = nn.Conv2d(hidden_channels, out_channels, 3, padding=1)
         
         # Zero initialization for the last layer (Identity Init)
@@ -358,28 +341,11 @@ def _rational_quadratic_spline(
     input_derivatives = input_derivatives.gather(-1, bin_idx)[..., 0]
     input_derivatives_plus_one = input_derivatives_plus_one.gather(-1, bin_idx)[..., 0]
 
-    # FIX: Calculate s = h / w
-    # Note: In inverse mode, input_bin_widths is heights, output_bin_widths is widths.
-    # But s is defined as h/w (slope).
-    # So if inverse, s = input_bin_widths / output_bin_widths
-    # If forward, s = output_bin_widths / input_bin_widths
-    # Wait, let's stick to the notation:
-    # w_k = widths, h_k = heights.
-    # s_k = h_k / w_k.
-    # In forward: input=x, output=y. input_bin=w, output_bin=h. s = out/in.
-    # In inverse: input=y, output=x. input_bin=h, output_bin=w. s = in/out.
-    # So s is always h/w.
-    
+    # s = h / w
     if inverse:
         s = input_bin_widths / output_bin_widths
         
         # Solve quadratic for theta (xi)
-        # y_rel = inputs_clamped - input_cumwidths
-        # term = sum_d - 2*s
-        # a = h * (s - d0) + y_rel * term
-        # b = h * d0 - y_rel * term
-        # c = -s * y_rel
-        
         y_rel = inputs_clamped - input_cumwidths
         w = output_bin_widths
         h = input_bin_widths
@@ -393,14 +359,9 @@ def _rational_quadratic_spline(
         c = -s * y_rel
         
         # Quadratic formula: (-b + sqrt(b^2 - 4ac)) / 2a
-        # We want the root in [0, 1].
-        # Since c <= 0 (s>0, y_rel>=0) and a?
-        # Discriminant delta = b^2 - 4ac
-        
         delta = b.pow(2) - 4 * a * c
         
         # Avoid division by zero when a is small (linear part of spline)
-        # If a ~ 0, then bx + c = 0 -> x = -c/b
         mask = torch.abs(a) > 1e-6
         numerator = -b + torch.sqrt(delta)
         denominator = 2 * a
@@ -408,15 +369,10 @@ def _rational_quadratic_spline(
         theta = torch.where(mask, numerator / denominator, -c / b)
         
         # Calculate outputs (x)
-        # x = x_k + theta * w_k
         theta_one_minus_theta = theta * (1 - theta)
         outputs = output_cumwidths + theta * output_bin_widths
         
         # Calculate derivative for logabsdet
-        # dy/dx = derivative_numerator / denominator^2 (from forward)
-        # dx/dy = 1 / (dy/dx)
-        # log(dx/dy) = -log(dy/dx)
-        
         derivative_numerator = s.pow(2) * (
             d1 * theta.pow(2)
             + 2 * s * theta_one_minus_theta
@@ -447,14 +403,6 @@ def _rational_quadratic_spline(
         logabsdet = torch.log(derivative_numerator) - 2 * torch.log(denominator)
 
     # Add back the linear tail (identity)
-    # For inputs outside [left, right], the spline output is clamped to [bottom, top]
-    # Since left=bottom and right=top, the residual is just added back.
-    # logabsdet is 0 for the tail part.
-    
-    # We need to be careful: if inputs was outside, logabsdet should be 0.
-    # The current logabsdet calculation is based on clamped inputs, so it's non-zero.
-    # We must mask it out.
-    
     inside_interval_mask = (inputs >= left) & (inputs <= right)
     outputs = outputs * inside_interval_mask.float() + inputs * (~inside_interval_mask).float()
     logabsdet = logabsdet * inside_interval_mask.float()
@@ -507,45 +455,21 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
         
         init_val = math.log(math.exp(1 - min_derivative) - 1)
         
-        # The output channels are ordered: [widths, heights, derivatives]
-        # Widths (num_bins): 0 -> uniform
-        # Heights (num_bins): 0 -> uniform
-        # Derivatives (num_bins + 1): need init_val
-        
-        # We need to be careful about the layout.
-        # In forward(), we split:
-        # unnormalized_widths = params[..., :self.num_bins]
-        # unnormalized_heights = params[..., self.num_bins:2*self.num_bins]
-        # unnormalized_derivatives = params[..., 2*self.num_bins:]
-        
-        # So we need to set bias for indices [2*num_bins:]
-        
         with torch.no_grad():
-            # The output is (B, out_dim, H, W).
-            # out_dim = split_size * (3 * num_bins + 1)
-            # The reshaping in forward is:
-            # params = params.view(B, self.split_size, -1, H, W)
-            # So the channels are interleaved.
-            # We need to set the bias for the derivative part of EACH split channel.
-            
             bias = self.coupling_net.out_conv.bias.view(self.split_size, -1) # (split_size, 3*num_bins+1)
             
-            # FIX: Tie heights to widths at init for exact identity
-            # widths: [:num_bins]
-            # heights: [num_bins:2*num_bins]
+            # Tie heights to widths at init for exact identity
             bias[:, self.num_bins:2*self.num_bins] = bias[:, :self.num_bins]
             
-            # Derivatives: [2*num_bins:]
+            # Derivatives
             bias[:, 2*self.num_bins:] = init_val
             self.coupling_net.out_conv.bias.data = bias.view(-1)
 
     def forward(self, x):
         x_a, x_b = x.split(self.split_size, dim=1)
         
-        # Predict spline parameters
         params = self.coupling_net(x_a)
         
-        # Reshape to (B, C, 3 * num_bins + 1, H, W) -> (B, C, H, W, 3 * num_bins + 1)
         B, _, H, W = params.shape
         params = params.view(B, self.split_size, -1, H, W).permute(0, 1, 3, 4, 2)
         
@@ -637,19 +561,12 @@ class BlockAutoregressiveSpline(nn.Module):
         # Output dim for one channel's spline params
         self.params_per_channel = 3 * num_bins + 1
         
-        # 1. Parameters for the first channel in the block (unconditioned)
-        # We make them learnable but fixed for the input (like a bias)
-        # Shape: (1, params_per_channel, 1, 1) to broadcast
+        # Parameters for the first channel in the block (unconditioned)
         self.first_channel_params = nn.Parameter(torch.zeros(1, self.params_per_channel, 1, 1))
         
-        # 2. Networks for subsequent channels
-        # We need (block_size - 1) small networks.
-        # Step i (1-based) takes i input channels and outputs params for the (i+1)-th channel.
+        # Networks for subsequent channels
         self.ar_nets = nn.ModuleList()
         for i in range(1, block_size):
-            # Input: i channels
-            # Output: params_per_channel
-            # Use CNNCouplingNet for better expressivity (Gated ResNet)
             net = CNNCouplingNet(
                 in_channels=i,
                 hidden_channels=hidden_channels,
@@ -659,22 +576,12 @@ class BlockAutoregressiveSpline(nn.Module):
             )
             
             # Initialize derivatives to identity (approx)
-            # The bias of the last layer corresponds to [widths, heights, derivatives]
-            # We want derivatives (last num_bins+1) to be unconstrained, but start near identity.
-            # The spline function handles the "identity" logic if params are zero?
-            # _rational_quadratic_spline uses softplus(derivs) + min_deriv.
-            # So zero input -> softplus(0) = log(2) approx 0.69 -> deriv ~ 0.7.
-            # To get deriv=1, we need softplus(x) = 1 - min_d.
-            # x = inverse_softplus(1 - min_d).
             init_val = math.log(math.exp(1 - min_derivative) - 1)
             with torch.no_grad():
-                # CNNCouplingNet initializes out_conv to zero.
-                # We just need to set the bias for derivatives.
                 net.out_conv.bias[-self.num_bins-1:].fill_(init_val)
                 
             self.ar_nets.append(net)
             
-        # Initialize first channel params similarly
         with torch.no_grad():
             self.first_channel_params.data[:, -self.num_bins-1:, :, :].fill_(init_val)
 
@@ -692,22 +599,18 @@ class BlockAutoregressiveSpline(nn.Module):
         # x: (B, C, H, W)
         B, C, H, W = x.shape
         
-        # Reshape to (B * num_blocks, block_size, H, W)
         x_reshaped = x.view(B, self.num_blocks, self.block_size, H, W)
         x_reshaped = x_reshaped.view(B * self.num_blocks, self.block_size, H, W)
         
         outputs_list = []
         total_log_det = 0
         
-        # Iterate through the block
         for i in range(self.block_size):
             curr_x = x_reshaped[:, i] # (B*NB, H, W)
             
             if i == 0:
-                # Use fixed parameters
                 params = self.first_channel_params.expand(B * self.num_blocks, -1, H, W)
             else:
-                # Condition on previous channels 0..i-1
                 context = x_reshaped[:, :i] # (B*NB, i, H, W)
                 params = self.ar_nets[i-1](context)
             
@@ -729,14 +632,9 @@ class BlockAutoregressiveSpline(nn.Module):
             outputs_list.append(curr_y)
             total_log_det = total_log_det + log_det.sum(dim=[1, 2]) # Sum over H, W
             
-        # Stack outputs: (B*NB, block_size, H, W)
         y_reshaped = torch.stack(outputs_list, dim=1)
-        
-        # Reshape back to (B, C, H, W)
         y = y_reshaped.view(B, self.num_blocks, self.block_size, H, W).view(B, C, H, W)
         
-        # Reshape log_det to (B,)
-        # total_log_det is currently (B*NB,)
         log_det = total_log_det.view(B, self.num_blocks).sum(dim=1)
         
         return y, log_det
@@ -805,10 +703,6 @@ class Invertible1x1Conv(nn.Module):
         else:
             raise ValueError(f"Unknown initialization: {initialization}")
 
-        # LU Decomposition using PyTorch
-        # torch.linalg.lu returns P, L, U
-        # Note: P is returned as a permutation matrix in recent versions, 
-        # or pivots in older ones. Let's assume recent torch.
         P, L, U = torch.linalg.lu(w_init)
         
         s = torch.diag(U)
