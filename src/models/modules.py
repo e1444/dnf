@@ -700,8 +700,8 @@ class BlockAutoregressiveSpline(nn.Module):
         
         # Reshape to (B * num_blocks, block_size, H, W)
         x_reshaped = x.view(B, self.num_blocks, self.block_size, H, W)
-        x_reshaped = x_reshaped.permute(0, 1, 3, 4, 2).contiguous() # (B, NB, H, W, BS)
-        x_reshaped = x_reshaped.view(B * self.num_blocks, H, W, self.block_size) # (B*NB, H, W, BS)
+        x_reshaped = x_reshaped.permute(0, 1, 3, 4, 2) # (B, NB, H, W, BS)
+        x_reshaped = x_reshaped.reshape(B * self.num_blocks, H, W, self.block_size) # (B*NB, H, W, BS)
         x_reshaped = x_reshaped.permute(0, 3, 1, 2) # (B*NB, BS, H, W)
         
         context_expanded = None
@@ -746,8 +746,7 @@ class BlockAutoregressiveSpline(nn.Module):
         y = y_spline_output.contiguous().view(B, C, H, W)
         
         # Sum log determinant
-        log_det = logabsdet.sum(dim=[1, 2, 3]) # Sum over H, W, and block_size
-        log_det = log_det.view(B, self.num_blocks).sum(dim=1)
+        log_det = logabsdet.view(B, -1).sum(dim=1)
         
         return y, log_det
 
