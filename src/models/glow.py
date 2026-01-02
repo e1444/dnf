@@ -16,9 +16,11 @@ class FlowStep(nn.Module):
         self.actnorm = ActNorm(
             in_channels,
         )
+        
         self.inv_conv = Invertible1x1Conv(
             in_channels,
         )
+        
         self.coupling1 = AffineCoupling(
             in_channels=in_channels,
             hidden_channels=hidden_channels,

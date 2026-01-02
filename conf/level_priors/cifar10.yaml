@@ -11,7 +11,7 @@ priors:
       df: 6.0
       dropout: 0.1
       backbone_features: 128
-      eps: 1e-3
+      eps: 1e-4
       jitter: 1e-4
   l1:
     split: [0, 12, 0]
@@ -20,14 +20,14 @@ priors:
       df: 12.0
       dropout: 0.0
       backbone_features: 256
-      eps: 1e-3
+      eps: 1e-4
       jitter: 1e-4
   l2:
     split: [24, 0, 24]
     rank: [8, 8]
     cls:
       df: 24.0
-      eps: 1e-3
+      eps: 1e-4
       jitter: 1e-4
     class_conditional_init:
       df: 48.0

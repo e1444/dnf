@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.linalg as la
 
 import math
+import copy
 from typing import Optional
 
 
@@ -914,6 +915,49 @@ class BlockAutoregressiveCoupling(nn.Module):
     
 
 if __name__ == '__main__':
+    # --- MC logdet estimator utilities ---
+    def mc_logdet_estimate(module: nn.Module, x: torch.Tensor, eps: float = 1e-4):
+        """
+        Monte Carlo volume test to estimate local log|det J_f(x)|.
+        Uses orthonormal random directions and finite differences to build
+        an approximate Jacobian, then computes slogdet.
+
+        Assumes input/output shapes match and batch-wise independence.
+        Keep dimensionality small (e.g., H=W=1, small C) for stability.
+        """
+        with torch.no_grad():
+            y0, _ = module(x)
+            B = x.size(0)
+            d = x[0].numel()
+
+            # Orthonormal basis via QR
+            rnd = torch.randn(d, d, device=x.device)
+            Q, _ = torch.linalg.qr(rnd)
+
+            J_cols = []
+            for i in range(d):
+                v = Q[:, i].view(1, *x.shape[1:]).expand(B, *x.shape[1:])
+                y_i, _ = module(x + eps * v)
+                col = ((y_i - y0).view(B, d)) / eps
+                J_cols.append(col)
+
+            J = torch.stack(J_cols, dim=-1)  # (B, d, d)
+            signs, logabsdets = torch.linalg.slogdet(J)
+            return logabsdets
+
+    def run_mc_check(module: nn.Module, x: torch.Tensor, name: str):
+        log_det_mc = mc_logdet_estimate(module, x)
+        y, log_det_fwd = module(x)
+        err = (log_det_fwd - log_det_mc).abs().mean().item()
+        print(f"[MC] {name}: fwd_logdet mean={log_det_fwd.mean().item():.6f}, mc_logdet mean={log_det_mc.mean().item():.6f}, abs diff={err:.6e}")
+
+    def randomize_params(module: nn.Module, std: float = 0.05):
+        """Randomly initialize all parameters of a module for testing."""
+        with torch.no_grad():
+            for p in module.parameters():
+                if p.requires_grad:
+                    p.data.normal_(0.0, std)
+
     # General parameters
     B, C, H, W = 4, 16, 8, 8
     
@@ -940,6 +984,18 @@ if __name__ == '__main__':
             num_resnet_blocks=num_resnet_blocks
         )
         
+        # --- Identity Init Test ---
+        print("--- Testing Identity Initialization ---")
+        y_init, log_det_init = spline_layer(x, context=context)
+        identity_error = torch.abs(x - y_init).max()
+        log_det_init_error = torch.abs(log_det_init).mean()
+        print(f"Identity error at init: {identity_error.item()}")
+        print(f"Log-determinant at init: {log_det_init.mean().item()}")
+        assert torch.allclose(x, y_init, atol=1e-5), "Not an identity function at init!"
+        assert torch.allclose(log_det_init, torch.zeros_like(log_det_init), atol=1e-5), "Log-determinant is not zero at init!"
+        print("Identity Initialization test PASSED!")
+        # --- End Identity Init Test ---
+
         # Forward pass
         y, log_det_fwd = spline_layer(x, context=context)
         
@@ -999,6 +1055,41 @@ if __name__ == '__main__':
         
     except Exception as e:
         print(f"BlockAutoregressiveCoupling test FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("\n" + "="*50 + "\n")
+
+    # --- MC Volume Test (Small-Dim) ---
+    print("--- MC Volume Test: AffineCoupling & BlockAR Coupling ---")
+    try:
+        B_small, C_small, H_small, W_small = 1, 4, 1, 1
+        x_small = torch.randn(B_small, C_small, H_small, W_small)
+
+        affine_small = AffineCoupling(in_channels=C_small, hidden_channels=32, num_resnet_blocks=1)
+        run_mc_check(affine_small, x_small, name="AffineCoupling")
+
+        # Random params variant
+        affine_small_rand = copy.deepcopy(affine_small)
+        randomize_params(affine_small_rand, std=0.1)
+        run_mc_check(affine_small_rand, x_small, name="AffineCoupling-Random")
+
+        blockar_small = BlockAutoregressiveCoupling(
+            in_channels=C_small,
+            hidden_channels=32,
+            num_resnet_blocks=1,
+            block_size=2,
+        )
+        run_mc_check(blockar_small, x_small, name="BlockAutoregressiveCoupling")
+
+        # Random params variant
+        blockar_small_rand = copy.deepcopy(blockar_small)
+        randomize_params(blockar_small_rand, std=0.1)
+        run_mc_check(blockar_small_rand, x_small, name="BlockAutoregressiveCoupling-Random")
+
+        print("MC Volume Test PASSED (ran without exceptions)")
+    except Exception as e:
+        print(f"MC Volume Test FAILED: {e}")
         import traceback
         traceback.print_exc()
 
