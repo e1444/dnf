@@ -8,9 +8,10 @@ model:
   num_levels: 3
   steps_per_level: [4, 4, 4]
   align_steps_per_level: [2, 2, 2]
-  hidden_channels_per_level: [64, 64, 128]
+  hidden_channels_per_level: [192, 192, 256]
   num_resnet_blocks_per_level: [2, 2, 4]
   block_size_per_level: [3, 4, 4]
+  dropout: 0.1
 
 wandb:
   group: "CIFAR10"

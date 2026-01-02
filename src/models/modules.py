@@ -265,7 +265,6 @@ class AffineCoupling(nn.Module):
         
         self.register_buffer("scale_clamp", torch.tensor(1.0))
 
-
     def forward(self, x):
         x_a, x_b = x.split(self.split_size, dim=1)
         s_and_t = self.coupling_net(x_a)
@@ -308,6 +307,7 @@ def _rational_quadratic_spline(
     min_bin_width=1e-3,
     min_bin_height=1e-3,
     min_derivative=1e-3,
+    max_derivative=10.0,
 ):
     """
     Rational quadratic spline transformation.
@@ -328,7 +328,9 @@ def _rational_quadratic_spline(
     cumwidths[..., -1] = right
     widths = cumwidths[..., 1:] - cumwidths[..., :-1]
 
-    derivatives = min_derivative + F.softplus(unnormalized_derivatives)
+    # Clamp derivatives to [min_derivative, max_derivative] for stability
+    # Similar to affine clamp, prevents extreme slopes/log-dets
+    derivatives = min_derivative + (max_derivative - min_derivative) * torch.sigmoid(unnormalized_derivatives)
 
     heights = F.softmax(unnormalized_heights, dim=-1)
     heights = min_bin_height + (1 - min_bin_height * num_bins) * heights
@@ -453,6 +455,7 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
         min_bin_width=1e-3,
         min_bin_height=1e-3,
         min_derivative=1e-3,
+        max_derivative=10.0,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -462,6 +465,7 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
         self.min_bin_width = min_bin_width
         self.min_bin_height = min_bin_height
         self.min_derivative = min_derivative
+        self.max_derivative = max_derivative
 
         # Output dimension: (3 * num_bins + 1) parameters per channel
         out_dim = self.split_size * (3 * num_bins + 1)
@@ -476,7 +480,10 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
             dropout=dropout
         )
         
-        init_val = math.log(math.exp(1 - min_derivative) - 1)
+        # Identity derivative init for sigmoid mapping: raw_init = logit((1 - min)/(max - min))
+        p = (1 - min_derivative) / (max_derivative - min_derivative)
+        p = max(min(p, 1 - 1e-6), 1e-6)
+        init_val = math.log(p / (1 - p))
         
         # Initialize last layer
         with torch.no_grad():
@@ -509,6 +516,7 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
             min_bin_width=self.min_bin_width,
             min_bin_height=self.min_bin_height,
             min_derivative=self.min_derivative,
+            max_derivative=self.max_derivative,
         )
 
         y = torch.cat([x_a, outputs], dim=1)
@@ -541,6 +549,7 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
             min_bin_width=self.min_bin_width,
             min_bin_height=self.min_bin_height,
             min_derivative=self.min_derivative,
+            max_derivative=self.max_derivative,
         )
         
         x = torch.cat([y_a, outputs], dim=1)
@@ -683,6 +692,7 @@ class BlockAutoregressiveSpline(nn.Module):
         min_bin_width=1e-3,
         min_bin_height=1e-3,
         min_derivative=1e-3,
+        max_derivative=10.0,
         dropout=0.0,
     ):
         super().__init__()
@@ -698,6 +708,7 @@ class BlockAutoregressiveSpline(nn.Module):
         self.min_bin_width = min_bin_width
         self.min_bin_height = min_bin_height
         self.min_derivative = min_derivative
+        self.max_derivative = max_derivative
         
         self.params_per_channel = 3 * num_bins + 1
         
@@ -715,7 +726,10 @@ class BlockAutoregressiveSpline(nn.Module):
         )
         
         # Initialize derivatives to identity (approx)
-        init_val = math.log(math.exp(1 - min_derivative) - 1)
+        # Identity derivative init for sigmoid mapping: raw_init = logit((1 - min)/(max - min))
+        p = (1 - min_derivative) / (max_derivative - min_derivative)
+        p = max(min(p, 1 - 1e-6), 1e-6)
+        init_val = math.log(p / (1 - p))
         with torch.no_grad():
             # Reshape bias to (block_size, params_per_channel)
             bias = self.ar_net.out_conv.bias.view(self.block_size, self.params_per_channel)
@@ -782,6 +796,7 @@ class BlockAutoregressiveSpline(nn.Module):
             min_bin_width=self.min_bin_width,
             min_bin_height=self.min_bin_height,
             min_derivative=self.min_derivative,
+            max_derivative=self.max_derivative,
         )
         
         # Reshape y back to (B, C, H, W)
@@ -839,6 +854,7 @@ class BlockAutoregressiveSpline(nn.Module):
                 min_bin_width=self.min_bin_width,
                 min_bin_height=self.min_bin_height,
                 min_derivative=self.min_derivative,
+                max_derivative=self.max_derivative,
             )
             
             # Store the reconstructed x channel
