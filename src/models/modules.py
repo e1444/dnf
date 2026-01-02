@@ -626,7 +626,7 @@ class BlockAutoregressiveSpline(nn.Module):
     Performs autoregressive rational quadratic spline transform WITHIN each block
     using a Masked Autoregressive Flow (MAF) structure for a fast forward pass.
     Weights are shared across blocks (treating blocks as batch dimension).
-    Includes a spatial mixing layer to make the AR conditioner aware of local pixel neighborhoods.
+    This implementation is spatially factorized to ensure a triangular Jacobian.
     """
     def __init__(
         self,
@@ -660,15 +660,6 @@ class BlockAutoregressiveSpline(nn.Module):
         
         # Total parameters for all splines in a block
         self.total_params = self.block_size * self.params_per_channel
-        
-        # Spatial mixer (depthwise convolution)
-        self.spatial_mixer = nn.Conv2d(
-            in_channels=self.block_size,
-            out_channels=self.block_size,
-            kernel_size=3,
-            padding=1,
-            groups=self.block_size
-        )
 
         # The MAF network
         self.ar_net = MaskedARNet(
@@ -713,16 +704,13 @@ class BlockAutoregressiveSpline(nn.Module):
         x_reshaped = x_reshaped.view(B * self.num_blocks, H, W, self.block_size) # (B*NB, H, W, BS)
         x_reshaped = x_reshaped.permute(0, 3, 1, 2) # (B*NB, BS, H, W)
         
-        # Apply spatial mixing to the input of the conditioner
-        x_spatial = self.spatial_mixer(x_reshaped)
-
         context_expanded = None
         if context is not None:
             # Expand context to match the reshaped input
             context_expanded = context.repeat_interleave(self.num_blocks, dim=0)
         
-        # Get all spline parameters in one parallel pass from the spatially-mixed input
-        all_params = self.ar_net(x_spatial, context=context_expanded)
+        # Get all spline parameters in one parallel pass
+        all_params = self.ar_net(x_reshaped, context=context_expanded)
         
         # Reshape params to be (B*NB, block_size, params_per_channel, H, W)
         all_params = all_params.view(
@@ -783,11 +771,8 @@ class BlockAutoregressiveSpline(nn.Module):
         
         # The inverse is sequential
         for i in range(self.block_size):
-            # Apply spatial mixing to the partially reconstructed input
-            x_spatial_recon = self.spatial_mixer(x_recon_buffer)
-            
             # Get params for the current channel using previously reconstructed x
-            all_params = self.ar_net(x_spatial_recon, context=context_expanded)
+            all_params = self.ar_net(x_recon_buffer, context=context_expanded)
             
             # Extract params for the current channel
             params_i = all_params[:, i*self.params_per_channel:(i+1)*self.params_per_channel, :, :]
