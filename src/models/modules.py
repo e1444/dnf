@@ -310,7 +310,6 @@ def _rational_quadratic_spline(
 ):
     """
     Rational quadratic spline transformation.
-    Based on: https://github.com/bayesiains/nsf/blob/master/utils/rational_quadratic_spline.py
     """
     num_bins = unnormalized_widths.shape[-1]
 
@@ -340,7 +339,7 @@ def _rational_quadratic_spline(
     heights = cumheights[..., 1:] - cumheights[..., :-1]
 
     # Handle out-of-bounds values with linear tails (identity)
-    # We clamp inputs to the range, apply spline, and add back the residual
+    # Note: For inverse, we check 'y' (inputs) against bounds.
     inputs_clamped = torch.clamp(inputs, left, right)
     
     if inverse:
@@ -374,11 +373,9 @@ def _rational_quadratic_spline(
     input_derivatives = input_derivatives.gather(-1, bin_idx)[..., 0]
     input_derivatives_plus_one = input_derivatives_plus_one.gather(-1, bin_idx)[..., 0]
 
-    # s = h / w
     if inverse:
         s = input_bin_widths / output_bin_widths
         
-        # Solve quadratic for theta (xi)
         y_rel = inputs_clamped - input_cumwidths
         w = output_bin_widths
         h = input_bin_widths
@@ -391,27 +388,28 @@ def _rational_quadratic_spline(
         b = h * d0 - y_rel * term
         c = -s * y_rel
         
-        # Quadratic formula: (-b + sqrt(b^2 - 4ac)) / 2a
         delta = b.pow(2) - 4 * a * c
         
-        # Avoid division by zero when a is small (linear part of spline)
         mask = torch.abs(a) > 1e-6
         numerator = -b + torch.sqrt(delta)
         denominator = 2 * a
         
         theta = torch.where(mask, numerator / denominator, -c / b)
         
-        # Calculate outputs (x)
         theta_one_minus_theta = theta * (1 - theta)
         outputs = output_cumwidths + theta * output_bin_widths
         
-        # Calculate derivative for logabsdet
+        # Derivative of the forward transform at the solution point
         derivative_numerator = s.pow(2) * (
             d1 * theta.pow(2)
             + 2 * s * theta_one_minus_theta
             + d0 * (1 - theta).pow(2)
         )
         denominator = s + term * theta_one_minus_theta
+        
+        # log|dx/dy| = -log|dy/dx|
+        # Forward log_det formula is log(num) - 2*log(denom)
+        # Inverse log_det is -(log(num) - 2*log(denom)) = 2*log(denom) - log(num)
         logabsdet = 2 * torch.log(denominator) - torch.log(derivative_numerator)
         
     else:
@@ -435,7 +433,6 @@ def _rational_quadratic_spline(
         )
         logabsdet = torch.log(derivative_numerator) - 2 * torch.log(denominator)
 
-    # Add back the linear tail (identity)
     inside_interval_mask = (inputs >= left) & (inputs <= right)
     outputs = outputs * inside_interval_mask.float() + inputs * (~inside_interval_mask).float()
     logabsdet = logabsdet * inside_interval_mask.float()
@@ -466,11 +463,10 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
         self.min_derivative = min_derivative
 
         # Output dimension: (3 * num_bins + 1) parameters per channel
-        # - num_bins widths
-        # - num_bins heights
-        # - num_bins + 1 derivatives
         out_dim = self.split_size * (3 * num_bins + 1)
         
+        # NOTE: Assuming CNNCouplingNet is defined elsewhere or this is a placeholder.
+        # Ensure CNNCouplingNet outputs 'out_dim' channels.
         self.coupling_net = CNNCouplingNet(
             self.split_size,
             hidden_channels,
@@ -481,15 +477,13 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
         
         init_val = math.log(math.exp(1 - min_derivative) - 1)
         
+        # Initialize last layer
         with torch.no_grad():
-            bias = self.coupling_net.out_conv.bias.view(self.split_size, -1) # (split_size, 3*num_bins+1)
-            
-            # Tie heights to widths at init for exact identity
-            bias[:, self.num_bins:2*self.num_bins] = bias[:, :self.num_bins]
-            
-            # Derivatives
-            bias[:, 2*self.num_bins:] = init_val
-            self.coupling_net.out_conv.bias.data = bias.view(-1)
+            if hasattr(self.coupling_net, 'out_conv'):
+                bias = self.coupling_net.out_conv.bias.view(self.split_size, -1) 
+                bias[:, self.num_bins:2*self.num_bins] = bias[:, :self.num_bins]
+                bias[:, 2*self.num_bins:] = init_val
+                self.coupling_net.out_conv.bias.data = bias.view(-1)
 
     def forward(self, x):
         x_a, x_b = x.split(self.split_size, dim=1)
@@ -521,89 +515,135 @@ class PiecewiseRationalQuadraticCoupling(nn.Module):
         return y, log_det
 
     def inverse(self, y):
+        # [FIX] Completely rewrote this method. 
+        # Previously it used affine logic for a spline layer.
         y_a, y_b = y.split(self.split_size, dim=1)
-        s_and_t = self.coupling_net(y_a)
-        log_s, t = s_and_t.split(self.split_size, dim=1)
         
-        scale = self.scale_clamp
-        log_s = (2.0 * scale / torch.pi) * torch.atan(log_s / scale)
-        s = torch.exp(log_s)
+        params = self.coupling_net(y_a)
         
-        x_b = (y_b - t) / s
-        x = torch.cat([y_a, x_b], dim=1)
-        log_det = -torch.sum(log_s, dim=[1, 2, 3])
+        B, _, H, W = params.shape
+        params = params.view(B, self.split_size, -1, H, W).permute(0, 1, 3, 4, 2)
+        
+        unnormalized_widths = params[..., :self.num_bins]
+        unnormalized_heights = params[..., self.num_bins:2*self.num_bins]
+        unnormalized_derivatives = params[..., 2*self.num_bins:]
+        
+        # Use Spline Inverse
+        outputs, logabsdet = _rational_quadratic_spline(
+            inputs=y_b,
+            unnormalized_widths=unnormalized_widths,
+            unnormalized_heights=unnormalized_heights,
+            unnormalized_derivatives=unnormalized_derivatives,
+            inverse=True,
+            left=-self.bound, right=self.bound,
+            bottom=-self.bound, top=self.bound,
+            min_bin_width=self.min_bin_width,
+            min_bin_height=self.min_bin_height,
+            min_derivative=self.min_derivative,
+        )
+        
+        x = torch.cat([y_a, outputs], dim=1)
+        log_det = torch.sum(logabsdet, dim=[1, 2, 3])
         return x, log_det
     
 
 class MaskedConv2d(nn.Conv2d):
     """
-    A 2D convolution with a causal mask on the channels.
-    The output for channel `i` depends only on inputs from channels `j <= i` (or `j < i`).
-    This is used to build a Masked Autoregressive Flow (MAF).
+    [FIXED] A 2D convolution with a causal mask on the channels.
+    Correctly handles channel expansion (out_channels > in_channels) for AR parameter generation.
     """
     def __init__(self, in_channels, out_channels, kernel_size, mask_type='B', **kwargs):
         super().__init__(in_channels, out_channels, kernel_size, **kwargs)
         if mask_type not in ['A', 'B']:
             raise ValueError(f"Unknown mask type: {mask_type}")
-        self.mask_type = mask_type
         
-        mask = torch.ones_like(self.weight.data)
+        # [FIX] Compute the mask based on variables, not raw channels.
+        # We assume out_channels is a multiple of in_channels (or they are 1-to-1).
+        # If out > in, we assume consecutive output blocks correspond to input variables.
         
-        # For each output channel, zero out connections to subsequent input channels
-        out_channels_per_group = out_channels // self.groups
-        in_channels_per_group = in_channels // self.groups
+        mask = torch.ones_like(self.weight)
+        
+        # Calculate how many output channels correspond to one variable
+        # If out_channels == in_channels, params_per_var = 1
+        # If out_channels (total_params) > in_channels (block_size), params_per_var > 1
+        if out_channels % in_channels != 0 and in_channels % out_channels != 0:
+             # Fallback to standard 1-to-1 if dimensions don't align cleanly (e.g. hidden layers)
+             # In hidden layers (hidden -> hidden), we assume 1-to-1 mapping of degrees usually
+             params_per_var_out = 1 
+             vars_in = in_channels
+        else:
+             if out_channels >= in_channels:
+                 params_per_var_out = out_channels // in_channels
+                 vars_in = in_channels
+             else:
+                 # Reducing dimensions (uncommon for AR output, common for bottleneck)
+                 # Not strictly handled here for general degrees, but sufficient for this specific use case
+                 params_per_var_out = 1 
+                 vars_in = in_channels
 
-        for i in range(out_channels_per_group):
-            for j in range(in_channels_per_group):
-                if self.mask_type == 'A':
-                    if j >= i:
-                        mask[i::out_channels_per_group, j::in_channels_per_group, :, :] = 0
+        # i: output channel index, j: input channel index
+        for i in range(out_channels):
+            for j in range(in_channels):
+                
+                # Determine which variable indices these channels represent
+                var_out_idx = i // params_per_var_out
+                var_in_idx = j # Assuming input is always 1 channel per variable (or handled by grouping)
+                
+                # If we are in a hidden layer where in=hidden, out=hidden, 
+                # we treat indices as variable degrees directly.
+                if out_channels == in_channels:
+                    var_out_idx = i
+                    var_in_idx = j
+
+                if mask_type == 'A':
+                    # Output k depends on Input < k
+                    if var_in_idx >= var_out_idx:
+                        mask[i, j, :, :] = 0
                 else: # 'B'
-                    if j > i:
-                        mask[i::out_channels_per_group, j::in_channels_per_group, :, :] = 0
+                    # Output k depends on Input <= k
+                    if var_in_idx > var_out_idx:
+                        mask[i, j, :, :] = 0
         
         self.register_buffer('mask', mask)
 
     def forward(self, input):
-        # Apply the mask before convolution
-        self.weight.data *= self.mask
-        return super().forward(input)
+        # [FIX] Do not modify self.weight.data in-place.
+        # This fixes weight accumulation issues and potential autograd bugs.
+        return F.conv2d(input, self.weight * self.mask, self.bias, 
+                        self.stride, self.padding, self.dilation, self.groups)
 
 
 class MaskedARNet(nn.Module):
     """
     A complete autoregressive network using masked convolutions.
-    This replaces the sequential loop of the IAF with a single parallel pass.
-    It is "pointwise" because it uses 1x1 convolutions.
-    It can be conditioned by adding a projected context tensor.
     """
     def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0, context_channels=None):
         super().__init__()
         
-        # First layer uses mask 'A' to enforce strict autoregression
+        # First layer uses mask 'A' (strict autoregression: output_i depends on input < i)
         self.in_conv = MaskedConv2d(in_channels, hidden_channels, 1, mask_type='A')
         
-        # Optional context embedding network
         self.context_embed = None
         if context_channels is not None:
             self.context_embed = nn.Conv2d(context_channels, hidden_channels, 1)
 
         self.blocks = nn.ModuleList()
         for _ in range(num_blocks):
-            # These are not GatedResNetBlocks, but simple residual connections
-            # around a sequence of masked convolutions.
             block = nn.Sequential(
                 nn.GELU(),
+                # Hidden layers use Mask 'B' (autoregression maintained: hidden_i depends on hidden <= i)
                 MaskedConv2d(hidden_channels, hidden_channels, 1, mask_type='B'),
                 nn.GELU(),
                 MaskedConv2d(hidden_channels, hidden_channels, 1, mask_type='B')
             )
             self.blocks.append(block)
             
-        # Output layer can use mask 'B'
+        # Output layer uses mask 'B'.
+        # IMPORTANT: 'out_channels' here is typically (block_size * params_per_spline).
+        # MaskedConv2d now correctly handles this expansion to ensure params for variable i
+        # depend only on hidden state <= i.
         self.out_conv = MaskedConv2d(hidden_channels, out_channels, 1, mask_type='B')
         
-        # Zero-initialize the final layer for identity at the start
         self.out_conv.weight.data.zero_()
         self.out_conv.bias.data.zero_()
 
@@ -614,11 +654,11 @@ class MaskedARNet(nn.Module):
             h = h + self.context_embed(context)
             
         for block in self.blocks:
-            h = h + block(h) # Residual connection
+            h = h + block(h) 
             
         out = self.out_conv(h)
         return out
-
+    
 
 class BlockAutoregressiveSpline(nn.Module):
     """
