@@ -263,7 +263,7 @@ class AffineCoupling(nn.Module):
             dropout=dropout
         )
         
-        self.register_buffer("scale_clamp", torch.tensor(1.0))
+        self.register_buffer("scale_clamp", torch.tensor(2.0))
 
     def forward(self, x):
         x_a, x_b = x.split(self.split_size, dim=1)
@@ -692,7 +692,7 @@ class BlockAutoregressiveSpline(nn.Module):
         min_bin_width=1e-3,
         min_bin_height=1e-3,
         min_derivative=1e-3,
-        max_derivative=100.0,
+        max_derivative=20.0,
         dropout=0.0,
     ):
         super().__init__()
