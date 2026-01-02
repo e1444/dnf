@@ -634,8 +634,10 @@ class MaskedARNet(nn.Module):
                 nn.GELU(),
                 # Hidden layers use Mask 'B' (autoregression maintained: hidden_i depends on hidden <= i)
                 MaskedConv2d(hidden_channels, hidden_channels, 1, mask_type='B'),
+                nn.Dropout(dropout),
                 nn.GELU(),
-                MaskedConv2d(hidden_channels, hidden_channels, 1, mask_type='B')
+                MaskedConv2d(hidden_channels, hidden_channels, 1, mask_type='B'),
+                nn.Dropout(dropout),
             )
             self.blocks.append(block)
             
