@@ -569,20 +569,29 @@ class MaskedConv2d(nn.Conv2d):
         self.weight.data *= self.mask
         return super().forward(input)
 
+
 class MaskedARNet(nn.Module):
     """
     A complete autoregressive network using masked convolutions.
     This replaces the sequential loop of the IAF with a single parallel pass.
     It is "pointwise" because it uses 1x1 convolutions.
+    It can be conditioned by adding a projected context tensor.
     """
-    def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_blocks=2, dropout=0.0, context_channels=None):
         super().__init__()
         
         # First layer uses mask 'A' to enforce strict autoregression
         self.in_conv = MaskedConv2d(in_channels, hidden_channels, 1, mask_type='A')
         
+        # Optional context embedding network
+        self.context_embed = None
+        if context_channels is not None:
+            self.context_embed = nn.Conv2d(context_channels, hidden_channels, 1)
+
         self.blocks = nn.ModuleList()
         for _ in range(num_blocks):
+            # These are not GatedResNetBlocks, but simple residual connections
+            # around a sequence of masked convolutions.
             block = nn.Sequential(
                 nn.GELU(),
                 MaskedConv2d(hidden_channels, hidden_channels, 1, mask_type='B'),
@@ -598,11 +607,16 @@ class MaskedARNet(nn.Module):
         self.out_conv.weight.data.zero_()
         self.out_conv.bias.data.zero_()
 
-    def forward(self, x):
-        out = self.in_conv(x)
+    def forward(self, x, context=None):
+        h = self.in_conv(x)
+        
+        if self.context_embed is not None and context is not None:
+            h = h + self.context_embed(context)
+            
         for block in self.blocks:
-            out = out + block(out) # Residual connection
-        out = self.out_conv(out)
+            h = h + block(h) # Residual connection
+            
+        out = self.out_conv(h)
         return out
 
 
@@ -612,10 +626,12 @@ class BlockAutoregressiveSpline(nn.Module):
     Performs autoregressive rational quadratic spline transform WITHIN each block
     using a Masked Autoregressive Flow (MAF) structure for a fast forward pass.
     Weights are shared across blocks (treating blocks as batch dimension).
+    Includes a spatial mixing layer to make the AR conditioner aware of local pixel neighborhoods.
     """
     def __init__(
         self,
         num_channels,
+        context_channels,
         num_resnet_blocks=1,
         hidden_channels=64,
         block_size=2,
@@ -631,6 +647,7 @@ class BlockAutoregressiveSpline(nn.Module):
             raise ValueError(f"num_channels ({num_channels}) must be divisible by block_size ({block_size})")
             
         self.num_channels = num_channels
+        self.context_channels = context_channels
         self.block_size = block_size
         self.num_blocks = num_channels // block_size
         self.num_bins = num_bins
@@ -644,9 +661,19 @@ class BlockAutoregressiveSpline(nn.Module):
         # Total parameters for all splines in a block
         self.total_params = self.block_size * self.params_per_channel
         
+        # Spatial mixer (depthwise convolution)
+        self.spatial_mixer = nn.Conv2d(
+            in_channels=self.block_size,
+            out_channels=self.block_size,
+            kernel_size=3,
+            padding=1,
+            groups=self.block_size
+        )
+
         # The MAF network
         self.ar_net = MaskedARNet(
             in_channels=self.block_size,
+            context_channels=self.context_channels,
             hidden_channels=hidden_channels,
             out_channels=self.total_params,
             num_blocks=num_resnet_blocks,
@@ -676,7 +703,7 @@ class BlockAutoregressiveSpline(nn.Module):
         unnormalized_derivatives = params_tensor[..., 2*self.num_bins:]
         return unnormalized_widths, unnormalized_heights, unnormalized_derivatives
 
-    def forward(self, x):
+    def forward(self, x, context=None):
         # x: (B, C, H, W)
         B, C, H, W = x.shape
         
@@ -686,8 +713,16 @@ class BlockAutoregressiveSpline(nn.Module):
         x_reshaped = x_reshaped.view(B * self.num_blocks, H, W, self.block_size) # (B*NB, H, W, BS)
         x_reshaped = x_reshaped.permute(0, 3, 1, 2) # (B*NB, BS, H, W)
         
-        # Get all spline parameters in one parallel pass
-        all_params = self.ar_net(x_reshaped)
+        # Apply spatial mixing to the input of the conditioner
+        x_spatial = self.spatial_mixer(x_reshaped)
+
+        context_expanded = None
+        if context is not None:
+            # Expand context to match the reshaped input
+            context_expanded = context.repeat_interleave(self.num_blocks, dim=0)
+        
+        # Get all spline parameters in one parallel pass from the spatially-mixed input
+        all_params = self.ar_net(x_spatial, context=context_expanded)
         
         # Reshape params to be (B*NB, block_size, params_per_channel, H, W)
         all_params = all_params.view(
@@ -728,7 +763,7 @@ class BlockAutoregressiveSpline(nn.Module):
         
         return y, log_det
 
-    def inverse(self, y):
+    def inverse(self, y, context=None):
         # y: (B, C, H, W)
         B, C, H, W = y.shape
             
@@ -738,13 +773,21 @@ class BlockAutoregressiveSpline(nn.Module):
         y_reshaped = y_reshaped.view(B * self.num_blocks, H, W, self.block_size)
         y_reshaped = y_reshaped.permute(0, 3, 1, 2)
 
+        # Expand context
+        context_expanded = None
+        if context is not None:
+            context_expanded = context.repeat_interleave(self.num_blocks, dim=0)
+        
         # Initialize x with zeros
         x_recon_buffer = torch.zeros_like(y_reshaped)
         
         # The inverse is sequential
         for i in range(self.block_size):
+            # Apply spatial mixing to the partially reconstructed input
+            x_spatial_recon = self.spatial_mixer(x_recon_buffer)
+            
             # Get params for the current channel using previously reconstructed x
-            all_params = self.ar_net(x_recon_buffer)
+            all_params = self.ar_net(x_spatial_recon, context=context_expanded)
             
             # Extract params for the current channel
             params_i = all_params[:, i*self.params_per_channel:(i+1)*self.params_per_channel, :, :]
@@ -778,15 +821,15 @@ class BlockAutoregressiveSpline(nn.Module):
         # This is a common strategy for MAFs to avoid a sequential log_det calculation
         # during the inverse pass.
         x_final = x_recon_buffer.contiguous().view(B, C, H, W)
-        _, log_det = self.forward(x_final)
+        _, log_det = self.forward(x_final, context=context)
         
         return x_final, -log_det
-    
+
 
 class BlockAutoregressiveCoupling(nn.Module):
     """
     A coupling layer that uses a BlockAutoregressiveSpline to transform half of the inputs.
-    This is a standard coupling layer architecture, but with a more complex internal transformer.
+    The other half of the input is used as context to condition the spline transformation.
     """
     def __init__(
         self,
@@ -811,11 +854,9 @@ class BlockAutoregressiveCoupling(nn.Module):
         # The second part is transformed
         self.transformed_channels = in_channels - self.identity_channels
 
-        # The conditioner for the spline is the identity part of the input
-        self.spline_conditioner_channels = self.identity_channels
-
         self.spline = BlockAutoregressiveSpline(
             num_channels=self.transformed_channels,
+            context_channels=self.identity_channels, # Condition on the other half
             num_resnet_blocks=num_resnet_blocks,
             hidden_channels=hidden_channels,
             block_size=block_size,
@@ -826,22 +867,12 @@ class BlockAutoregressiveCoupling(nn.Module):
             min_derivative=min_derivative,
             dropout=dropout,
         )
-        
-        # A simple network to process the conditioning input
-        self.conditioner_net = nn.Sequential(
-            nn.Conv2d(self.spline_conditioner_channels, hidden_channels, 3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_channels, self.transformed_channels, 3, padding=1)
-        )
 
     def forward(self, x):
         x_identity, x_transform = x.split([self.identity_channels, self.transformed_channels], dim=1)
         
-        # Process the identity part to create a conditioning signal
-        conditioning_signal = self.conditioner_net(x_identity)
-        
-        # Add the conditioning signal to the part to be transformed
-        y_transform, log_det = self.spline(x_transform + conditioning_signal)
+        # x_identity is the context for the spline transformation on x_transform
+        y_transform, log_det = self.spline(x_transform, context=x_identity)
         
         y = torch.cat([x_identity, y_transform], dim=1)
         
@@ -850,14 +881,8 @@ class BlockAutoregressiveCoupling(nn.Module):
     def inverse(self, y):
         y_identity, y_transform = y.split([self.identity_channels, self.transformed_channels], dim=1)
         
-        # Process the identity part to create the same conditioning signal
-        conditioning_signal = self.conditioner_net(y_identity)
-        
-        # Invert the spline transformation
-        x_transform, log_det = self.spline.inverse(y_transform)
-        
-        # Subtract the conditioning signal to get the original input
-        x_transform = x_transform - conditioning_signal
+        # y_identity is the context for the inverse spline transformation on y_transform
+        x_transform, log_det = self.spline.inverse(y_transform, context=y_identity)
         
         x = torch.cat([y_identity, x_transform], dim=1)
         
@@ -872,27 +897,30 @@ if __name__ == '__main__':
     block_size = 4
     hidden_channels_ar = 32
     num_resnet_blocks = 2
+    context_channels_test = 8 # Example context channels
     
     # Test BlockAutoregressiveSpline
     print("--- Testing BlockAutoregressiveSpline (MAF implementation) ---")
     
     # Create inputs
     x = torch.randn(B, C, H, W)
+    context = torch.randn(B, context_channels_test, H, W)
     
     # Create model
     try:
         spline_layer = BlockAutoregressiveSpline(
             num_channels=C,
+            context_channels=context_channels_test,
             block_size=block_size,
             hidden_channels=hidden_channels_ar,
             num_resnet_blocks=num_resnet_blocks
         )
         
         # Forward pass
-        y, log_det_fwd = spline_layer(x)
+        y, log_det_fwd = spline_layer(x, context=context)
         
         # Inverse pass
-        x_recon, log_det_inv = spline_layer.inverse(y)
+        x_recon, log_det_inv = spline_layer.inverse(y, context=context)
         
         # --- Checks ---
         # 1. Invertibility check
