@@ -263,7 +263,7 @@ class AffineCoupling(nn.Module):
             dropout=dropout
         )
         
-        self.register_buffer("scale_clamp", torch.tensor(1.5))
+        self.register_buffer("scale_clamp", torch.tensor(1.0))
 
     def forward(self, x):
         x_a, x_b = x.split(self.split_size, dim=1)
@@ -869,6 +869,133 @@ class BlockAutoregressiveSpline(nn.Module):
         return x_final, -log_det
 
 
+class BlockConditionalTriangularLinear(nn.Module):
+    """
+    Blockwise conditional triangular linear mixing.
+    For each spatial location and block, constructs a lower-triangular matrix L
+    and positive diagonal D (via clamped log-diagonal), then applies (D + L) to
+    the block vector. Parameters depend only on provided context features,
+    preserving triangular Jacobian structure and tractable log-det.
+    """
+    def __init__(
+        self,
+        num_channels,
+        context_channels,
+        hidden_channels=64,
+        num_resnet_blocks=1,
+        block_size=2,
+        dropout=0.0,
+        scale_clamp=1.0,
+    ):
+        super().__init__()
+        if num_channels % block_size != 0:
+            raise ValueError(f"num_channels ({num_channels}) must be divisible by block_size ({block_size})")
+        self.num_channels = num_channels
+        self.context_channels = context_channels
+        self.block_size = block_size
+        self.num_blocks = num_channels // block_size
+        self.scale_clamp = scale_clamp
+
+        # Parameters per block: diag (bs) + strictly lower (bs*(bs-1)/2)
+        self.lower_params_per_block = (block_size * (block_size - 1)) // 2
+        self.diag_params_per_block = block_size
+        self.params_per_block = self.diag_params_per_block + self.lower_params_per_block
+
+        # Context network to emit triangular parameters per block
+        out_channels = self.num_blocks * self.params_per_block
+        self.param_net = CNNCouplingNet(
+            in_channels=self.context_channels,
+            hidden_channels=hidden_channels,
+            out_channels=out_channels,
+            num_resnet_blocks=num_resnet_blocks,
+            dropout=dropout,
+        )
+        # Zero-init already applied in CNNCouplingNet to ensure identity at init
+
+        # Precompute row offsets for mapping lower-triangular params
+        offsets = []
+        acc = 0
+        for i in range(self.block_size):
+            offsets.append(acc)
+            acc += i
+        self.register_buffer("row_offsets", torch.tensor(offsets, dtype=torch.int64))
+
+    def _reshape_blocks(self, x):
+        B, C, H, W = x.shape
+        x_reshaped = x.view(B, self.num_blocks, self.block_size, H, W)
+        x_reshaped = x_reshaped.permute(0, 1, 3, 4, 2)  # (B, NB, H, W, BS)
+        x_reshaped = x_reshaped.reshape(B * self.num_blocks, H, W, self.block_size)
+        return x_reshaped, B, H, W
+
+    def _unreshape_blocks(self, y, B, H, W):
+        # y: (B*NB, H, W, BS)
+        NB = self.num_blocks
+        y = y.view(B, NB, H, W, self.block_size)
+        y = y.permute(0, 1, 4, 2, 3).contiguous()  # (B, NB, BS, H, W)
+        y = y.view(B, NB * self.block_size, H, W)
+        return y
+
+    def _get_params(self, context, B, H, W):
+        # Emit params and reshape to (B*NB, H, W, params_per_block)
+        params = self.param_net(context)  # (B, NB*params, H, W)
+        params = params.view(B, self.num_blocks, self.params_per_block, H, W)
+        params = params.permute(0, 1, 3, 4, 2).contiguous()  # (B, NB, H, W, params)
+        params = params.view(B * self.num_blocks, H, W, self.params_per_block)
+        raw_diag = params[..., :self.diag_params_per_block]
+        raw_lower = params[..., self.diag_params_per_block:]
+        return raw_diag, raw_lower
+
+    def forward(self, x, context):
+        # x: (B, C=num_channels, H, W), context: (B, context_channels, H, W)
+        x_vec, B, H, W = self._reshape_blocks(x)  # (B*NB, H, W, BS)
+        raw_diag, raw_lower = self._get_params(context, B, H, W)
+
+        scale = self.scale_clamp
+        log_diag = (2.0 * scale / math.pi) * torch.atan(raw_diag / scale)
+        diag = torch.exp(log_diag)  # (B*NB, H, W, BS)
+
+        y_vec = torch.zeros_like(x_vec)
+        offsets = self.row_offsets
+
+        for i in range(self.block_size):
+            y_i = diag[..., i] * x_vec[..., i]
+            if i > 0:
+                off = int(offsets[i].item())
+                row_params = raw_lower[..., off:off + i]  # (..., i)
+                x_prev = x_vec[..., :i]  # (..., i)
+                y_i = y_i + (row_params * x_prev).sum(dim=-1)
+            y_vec[..., i] = y_i
+
+        y = self._unreshape_blocks(y_vec, B, H, W)
+        log_det = log_diag.sum(dim=[1, 2, 3])  # sum over NB*H*W*BS per batch element
+        return y, log_det
+
+    def inverse(self, y, context):
+        # y: (B, C=num_channels, H, W), context: (B, context_channels, H, W)
+        y_vec, B, H, W = self._reshape_blocks(y)
+        raw_diag, raw_lower = self._get_params(context, B, H, W)
+
+        scale = self.scale_clamp
+        log_diag = (2.0 * scale / math.pi) * torch.atan(raw_diag / scale)
+        diag = torch.exp(log_diag)
+
+        x_vec = torch.zeros_like(y_vec)
+        offsets = self.row_offsets
+
+        for i in range(self.block_size):
+            rhs = y_vec[..., i]
+            if i > 0:
+                off = int(offsets[i].item())
+                row_params = raw_lower[..., off:off + i]  # (..., i)
+                x_prev = x_vec[..., :i]
+                rhs = rhs - (row_params * x_prev).sum(dim=-1)
+            x_vec[..., i] = rhs / diag[..., i]
+
+        x = self._unreshape_blocks(x_vec, B, H, W)
+        log_det = -log_diag.sum(dim=[1, 2, 3])
+        return x, log_det
+
+
 class BlockAutoregressiveCoupling(nn.Module):
     """
     A coupling layer that uses a BlockAutoregressiveSpline to transform half of the inputs.
@@ -880,12 +1007,13 @@ class BlockAutoregressiveCoupling(nn.Module):
         hidden_channels,
         num_resnet_blocks=2,
         block_size=2,
-        num_bins=12,
+        num_bins=8,
         bound=3.0,
         min_bin_width=1e-3,
         min_bin_height=1e-3,
         min_derivative=1e-3,
         dropout=0.0,
+        linear_mixing=True,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -897,9 +1025,20 @@ class BlockAutoregressiveCoupling(nn.Module):
         # The second part is transformed
         self.transformed_channels = in_channels - self.identity_channels
 
+        # Context network over the passthrough half to provide spatial features
+        # for the spline transformation. Keep output channels modest by default.
+        self.context_channels = hidden_channels
+        self.context_net = CNNCouplingNet(
+            in_channels=self.identity_channels,
+            hidden_channels=hidden_channels,
+            out_channels=self.context_channels,
+            num_resnet_blocks=num_resnet_blocks,
+            dropout=dropout,
+        )
+
         self.spline = BlockAutoregressiveSpline(
             num_channels=self.transformed_channels,
-            context_channels=self.identity_channels, # Condition on the other half
+            context_channels=self.context_channels,
             num_resnet_blocks=num_resnet_blocks,
             hidden_channels=hidden_channels,
             block_size=block_size,
@@ -911,25 +1050,69 @@ class BlockAutoregressiveCoupling(nn.Module):
             dropout=dropout,
         )
 
+        # Optional pre/post triangular linear mixing to better mimic multidimensional splines
+        self.linear_mixing = linear_mixing
+        if self.linear_mixing:
+            self.pre_linear = BlockConditionalTriangularLinear(
+                num_channels=self.transformed_channels,
+                context_channels=self.context_channels,
+                hidden_channels=hidden_channels,
+                num_resnet_blocks=num_resnet_blocks,
+                block_size=block_size,
+                dropout=dropout,
+                scale_clamp=1.0,
+            )
+            self.post_linear = BlockConditionalTriangularLinear(
+                num_channels=self.transformed_channels,
+                context_channels=self.context_channels,
+                hidden_channels=hidden_channels,
+                num_resnet_blocks=num_resnet_blocks,
+                block_size=block_size,
+                dropout=dropout,
+                scale_clamp=1.0,
+            )
+
     def forward(self, x):
         x_identity, x_transform = x.split([self.identity_channels, self.transformed_channels], dim=1)
-        
-        # x_identity is the context for the spline transformation on x_transform
-        y_transform, log_det = self.spline(x_transform, context=x_identity)
+        # Compute spatial context features from the passthrough half
+        ctx = self.context_net(x_identity)
+        log_det_total = torch.zeros(x.shape[0], device=x.device)
+        # Optional pre-mixing
+        if self.linear_mixing:
+            x_transform, ld = self.pre_linear(x_transform, context=ctx)
+            log_det_total = log_det_total + ld
+        # Use context features to condition the spline transformation
+        y_transform, ld = self.spline(x_transform, context=ctx)
+        log_det_total = log_det_total + ld
+        # Optional post-mixing
+        if self.linear_mixing:
+            y_transform, ld = self.post_linear(y_transform, context=ctx)
+            log_det_total = log_det_total + ld
         
         y = torch.cat([x_identity, y_transform], dim=1)
         
-        return y, log_det
+        return y, log_det_total
 
     def inverse(self, y):
         y_identity, y_transform = y.split([self.identity_channels, self.transformed_channels], dim=1)
-        
-        # y_identity is the context for the inverse spline transformation on y_transform
-        x_transform, log_det = self.spline.inverse(y_transform, context=y_identity)
+        # Compute spatial context features from the passthrough half
+        ctx = self.context_net(y_identity)
+        log_det_total = torch.zeros(y.shape[0], device=y.device)
+        # Optional post-mixing inverse
+        if self.linear_mixing:
+            y_transform, ld = self.post_linear.inverse(y_transform, context=ctx)
+            log_det_total = log_det_total + ld
+        # Condition inverse spline transformation on the same context
+        x_transform, ld = self.spline.inverse(y_transform, context=ctx)
+        log_det_total = log_det_total + ld
+        # Optional pre-mixing inverse
+        if self.linear_mixing:
+            x_transform, ld = self.pre_linear.inverse(x_transform, context=ctx)
+            log_det_total = log_det_total + ld
         
         x = torch.cat([y_identity, x_transform], dim=1)
         
-        return x, log_det
+        return x, log_det_total
     
 
 if __name__ == '__main__':
