@@ -263,7 +263,7 @@ class AffineCoupling(nn.Module):
             dropout=dropout
         )
         
-        self.register_buffer("scale_clamp", torch.tensor(2.0))
+        self.register_buffer("scale_clamp", torch.tensor(1.5))
 
     def forward(self, x):
         x_a, x_b = x.split(self.split_size, dim=1)
@@ -880,7 +880,7 @@ class BlockAutoregressiveCoupling(nn.Module):
         hidden_channels,
         num_resnet_blocks=2,
         block_size=2,
-        num_bins=8,
+        num_bins=12,
         bound=3.0,
         min_bin_width=1e-3,
         min_bin_height=1e-3,
