@@ -17,6 +17,24 @@ from src.utils.evaluation import evaluate, print_train_stats
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def split_prior_params_by_type(module: nn.Module):
+    """Split prior parameters into channel, spatial, and other buckets."""
+    channel_keys = ("cov_ch", "ch_", "ch_D_head", "ch_U_head", "log_cov_ch")
+    spatial_keys = ("cov_sp", "sp_", "sp_D_head", "sp_U_head", "log_cov_sp")
+
+    ch_params, sp_params, other_params = [], [], []
+    for name, param in module.named_parameters():
+        if not param.requires_grad:
+            continue
+        if any(key in name for key in channel_keys):
+            ch_params.append(param)
+        elif any(key in name for key in spatial_keys):
+            sp_params.append(param)
+        else:
+            other_params.append(param)
+    return ch_params, sp_params, other_params
+
+
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def train(cfg: DictConfig):
     # Convert OmegaConf to a plain dictionary for wandb
@@ -135,11 +153,19 @@ def train(cfg: DictConfig):
         input_shape=input_shape, 
         _convert_="partial"
     ).to(device)
-    
+
+    lr_prior_levels = list(cfg.training.lr_prior)
+    lr_prior_channel = list(cfg.training.lr_prior_channel) if "lr_prior_channel" in cfg.training else lr_prior_levels
+    lr_prior_spatial = list(cfg.training.lr_prior_spatial) if "lr_prior_spatial" in cfg.training else lr_prior_levels
+
+    assert len(lr_prior_levels) == len(level_priors_params), "lr_prior length must match number of levels"
+    assert len(lr_prior_channel) == len(level_priors_params), "lr_prior_channel length must match number of levels"
+    assert len(lr_prior_spatial) == len(level_priors_params), "lr_prior_spatial length must match number of levels"
+
     if cfg.training.lr == 0:
         model.requires_grad_(False)
-    for lr_prior, level_prior_params in zip(cfg.training.lr_prior, level_priors_params):
-        if lr_prior == 0:
+    for lr_base, lr_ch, lr_sp, level_prior_params in zip(lr_prior_levels, lr_prior_channel, lr_prior_spatial, level_priors_params):
+        if lr_base == 0 and lr_ch == 0 and lr_sp == 0:
             level_prior_params.requires_grad_(False)
 
     optimizer_model = optim.AdamW(
@@ -147,17 +173,42 @@ def train(cfg: DictConfig):
         lr=cfg.training.lr,
         weight_decay=cfg.training.weight_decay
     )
-    
+
     prior_param_groups = []
-    for prior_param, lr_prior in zip(level_priors_params, cfg.training.lr_prior):
-        params_to_optimize = [p for p in prior_param.parameters() if p.requires_grad]
-        if len(params_to_optimize) > 0:
+    for prior_param, lr_base, lr_ch, lr_sp in zip(level_priors_params, lr_prior_levels, lr_prior_channel, lr_prior_spatial):
+        ch_params, sp_params, other_params = split_prior_params_by_type(prior_param)
+
+        if lr_ch == 0:
+            for p in ch_params:
+                p.requires_grad_(False)
+        if lr_sp == 0:
+            for p in sp_params:
+                p.requires_grad_(False)
+        if lr_base == 0:
+            for p in other_params:
+                p.requires_grad_(False)
+
+        if ch_params and lr_ch > 0:
             prior_param_groups.append({
-                'params': params_to_optimize,
-                'lr': lr_prior,
+                'params': ch_params,
+                'lr': lr_ch,
                 'weight_decay': 0
             })
-    optimizer_prior = optim.AdamW(prior_param_groups)
+        if sp_params and lr_sp > 0:
+            prior_param_groups.append({
+                'params': sp_params,
+                'lr': lr_sp,
+                'weight_decay': 0
+            })
+        if other_params and lr_base > 0:
+            prior_param_groups.append({
+                'params': other_params,
+                'lr': lr_base,
+                'weight_decay': 0
+            })
+
+    optimizer_prior = optim.AdamW(prior_param_groups) if len(prior_param_groups) > 0 else None
+    trainable_prior_params = [p for p in level_priors_params.parameters() if p.requires_grad]
     
     # Load from checkpoint if specified
     start_epoch = 0
@@ -173,7 +224,12 @@ def train(cfg: DictConfig):
         if not cfg.training.reset_optimizer:
             if 'optimizer_model_state_dict' in checkpoint:
                 optimizer_model.load_state_dict(checkpoint['optimizer_model_state_dict'])
-                optimizer_prior.load_state_dict(checkpoint['optimizer_prior_state_dict'])
+                if optimizer_prior is not None and 'optimizer_prior_state_dict' in checkpoint and checkpoint['optimizer_prior_state_dict'] is not None:
+                    optimizer_prior.load_state_dict(checkpoint['optimizer_prior_state_dict'])
+                elif optimizer_prior is None and 'optimizer_prior_state_dict' in checkpoint:
+                    print("Warning: Prior optimizer not constructed; skipping optimizer_prior_state_dict.")
+                elif optimizer_prior is not None:
+                    print("Warning: optimizer_prior_state_dict missing in checkpoint.")
             else:
                 print("Warning: Old checkpoint format detected. Optimizer state might not load correctly.")
         
@@ -208,17 +264,17 @@ def train(cfg: DictConfig):
                 current_step = epoch * steps_per_epoch + batch_idx
                 warmup_factor = (current_step + 1) / total_warmup_steps
                 
-                for optimizer in [optimizer_model, optimizer_prior]:
+                for optimizer in [opt for opt in [optimizer_model, optimizer_prior] if opt is not None]:
                     for param_group in optimizer.param_groups:
                         if 'target_lr' not in param_group:
                             param_group['target_lr'] = param_group['lr']
-                        
                         param_group['lr'] = param_group['target_lr'] * warmup_factor
                     
                 # r_logdet = cfg.training.r_logdet * (1 - warmup_factor)
             
             optimizer_model.zero_grad()
-            optimizer_prior.zero_grad()
+            if optimizer_prior is not None:
+                optimizer_prior.zero_grad()
 
             # Forward pass
             outs, log_dets = model(x_batch)
@@ -288,45 +344,48 @@ def train(cfg: DictConfig):
             
             # Clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
-            torch.nn.utils.clip_grad_norm_(level_priors_params.parameters(), max_norm=cfg.training.gradclip)
+            if len(trainable_prior_params) > 0:
+                torch.nn.utils.clip_grad_norm_(trainable_prior_params, max_norm=cfg.training.gradclip)
             
             optimizer_model.step()
-            optimizer_prior.step()
+            if optimizer_prior is not None:
+                optimizer_prior.step()
 
             total_loss += task_loss.item()
             total_nll += nll_loss.item()
             total_ce += ce_loss.item()
             
             # EM step
-            for _ in range(cfg.training.em_steps):
-                optimizer_prior.zero_grad()
-                
-                with torch.no_grad():
-                    outs, log_dets = model(x_batch)
-                    log_det = torch.sum(log_dets, dim=0)
-                    model_logits = log_det.unsqueeze(1)
-                
-                prior_logits_acc = torch.zeros_like(model_logits)
-                for k, (h, z) in enumerate(outs):
-                    args = [{}, {"h": h}, {}]
-                    split = splits[k]
+            if optimizer_prior is not None and len(trainable_prior_params) > 0:
+                for _ in range(cfg.training.em_steps):
+                    optimizer_prior.zero_grad()
                     
-                    priors = [
-                        prior_fact(**a) if prior_fact is not None else None 
-                        for prior_fact, a in zip(level_priors[k], args)
-                    ]
+                    with torch.no_grad():
+                        outs, log_dets = model(x_batch)
+                        log_det = torch.sum(log_dets, dim=0)
+                        model_logits = log_det.unsqueeze(1)
                     
-                    level_logits = compute_level_logits(h, z, priors, splits[k], K)
-                    prior_logits_acc = prior_logits_acc + level_logits
+                    prior_logits_acc = torch.zeros_like(model_logits)
+                    for k, (h, z) in enumerate(outs):
+                        args = [{}, {"h": h}, {}]
+                        split = splits[k]
+                        
+                        priors = [
+                            prior_fact(**a) if prior_fact is not None else None 
+                            for prior_fact, a in zip(level_priors[k], args)
+                        ]
+                        
+                        level_logits = compute_level_logits(h, z, priors, splits[k], K)
+                        prior_logits_acc = prior_logits_acc + level_logits
+                    
+                    logits = model_logits + prior_logits_acc
                 
-                logits = model_logits + prior_logits_acc
-            
-                nll_loss_em = nll_loss_fn(logits, y_batch)
-                nll_loss_em = nll_loss_em / (input_shape[0] * input_shape[1] * input_shape[2] * torch.log(torch.tensor(2.0)))
-                
-                nll_loss_em.backward()
-                torch.nn.utils.clip_grad_norm_(level_priors_params.parameters(), max_norm=cfg.training.gradclip)
-                optimizer_prior.step()
+                    nll_loss_em = nll_loss_fn(logits, y_batch)
+                    nll_loss_em = nll_loss_em / (input_shape[0] * input_shape[1] * input_shape[2] * torch.log(torch.tensor(2.0)))
+                    
+                    nll_loss_em.backward()
+                    torch.nn.utils.clip_grad_norm_(trainable_prior_params, max_norm=cfg.training.gradclip)
+                    optimizer_prior.step()
             
             # EMA update after EM
             ema_model.update_parameters(model)
@@ -363,7 +422,7 @@ def train(cfg: DictConfig):
                 'prior_state_dict': level_priors_params.state_dict(),
                 'ema_model_state_dict': ema_model.state_dict(),
                 'optimizer_model_state_dict': optimizer_model.state_dict(),
-                'optimizer_prior_state_dict': optimizer_prior.state_dict(),
+                'optimizer_prior_state_dict': optimizer_prior.state_dict() if optimizer_prior is not None else None,
             }, checkpoint_path)
             
         scheduler.step()

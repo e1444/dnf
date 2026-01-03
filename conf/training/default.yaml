@@ -4,6 +4,8 @@ defaults:
 
 lr: 1e-3
 lr_prior: [0, 0, 0]
+lr_prior_channel: [0, 0, 0]
+lr_prior_spatial: [0, 0, 0]
 
 gradclip: 1.0
 weight_decay: 1e-4
