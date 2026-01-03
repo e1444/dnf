@@ -1015,7 +1015,7 @@ class BlockAutoregressiveCoupling(nn.Module):
         min_bin_height=1e-3,
         min_derivative=1e-3,
         dropout=0.0,
-        pre_linear_mixing=True,
+        pre_linear_mixing=False,
         post_linear_mixing=False,
     ):
         super().__init__()

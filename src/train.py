@@ -246,6 +246,29 @@ def train(cfg: DictConfig):
     
     r_logdet = cfg.training.r_logdet
     
+    # Compute dimension-aware NLL reweighting factors
+    nll_dim_weights = [1.0] * cfg.model.num_levels  # Default: no reweighting
+    if cfg.training.get('nll_dim_reweight', False):
+        strategy = cfg.training.get('nll_dim_strategy', 'sqrt')
+        print(f"Using dimension-aware NLL reweighting: {strategy}")
+        
+        dims = [C * H * W for C, H, W in output_shapes]
+        dim_top = dims[-1]
+        
+        for i, dim in enumerate(dims):
+            if strategy == "full":
+                # Full normalization: 1/dim (all levels equal magnitude)
+                nll_dim_weights[i] = dim_top / dim
+            elif strategy == "sqrt":
+                # Partial normalization: 1/sqrt(dim)
+                nll_dim_weights[i] = (dim_top / dim) ** 0.5
+            elif strategy == "inverse":
+                # Inverse: dim_top / dim
+                nll_dim_weights[i] = dim_top / dim
+            # else: strategy == "none", keep weights at 1.0
+        
+        print(f"NLL dimension weights per level: {[f'{w:.4f}' for w in nll_dim_weights]}")
+    
     # Training loop
     print("Starting training...")
     total_epochs = start_epoch + cfg.training.epochs
@@ -256,6 +279,10 @@ def train(cfg: DictConfig):
         total_loss = 0.0
         total_nll = 0.0
         total_ce = 0.0
+        total_raw_nll = 0.0  # Unweighted NLL
+        total_effective_nll = 0.0  # Weighted NLL used in loss
+        level_raw_nlls = [0.0] * cfg.model.num_levels  # Per-level unweighted NLL
+        level_effective_nlls = [0.0] * cfg.model.num_levels  # Per-level weighted NLL
 
         for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
@@ -282,6 +309,7 @@ def train(cfg: DictConfig):
             
             model_logits = log_det.unsqueeze(1)
             prior_logits_acc = torch.zeros_like(model_logits)
+            prior_logits_unweighted = torch.zeros_like(model_logits)  # Track unweighted version
             
             anisotropy_losses = []
             for k, (h, z) in enumerate(outs):
@@ -305,7 +333,22 @@ def train(cfg: DictConfig):
                         anisotropy_losses.append(K * prior.anisotropy_loss().mean())
                         
                 level_logits = compute_level_logits(h, z, priors, splits[k], K)
-                prior_logits_acc = prior_logits_acc + level_logits
+                # Apply dimension-aware reweighting if enabled
+                weighted_level_logits = level_logits * nll_dim_weights[k]
+                prior_logits_acc = prior_logits_acc + weighted_level_logits
+                prior_logits_unweighted = prior_logits_unweighted + level_logits
+                
+                # Track per-level NLL contributions
+                with torch.no_grad():
+                    C, H, W = output_shapes[k]
+                    dim = C * H * W
+                    level_nll_raw = -level_logits[torch.arange(x_batch.size(0)), y_batch].mean()
+                    level_nll_raw_bpd = level_nll_raw / (dim * torch.log(torch.tensor(2.0)))
+                    level_raw_nlls[k] += level_nll_raw_bpd.item()
+                    
+                    level_nll_eff = -weighted_level_logits[torch.arange(x_batch.size(0)), y_batch].mean()
+                    level_nll_eff_bpd = level_nll_eff / (dim * torch.log(torch.tensor(2.0)))
+                    level_effective_nlls[k] += level_nll_eff_bpd.item()
             
             # Detach priors for CE (Option A)
             # logits_ce = model_logits + prior_logits_acc.detach()
@@ -315,10 +358,19 @@ def train(cfg: DictConfig):
             
             # Full logits for NLL
             logits = model_logits + prior_logits_acc
+            logits_unweighted = model_logits + prior_logits_unweighted
             
-            # 2. NLL Loss
+            # 2. NLL Loss (this is the effective/weighted version used in optimization)
             nll_loss = nll_loss_fn(logits, y_batch)
-            nll_loss = nll_loss / (input_shape[0] * input_shape[1] * input_shape[2] * torch.log(torch.tensor(2.0)))
+            total_dim = input_shape[0] * input_shape[1] * input_shape[2]
+            nll_loss = nll_loss / (total_dim * torch.log(torch.tensor(2.0)))
+            
+            # Track raw NLL (unweighted) for comparison
+            with torch.no_grad():
+                nll_loss_raw = nll_loss_fn(logits_unweighted, y_batch)
+                nll_loss_raw_bpd = nll_loss_raw / (total_dim * torch.log(torch.tensor(2.0)))
+                total_raw_nll += nll_loss_raw_bpd.item()
+                total_effective_nll += nll_loss.item()
             
             task_loss = (1 - cfg.training.l_lambda) * ce_loss + cfg.training.l_lambda * nll_loss
             
@@ -376,8 +428,9 @@ def train(cfg: DictConfig):
                         ]
                         
                         level_logits = compute_level_logits(h, z, priors, splits[k], K)
-                        prior_logits_acc = prior_logits_acc + level_logits
-                    
+                    # Apply dimension-aware reweighting if enabled
+                    weighted_level_logits = level_logits * nll_dim_weights[k]
+                    prior_logits_acc = prior_logits_acc + weighted_level_logits
                     logits = model_logits + prior_logits_acc
                 
                     nll_loss_em = nll_loss_fn(logits, y_batch)
@@ -393,13 +446,22 @@ def train(cfg: DictConfig):
         avg_train_loss = total_loss / len(train_loader)
         avg_nll = total_nll / len(train_loader)
         avg_ce = total_ce / len(train_loader)
+        avg_raw_nll = total_raw_nll / len(train_loader)
+        avg_effective_nll = total_effective_nll / len(train_loader)
         
         log_dict = {
             "epoch": epoch, 
             "train_loss": avg_train_loss,
             "train_nll": avg_nll,
             "train_ce": avg_ce,
+            "train_nll_raw_bpd": avg_raw_nll,  # Unweighted NLL in bits per dimension
+            "train_nll_effective_bpd": avg_effective_nll,  # Weighted NLL used in loss
         }
+        
+        # Add per-level NLL statistics
+        for k in range(cfg.model.num_levels):
+            log_dict[f"train_nll_raw_bpd_level_{k}"] = level_raw_nlls[k] / len(train_loader)
+            log_dict[f"train_nll_effective_bpd_level_{k}"] = level_effective_nlls[k] / len(train_loader)
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:

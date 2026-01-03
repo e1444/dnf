@@ -17,3 +17,7 @@ label_smoothing: 0.1
 # Loss Weights
 l_lambda: 0.8     # NLL weight (1.0 - lambda = CE weight)
 em_steps: 3
+
+# Dimension-aware NLL reweighting (combat NLL dominance at early levels)
+nll_dim_reweight: true
+nll_dim_strategy: "sqrt"  # Use sqrt normalization to partially balance dimensions

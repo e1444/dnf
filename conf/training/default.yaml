@@ -26,6 +26,10 @@ warmup_epochs: 5
 l_lambda: 0.5     # NLL weight (1.0 - lambda = CE weight)
 em_steps: 2
 
+# Dimension-aware NLL reweighting (helps early levels get CE signal)
+nll_dim_reweight: false  # Enable dimension normalization
+nll_dim_strategy: "sqrt"  # "none", "full" (1/dim), "sqrt" (1/sqrt(dim)), "inverse" (dim_top/dim)
+
 ckpt: null
 load_model: false
 load_prior: false
