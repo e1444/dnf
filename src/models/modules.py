@@ -1058,8 +1058,8 @@ class BlockAutoregressiveCoupling(nn.Module):
             self.pre_linear = BlockConditionalTriangularLinear(
                 num_channels=self.transformed_channels,
                 context_channels=self.context_channels,
-                hidden_channels=hidden_channels,
-                num_resnet_blocks=num_resnet_blocks,
+                hidden_channels=hidden_channels // 2,
+                num_resnet_blocks=num_resnet_blocks // 2,
                 block_size=block_size,
                 dropout=dropout,
                 scale_clamp=1.0,
@@ -1067,8 +1067,8 @@ class BlockAutoregressiveCoupling(nn.Module):
             self.post_linear = BlockConditionalTriangularLinear(
                 num_channels=self.transformed_channels,
                 context_channels=self.context_channels,
-                hidden_channels=hidden_channels,
-                num_resnet_blocks=num_resnet_blocks,
+                hidden_channels=hidden_channels // 2,
+                num_resnet_blocks=num_resnet_blocks // 2,
                 block_size=block_size,
                 dropout=dropout,
                 scale_clamp=1.0,
