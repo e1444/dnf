@@ -1015,7 +1015,8 @@ class BlockAutoregressiveCoupling(nn.Module):
         min_bin_height=1e-3,
         min_derivative=1e-3,
         dropout=0.0,
-        linear_mixing=True,
+        pre_linear_mixing=True,
+        post_linear_mixing=False,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -1053,8 +1054,10 @@ class BlockAutoregressiveCoupling(nn.Module):
         )
 
         # Optional pre/post triangular linear mixing to better mimic multidimensional splines
-        self.linear_mixing = linear_mixing
-        if self.linear_mixing:
+        self.pre_linear_mixing = pre_linear_mixing
+        self.post_linear_mixing = post_linear_mixing
+        
+        if self.pre_linear_mixing:
             self.pre_linear = BlockConditionalTriangularLinear(
                 num_channels=self.transformed_channels,
                 context_channels=self.context_channels,
@@ -1064,6 +1067,8 @@ class BlockAutoregressiveCoupling(nn.Module):
                 dropout=dropout,
                 scale_clamp=1.0,
             )
+        
+        if self.post_linear_mixing:
             self.post_linear = BlockConditionalTriangularLinear(
                 num_channels=self.transformed_channels,
                 context_channels=self.context_channels,
@@ -1080,14 +1085,14 @@ class BlockAutoregressiveCoupling(nn.Module):
         ctx = self.context_net(x_identity)
         log_det_total = torch.zeros(x.shape[0], device=x.device)
         # Optional pre-mixing
-        if self.linear_mixing:
+        if self.pre_linear_mixing:
             x_transform, ld = self.pre_linear(x_transform, context=ctx)
             log_det_total = log_det_total + ld
         # Use context features to condition the spline transformation
         y_transform, ld = self.spline(x_transform, context=ctx)
         log_det_total = log_det_total + ld
         # Optional post-mixing
-        if self.linear_mixing:
+        if self.post_linear_mixing:
             y_transform, ld = self.post_linear(y_transform, context=ctx)
             log_det_total = log_det_total + ld
         
@@ -1101,14 +1106,14 @@ class BlockAutoregressiveCoupling(nn.Module):
         ctx = self.context_net(y_identity)
         log_det_total = torch.zeros(y.shape[0], device=y.device)
         # Optional post-mixing inverse
-        if self.linear_mixing:
+        if self.post_linear_mixing:
             y_transform, ld = self.post_linear.inverse(y_transform, context=ctx)
             log_det_total = log_det_total + ld
         # Condition inverse spline transformation on the same context
         x_transform, ld = self.spline.inverse(y_transform, context=ctx)
         log_det_total = log_det_total + ld
         # Optional pre-mixing inverse
-        if self.linear_mixing:
+        if self.pre_linear_mixing:
             x_transform, ld = self.pre_linear.inverse(x_transform, context=ctx)
             log_det_total = log_det_total + ld
         
