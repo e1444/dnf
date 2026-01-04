@@ -355,8 +355,22 @@ def train(cfg: DictConfig):
                         anisotropy_losses.append(K * prior.anisotropy_loss().mean())
                         
                 level_logits = compute_level_logits(h, z, priors, splits[k], K)
+                
+                # Debug: Check for NaN/Inf in prior logits before reweighting
+                if epoch == start_epoch and batch_idx == 0:
+                    if torch.isnan(level_logits).any() or torch.isinf(level_logits).any():
+                        print(f"WARNING: NaN/Inf in level {k} prior logits BEFORE reweighting")
+                        print(f"  Stats: min={level_logits.min().item():.2e}, max={level_logits.max().item():.2e}")
+                
                 # Apply dimension-aware reweighting if enabled
                 weighted_level_logits = level_logits * nll_dim_weights[k]
+                
+                # Debug: Check after reweighting
+                if epoch == start_epoch and batch_idx == 0:
+                    if torch.isnan(weighted_level_logits).any() or torch.isinf(weighted_level_logits).any():
+                        print(f"WARNING: NaN/Inf in level {k} prior logits AFTER reweighting (weight={nll_dim_weights[k]:.4f})")
+                        print(f"  Stats: min={weighted_level_logits.min().item():.2e}, max={weighted_level_logits.max().item():.2e}")
+                
                 prior_logits_acc = prior_logits_acc + weighted_level_logits
                 prior_logits_unweighted = prior_logits_unweighted + level_logits
                 
@@ -414,7 +428,32 @@ def train(cfg: DictConfig):
             
             # Primal Objective
             task_loss = task_loss + reg_loss
+            
+            # Check for NaN/Inf in loss before backprop
+            if torch.isnan(task_loss) or torch.isinf(task_loss):
+                print(f"WARNING: NaN/Inf in task_loss at batch {batch_idx}")
+                print(f"  CE loss: {ce_loss.item():.2e}, NLL loss: {nll_loss.item():.2e}, Reg loss: {reg_loss.item():.2e}")
+                print(f"  Logits stats: min={logits.min().item():.2e}, max={logits.max().item():.2e}")
+                print(f"  Model logits stats: min={model_logits.min().item():.2e}, max={model_logits.max().item():.2e}")
+                print(f"  Prior logits stats: min={prior_logits_acc.min().item():.2e}, max={prior_logits_acc.max().item():.2e}")
+                continue
+            
             task_loss.backward()
+            
+            # Check for NaN/Inf in gradients
+            has_nan_grad = False
+            for name, param in model.named_parameters():
+                if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                    print(f"WARNING: NaN/Inf gradient in model parameter: {name}")
+                    has_nan_grad = True
+                    break
+            
+            if has_nan_grad:
+                print(f"Skipping batch {batch_idx} due to NaN gradients")
+                optimizer_model.zero_grad()
+                if optimizer_prior is not None:
+                    optimizer_prior.zero_grad()
+                continue
             
             # Clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradclip)
@@ -450,9 +489,10 @@ def train(cfg: DictConfig):
                         ]
                         
                         level_logits = compute_level_logits(h, z, priors, splits[k], K)
-                    # Apply dimension-aware reweighting if enabled
-                    weighted_level_logits = level_logits * nll_dim_weights[k]
-                    prior_logits_acc = prior_logits_acc + weighted_level_logits
+                        # Apply dimension-aware reweighting if enabled
+                        weighted_level_logits = level_logits * nll_dim_weights[k]
+                        prior_logits_acc = prior_logits_acc + weighted_level_logits
+                    
                     logits = model_logits + prior_logits_acc
                 
                     nll_loss_em = nll_loss_fn(logits, y_batch)
