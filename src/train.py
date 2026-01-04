@@ -327,9 +327,23 @@ def train(cfg: DictConfig):
 
             # Forward pass
             outs, log_dets = model(x_batch)
-            log_det = torch.sum(log_dets, dim=0)
+            
+            # Calculate unweighted log_det sum for logging
+            log_det_unweighted = torch.sum(log_dets, dim=0)
+            
+            # Apply dimension-aware reweighting to log_dets if enabled
+            if cfg.training.get('nll_dim_reweight', False):
+                # Weight LogitTransform (idx 0) with Level 0 weight
+                ld_weights = [nll_dim_weights[0]] + nll_dim_weights
+                ld_weights_t = torch.tensor(ld_weights, device=device, dtype=log_dets.dtype)
+                log_dets_weighted = log_dets * ld_weights_t.unsqueeze(1)
+                log_det = torch.sum(log_dets_weighted, dim=0)
+            else:
+                log_det = log_det_unweighted
             
             model_logits = log_det.unsqueeze(1)
+            model_logits_unweighted = log_det_unweighted.unsqueeze(1)
+
             prior_logits_acc = torch.zeros_like(model_logits)
             prior_logits_unweighted = torch.zeros_like(model_logits)  # Track unweighted version
             
@@ -394,7 +408,7 @@ def train(cfg: DictConfig):
             
             # Full logits for NLL
             logits = model_logits + prior_logits_acc
-            logits_unweighted = model_logits + prior_logits_unweighted
+            logits_unweighted = model_logits_unweighted + prior_logits_unweighted
             
             # 2. NLL Loss (this is the effective/weighted version used in optimization)
             nll_loss = nll_loss_fn(logits, y_batch)
