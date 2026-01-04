@@ -269,6 +269,16 @@ def train(cfg: DictConfig):
         
         print(f"NLL dimension weights per level: {[f'{w:.4f}' for w in nll_dim_weights]}")
     
+    # Apply per-level NLL weighting (multiplies with dimension weights)
+    level_weights = cfg.training.get('nll_level_weights', None)
+    if level_weights is not None:
+        assert len(level_weights) == cfg.model.num_levels, f"nll_level_weights must have {cfg.model.num_levels} elements"
+        print(f"Applying per-level NLL weights: {level_weights}")
+        for i in range(cfg.model.num_levels):
+            nll_dim_weights[i] *= level_weights[i]
+    
+    print(f"Final NLL weights per level: {[f'{w:.4f}' for w in nll_dim_weights]}")
+    
     # Training loop
     print("Starting training...")
     total_epochs = start_epoch + cfg.training.epochs

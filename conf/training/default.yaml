@@ -29,6 +29,7 @@ em_steps: 2
 # Dimension-aware NLL reweighting (helps early levels get CE signal)
 nll_dim_reweight: false  # Enable dimension normalization
 nll_dim_strategy: "sqrt"  # "none", "full" (1/dim), "sqrt" (1/sqrt(dim)), "inverse" (dim_top/dim)
+nll_level_weights: null  # Per-level NLL multipliers [w0, w1, w2] or null for [1.0, 1.0, 1.0]
 
 ckpt: null
 load_model: false

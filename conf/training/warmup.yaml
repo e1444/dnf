@@ -21,3 +21,4 @@ em_steps: 3
 # Dimension-aware NLL reweighting (combat NLL dominance at early levels)
 nll_dim_reweight: true
 nll_dim_strategy: "sqrt"  # Use sqrt normalization to partially balance dimensions
+nll_level_weights: [0.25, 0.33, 1.0]  # Reduce NLL at early levels to achieve 1:1 CE:NLL ratio
