@@ -159,6 +159,23 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             total += y_batch.size(0)
             correct += (predicted == y_batch).sum().item()
 
+    # Handle case where all batches were skipped due to NaN
+    if total == 0:
+        print("WARNING: All evaluation batches were skipped due to NaN/Inf. Returning placeholder values.")
+        if prefix is not None:
+            prefix = prefix + '_'
+        else:
+            prefix = ''
+        return {
+            f"{prefix}loss": float('nan'),
+            f"{prefix}accuracy": 0.0,
+            f"{prefix}nll": float('nan'),
+            f"{prefix}nll_raw_bpd": float('nan'),
+            f"{prefix}nll_effective_bpd": float('nan'),
+            f"{prefix}logit_split": float('nan'),
+            f"{prefix}log_det": float('nan'),
+        }
+    
     avg_loss = total_loss / len(data_loader)
     avg_nll = total_nll / total
     avg_logit_split = total_logit_split / total

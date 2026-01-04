@@ -490,18 +490,6 @@ def train(cfg: DictConfig):
             train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="train_eval")
             log_dict.update(train_stats)
             
-            # Warmup EMA model ActNorm layers before evaluation
-            # ActNorm layers need to see data to initialize their statistics
-            ema_model.eval()
-            with torch.no_grad():
-                warmup_batch = next(iter(test_loader))[0].to(device)
-                try:
-                    _ = ema_model(warmup_batch)
-                except:
-                    # If warmup fails, use regular model instead
-                    print("Warning: EMA model warmup failed, using regular model for evaluation")
-                    ema_model = model
-            
             test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="test")
             log_dict.update(test_stats)
             
