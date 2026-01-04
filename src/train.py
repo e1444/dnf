@@ -475,9 +475,9 @@ def train(cfg: DictConfig):
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, output_shapes, prefix="train_eval")
+            train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="train_eval")
             log_dict.update(train_stats)
-            test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, output_shapes, prefix="test")
+            test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="test")
             log_dict.update(test_stats)
             
             print_train_stats(epoch, train_stats, test_stats)
