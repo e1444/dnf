@@ -472,6 +472,21 @@ def train(cfg: DictConfig):
         avg_raw_nll = total_raw_nll / len(train_loader)
         avg_effective_nll = total_effective_nll / len(train_loader)
         
+        # Debug: Check for NaN in model and prior parameters
+        if cfg.training.ckpt is None and epoch == start_epoch:
+            print("DEBUG: Checking parameters for NaN/Inf after first epoch...")
+            has_nan = False
+            for name, param in model.named_parameters():
+                if torch.isnan(param).any() or torch.isinf(param).any():
+                    print(f"  Model NaN/Inf in: {name}")
+                    has_nan = True
+            for name, param in level_priors_params.named_parameters():
+                if torch.isnan(param).any() or torch.isinf(param).any():
+                    print(f"  Prior NaN/Inf in: {name}")
+                    has_nan = True
+            if not has_nan:
+                print("  No NaN/Inf found in parameters")
+        
         log_dict = {
             "epoch": epoch, 
             "train_loss": avg_train_loss,
