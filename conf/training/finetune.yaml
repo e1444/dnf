@@ -16,6 +16,9 @@ label_smoothing: 0.0
 # Disable dimension reweighting for clean MLE
 nll_dim_reweight: false
 
+# Use EMA for stable evaluation in finetuning
+use_ema: true
+
 use_al: True
 log_alpha: 1.0
 lr_log_alpha: 1e-3

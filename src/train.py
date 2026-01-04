@@ -462,13 +462,9 @@ def train(cfg: DictConfig):
                     torch.nn.utils.clip_grad_norm_(trainable_prior_params, max_norm=cfg.training.gradclip)
                     optimizer_prior.step()
             
-            # EMA update after EM
-            ema_model.update_parameters(model)
-            
-            # For new training, sync EMA after first batch to capture ActNorm initialization
-            if cfg.training.ckpt is None and epoch == start_epoch and batch_idx == 0:
-                print("First batch completed - syncing EMA with initialized model state")
-                ema_model.module.load_state_dict(model.state_dict())
+            # EMA update after EM (only if use_ema is enabled)
+            if cfg.training.use_ema:
+                ema_model.update_parameters(model)
 
         avg_train_loss = total_loss / len(train_loader)
         avg_nll = total_nll / len(train_loader)
@@ -495,7 +491,9 @@ def train(cfg: DictConfig):
             train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="train_eval")
             log_dict.update(train_stats)
             
-            test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="test")
+            # Use EMA model if enabled, otherwise use regular model
+            eval_model = ema_model if cfg.training.use_ema else model
+            test_stats = evaluate(eval_model, test_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="test")
             log_dict.update(test_stats)
             
             print_train_stats(epoch, train_stats, test_stats)
