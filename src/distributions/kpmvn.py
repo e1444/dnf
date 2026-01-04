@@ -146,43 +146,69 @@ class KroneckerProductMVN(Distribution):
         r = A.shape[-1]
         device, dtype = A.device, A.dtype
         
+        # Symmetrize input to handle numerical asymmetry
+        A = 0.5 * (A + A.transpose(-1, -2))
+        
         # Scale jitter by matrix magnitude
-        diag_mean = torch.diagonal(A, dim1=-2, dim2=-1).mean(dim=-1, keepdim=True).unsqueeze(-1)
-        scaled_jitter = base_jitter * torch.maximum(torch.ones_like(diag_mean), diag_mean)
+        diag = torch.diagonal(A, dim1=-2, dim2=-1)
+        diag_mean = diag.mean(dim=-1, keepdim=True).unsqueeze(-1)
+        diag_mean = torch.maximum(torch.ones_like(diag_mean) * 1e-10, torch.abs(diag_mean))
+        scaled_jitter = base_jitter * diag_mean
+        
+        # Check for zero/negative diagonal elements and pre-regularize if needed
+        min_diag = diag.min(dim=-1, keepdim=True)[0].unsqueeze(-1)
+        if (min_diag <= 0).any():
+            # Matrix has non-positive diagonal - add strong regularization upfront
+            A = A + (torch.abs(min_diag) + scaled_jitter * 10) * torch.eye(r, device=device, dtype=dtype)
+            A = 0.5 * (A + A.transpose(-1, -2))
         
         # Try Cholesky with increasing jitter
         for attempt in range(max_tries):
             try:
                 jitter_scale = 10.0 ** attempt
                 A_reg = A + (scaled_jitter * jitter_scale) * torch.eye(r, device=device, dtype=dtype)
-                # Symmetrize again after adding jitter
-                A_reg = 0.5 * (A_reg + A_reg.transpose(-1, -2))
                 L = torch.linalg.cholesky(A_reg)
                 return L
             except RuntimeError as e:
                 if attempt == max_tries - 1:
-                    # Last resort: eigendecomposition-based regularization
+                    # Last resort: SVD-based regularization
                     return KroneckerProductMVN._cholesky_eigen_fallback(A, scaled_jitter * (10.0 ** max_tries))
                 continue
     
     @staticmethod
     def _cholesky_eigen_fallback(A, jitter):
         """
-        Fallback using eigendecomposition when Cholesky fails.
-        Regularizes by clamping eigenvalues and reconstructing.
+        Fallback using SVD when Cholesky fails.
+        SVD is more numerically stable than eigendecomposition for ill-conditioned matrices.
+        Regularizes by clamping singular values and reconstructing.
         """
         r = A.shape[-1]
         device, dtype = A.device, A.dtype
         
-        # Eigendecomposition
-        eigvals, eigvecs = torch.linalg.eigh(A)
+        # Symmetrize to handle numerical asymmetry
+        A_sym = 0.5 * (A + A.transpose(-1, -2))
         
-        # Clamp eigenvalues to ensure positive definiteness
-        eigvals_reg = torch.clamp(eigvals, min=jitter.squeeze(-1).squeeze(-1) if jitter.dim() > 0 else jitter)
+        # Use SVD instead of eigendecomposition - more robust for ill-conditioned matrices
+        try:
+            U, S, Vh = torch.linalg.svd(A_sym, full_matrices=False)
+        except RuntimeError:
+            # If even SVD fails, use a very aggressive diagonal regularization
+            diag_A = torch.diagonal(A_sym, dim1=-2, dim2=-1)
+            max_diag = torch.maximum(torch.abs(diag_A).max(dim=-1, keepdim=True)[0], torch.ones(1, device=device, dtype=dtype))
+            A_diag = torch.diag_embed(torch.clamp(diag_A, min=max_diag * 0.1))
+            off_diag_reg = A_sym - torch.diag_embed(diag_A)
+            A_sym = A_diag + 0.1 * off_diag_reg + max_diag.unsqueeze(-1) * torch.eye(r, device=device, dtype=dtype)
+            U, S, Vh = torch.linalg.svd(A_sym, full_matrices=False)
         
-        # Reconstruct: A_reg = Q @ diag(eigvals_reg) @ Q^T
-        # For Cholesky: L = Q @ diag(sqrt(eigvals_reg))
-        L = eigvecs * torch.sqrt(eigvals_reg).unsqueeze(-2)
+        # Clamp singular values to ensure positive definiteness
+        min_sv = jitter.squeeze(-1).squeeze(-1) if jitter.dim() > 0 else jitter
+        if isinstance(min_sv, torch.Tensor) and min_sv.dim() > 0:
+            min_sv = min_sv.max()  # Use scalar for clamping
+        S_reg = torch.clamp(S, min=float(min_sv) if isinstance(min_sv, torch.Tensor) else min_sv)
+        
+        # Reconstruct: A_reg = U @ diag(S_reg) @ U^T (since A is symmetric, U ≈ V)
+        # For Cholesky: L = U @ diag(sqrt(S_reg))
+        L = U * torch.sqrt(S_reg).unsqueeze(-2)
         
         return L
 
