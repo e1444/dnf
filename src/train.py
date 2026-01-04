@@ -218,6 +218,9 @@ def train(cfg: DictConfig):
         
         if cfg.training.load_model:
             model.load_state_dict(checkpoint['model_state_dict'])
+            # Also update EMA to match loaded model
+            ema_model.load_state_dict(checkpoint.get('ema_model_state_dict', checkpoint['model_state_dict']))
+            ema_model.output_shapes = model.output_shapes
         if cfg.training.load_prior:
             level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
         
@@ -238,6 +241,12 @@ def train(cfg: DictConfig):
     # Initialize EMA model
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
     ema_model.output_shapes = model.output_shapes
+    
+    # Important: EMA should start with the same state as the model
+    # This ensures ActNorm and other stateful layers are properly initialized
+    if start_epoch == 0:
+        ema_model.load_state_dict(model.state_dict())
+        ema_model.output_shapes = model.output_shapes
         
     # Initialize scheduler
     scheduler = hydra.utils.instantiate(cfg.training.scheduler, optimizer=optimizer_model)
@@ -477,6 +486,19 @@ def train(cfg: DictConfig):
         if (epoch + 1) % cfg.training.eval_interval == 0:
             train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="train_eval")
             log_dict.update(train_stats)
+            
+            # Warmup EMA model ActNorm layers before evaluation
+            # ActNorm layers need to see data to initialize their statistics
+            ema_model.eval()
+            with torch.no_grad():
+                warmup_batch = next(iter(test_loader))[0].to(device)
+                try:
+                    _ = ema_model(warmup_batch)
+                except:
+                    # If warmup fails, use regular model instead
+                    print("Warning: EMA model warmup failed, using regular model for evaluation")
+                    ema_model = model
+            
             test_stats = evaluate(ema_model, test_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="test")
             log_dict.update(test_stats)
             

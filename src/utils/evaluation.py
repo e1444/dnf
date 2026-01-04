@@ -81,24 +81,40 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
                 all_level_logits.append(level_logits)
                 level_logits_sum = torch.sum(level_logits, dim=2)  # (B, K)
                 
+                # Check for NaN/Inf before applying weights
+                if torch.isnan(level_logits_sum).any() or torch.isinf(level_logits_sum).any():
+                    print(f"WARNING: NaN/Inf detected in level {k} logits before weighting")
+                    print(f"  Level logits stats: min={level_logits_sum.min().item():.2e}, max={level_logits_sum.max().item():.2e}")
+                
                 # Apply dimension-aware reweighting
                 weighted_level_logits = level_logits_sum * nll_dim_weights[k]
                 logits = logits + weighted_level_logits
                 logits_unweighted = logits_unweighted + level_logits_sum
                 
-                # Track per-level NLL contributions
+                # Track per-level NLL contributions (safe computation)
                 C, H, W = output_shapes[k]
                 dim = C * H * W
-                level_nll_raw = -level_logits_sum[torch.arange(x_batch.size(0)), y_batch].mean()
-                level_nll_raw_bpd = level_nll_raw / (dim * torch.log(torch.tensor(2.0)))
-                level_raw_nlls[k] += level_nll_raw_bpd.item() * x_batch.size(0)
                 
-                level_nll_eff = -weighted_level_logits[torch.arange(x_batch.size(0)), y_batch].mean()
-                level_nll_eff_bpd = level_nll_eff / (dim * torch.log(torch.tensor(2.0)))
-                level_effective_nlls[k] += level_nll_eff_bpd.item() * x_batch.size(0)
+                if not (torch.isnan(level_logits_sum).any() or torch.isinf(level_logits_sum).any()):
+                    level_nll_raw = -level_logits_sum[torch.arange(x_batch.size(0)), y_batch].mean()
+                    level_nll_raw_bpd = level_nll_raw / (dim * np.log(2.0))
+                    level_raw_nlls[k] += level_nll_raw_bpd.item() * x_batch.size(0)
+                    
+                    level_nll_eff = -weighted_level_logits[torch.arange(x_batch.size(0)), y_batch].mean()
+                    level_nll_eff_bpd = level_nll_eff / (dim * np.log(2.0))
+                    level_effective_nlls[k] += level_nll_eff_bpd.item() * x_batch.size(0)
                 
             all_level_logits = torch.stack(all_level_logits, dim=3)                             # (B, K, 3, L)
             total_logit_split = total_logit_split + torch.sum(all_level_logits, dim=(0, 1))     # Sum over B and K -> (3, L)
+            
+            # Check for NaN/Inf in final logits before computing loss
+            if torch.isnan(logits).any() or torch.isinf(logits).any():
+                print(f"WARNING: NaN/Inf detected in final logits")
+                print(f"  Log det: {log_det.mean().item():.2e}")
+                print(f"  Logits stats: min={logits.min().item():.2e}, max={logits.max().item():.2e}")
+                print(f"  NLL weights: {nll_dim_weights}")
+                continue
+            
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
             
@@ -128,14 +144,14 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             # Calculate NLL for a clean evaluation metric (effective/weighted version)
             nll_loss = nll_loss_fn(logits, y_batch)
             total_dim = input_shape[0] * input_shape[1] * input_shape[2]
-            nll_loss = nll_loss / (total_dim * torch.log(torch.tensor(2.0)))
+            nll_loss = nll_loss / (total_dim * np.log(2.0))
             
             total_nll += nll_loss.item() * y_batch.size(0)
             total_effective_nll += nll_loss.item() * y_batch.size(0)
             
             # Calculate raw NLL (unweighted)
             nll_loss_raw = nll_loss_fn(logits_unweighted, y_batch)
-            nll_loss_raw_bpd = nll_loss_raw / (total_dim * torch.log(torch.tensor(2.0)))
+            nll_loss_raw_bpd = nll_loss_raw / (total_dim * np.log(2.0))
             total_raw_nll += nll_loss_raw_bpd.item() * y_batch.size(0)
             
             # Calculate accuracy
