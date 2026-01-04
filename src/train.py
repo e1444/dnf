@@ -464,6 +464,11 @@ def train(cfg: DictConfig):
             
             # EMA update after EM
             ema_model.update_parameters(model)
+            
+            # For new training, sync EMA after first batch to capture ActNorm initialization
+            if cfg.training.ckpt is None and epoch == start_epoch and batch_idx == 0:
+                print("First batch completed - syncing EMA with initialized model state")
+                ema_model.module.load_state_dict(model.state_dict())
 
         avg_train_loss = total_loss / len(train_loader)
         avg_nll = total_nll / len(train_loader)
@@ -495,12 +500,6 @@ def train(cfg: DictConfig):
             
             print_train_stats(epoch, train_stats, test_stats)
 
-        # For new training (no checkpoint), ensure EMA is synced before first eval
-        # This handles ActNorm and other stateful layer initialization
-        if cfg.training.ckpt is None and epoch == start_epoch:
-            print("First epoch completed - syncing EMA with trained model state")
-            ema_model.module.load_state_dict(model.state_dict())
-        
         wandb.log(log_dict)
 
         # Checkpointing
