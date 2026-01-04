@@ -210,6 +210,10 @@ def train(cfg: DictConfig):
     optimizer_prior = optim.AdamW(prior_param_groups) if len(prior_param_groups) > 0 else None
     trainable_prior_params = [p for p in level_priors_params.parameters() if p.requires_grad]
     
+    # Initialize EMA model (before checkpoint loading)
+    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
+    ema_model.output_shapes = model.output_shapes
+    
     # Load from checkpoint if specified
     start_epoch = 0
     if cfg.training.ckpt is not None:
@@ -219,7 +223,11 @@ def train(cfg: DictConfig):
         if cfg.training.load_model:
             model.load_state_dict(checkpoint['model_state_dict'])
             # Also update EMA to match loaded model
-            ema_model.load_state_dict(checkpoint.get('ema_model_state_dict', checkpoint['model_state_dict']))
+            if 'ema_model_state_dict' in checkpoint:
+                ema_model.load_state_dict(checkpoint['ema_model_state_dict'])
+            else:
+                # Fallback: load model state into the wrapped module
+                ema_model.module.load_state_dict(checkpoint['model_state_dict'])
             ema_model.output_shapes = model.output_shapes
         if cfg.training.load_prior:
             level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
@@ -237,15 +245,10 @@ def train(cfg: DictConfig):
                 print("Warning: Old checkpoint format detected. Optimizer state might not load correctly.")
         
         start_epoch = checkpoint['epoch'] + 1
-        
-    # Initialize EMA model
-    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
-    ema_model.output_shapes = model.output_shapes
-    
-    # Important: EMA should start with the same state as the model
-    # This ensures ActNorm and other stateful layers are properly initialized
-    if start_epoch == 0:
-        ema_model.load_state_dict(model.state_dict())
+    else:
+        # For new training: Initialize EMA with current model state
+        # This ensures ActNorm and other stateful layers are properly initialized
+        ema_model.module.load_state_dict(model.state_dict())
         ema_model.output_shapes = model.output_shapes
         
     # Initialize scheduler
