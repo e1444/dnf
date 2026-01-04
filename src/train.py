@@ -495,6 +495,12 @@ def train(cfg: DictConfig):
             
             print_train_stats(epoch, train_stats, test_stats)
 
+        # For new training (no checkpoint), ensure EMA is synced before first eval
+        # This handles ActNorm and other stateful layer initialization
+        if cfg.training.ckpt is None and epoch == start_epoch:
+            print("First epoch completed - syncing EMA with trained model state")
+            ema_model.module.load_state_dict(model.state_dict())
+        
         wandb.log(log_dict)
 
         # Checkpointing
