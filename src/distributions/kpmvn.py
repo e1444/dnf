@@ -201,10 +201,12 @@ class KroneckerProductMVN(Distribution):
             U, S, Vh = torch.linalg.svd(A_sym, full_matrices=False)
         
         # Clamp singular values to ensure positive definiteness
-        min_sv = jitter.squeeze(-1).squeeze(-1) if jitter.dim() > 0 else jitter
-        if isinstance(min_sv, torch.Tensor) and min_sv.dim() > 0:
-            min_sv = min_sv.max()  # Use scalar for clamping
-        S_reg = torch.clamp(S, min=float(min_sv) if isinstance(min_sv, torch.Tensor) else min_sv)
+        # Handle jitter being a tensor or scalar
+        if isinstance(jitter, torch.Tensor):
+            min_sv = jitter.flatten().max() if jitter.numel() > 1 else jitter.item()
+        else:
+            min_sv = jitter
+        S_reg = torch.clamp(S, min=min_sv)
         
         # Reconstruct: A_reg = U @ diag(S_reg) @ U^T (since A is symmetric, U ≈ V)
         # For Cholesky: L = U @ diag(sqrt(S_reg))
