@@ -10,36 +10,17 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
-from src.models.priors import (
-    ClassConditionalPrior,
-    create_unconditional_priors,
-    create_conditional_prior,
-    create_class_conditional_prior,
-    create_conditional_mixture_prior,
-    create_conditional_mixture_of_modes_prior
+from src.utils.prior_builder import build_level_priors_from_config
+from src.utils.training_setup import (
+    setup_optimizers,
+    setup_ema_model,
+    load_checkpoint,
+    save_checkpoint
 )
 from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 from src.utils.evaluation import evaluate, print_train_stats
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def split_prior_params_by_type(module: nn.Module):
-    """Split prior parameters into channel, spatial, and other buckets."""
-    channel_keys = ("cov_ch", "ch_", "ch_D_head", "ch_U_head", "log_cov_ch")
-    spatial_keys = ("cov_sp", "sp_", "sp_D_head", "sp_U_head", "log_cov_sp")
-
-    ch_params, sp_params, other_params = [], [], []
-    for name, param in module.named_parameters():
-        if not param.requires_grad:
-            continue
-        if any(key in name for key in channel_keys):
-            ch_params.append(param)
-        elif any(key in name for key in spatial_keys):
-            sp_params.append(param)
-        else:
-            other_params.append(param)
-    return ch_params, sp_params, other_params
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -69,98 +50,15 @@ def train(cfg: DictConfig):
         raise NotImplementedError(f"Model {cfg.model._target_} not supported.")
     
     K = cfg.data.dataset.num_classes
-    assert len(cfg.level_priors.priors) == cfg.model.num_levels, "Number of priors must match number of model levels"
     
-    level_priors = []
-    splits = []
-    level_priors_params = nn.ModuleList()
+    # Initialize priors from configuration
+    level_priors, splits, level_priors_params = build_level_priors_from_config(
+        cfg=cfg,
+        output_shapes=output_shapes,
+        num_classes=K,
+        device=device
+    )
     
-    with torch.no_grad():
-        for i, prior_cfg in enumerate(cfg.level_priors.priors.values()):
-            C, H, W = output_shapes[i]
-            split = prior_cfg.split
-            noise_count, struct_count, sem_count = split
-            assert noise_count >= 0, "Noise feature dimension must be non-negative"
-            assert struct_count >= 0, "Structure feature dimension must be non-negative"
-            assert sem_count >= 0, "Semantic feature dimension must be non-negative"
-            assert noise_count + struct_count + sem_count == C, "Sum of feature dimensions must equal total channels C"
-            
-            if i == cfg.model.num_levels - 1:
-                assert struct_count == 0, "Top level cannot have structural features"
-            
-            noise_prior, struct_prior, sem_prior = None, None, None
-            level_params = nn.ModuleList()
-            
-            # Noise prior (unconditional, single component)
-            if noise_count > 0:
-                noise_cfg = prior_cfg.get('noise', {})
-                init_strategy = noise_cfg.get('init_strategy', 'zero')
-                # Filter out params we're setting explicitly
-                noise_params = {k: v for k, v in noise_cfg.items() if k not in ['init_strategy']}
-                noise_prior = create_unconditional_priors(
-                    K=1,
-                    C=noise_count, H=H, W=W,
-                    prior_type=prior_cfg.prior_type,
-                    rank=tuple(prior_cfg.rank),
-                    init_strategy=init_strategy,
-                    **noise_params
-                )[0].to(device)
-                level_params.append(noise_prior)
-            
-            # Structural prior (conditional)
-            if struct_count > 0:
-                struct_cfg = prior_cfg.get('struct', {})
-                struct_type = struct_cfg.get('type', 'conditional')
-                
-                # Filter out 'type' key which is used for control flow
-                struct_params = {k: v for k, v in struct_cfg.items() if k != 'type'}
-                
-                if struct_type == 'mixture':
-                    # Conditional mixture prior
-                    num_modes = struct_params.get('num_modes', 4)
-                    struct_prior = create_conditional_mixture_prior(
-                        K=num_modes,
-                        C=struct_count, H=H, W=W,
-                        h_channels=C,
-                        prior_type=prior_cfg.prior_type,
-                        rank=tuple(prior_cfg.rank),
-                        **struct_params
-                    ).to(device)
-                elif struct_type == 'conditional':
-                    # Standard conditional prior
-                    # h_channels: conditioning from lower level (C channels)
-                    # z_channels: latent being modeled (struct_count channels)
-                    struct_prior = create_conditional_prior(
-                        h_channels=C,
-                        z_channels=struct_count,
-                        H=H, W=W,
-                        prior_type=prior_cfg.prior_type,
-                        rank=tuple(prior_cfg.rank),
-                        **struct_params
-                    ).to(device)
-                else:
-                    raise ValueError(f"Unknown struct type: {struct_type}")
-                
-                level_params.append(struct_prior)
-            
-            # Semantic prior (class-conditional)
-            if sem_count > 0:
-                sem_cfg = prior_cfg.get('sem', {})
-                # Filter out params that create_class_conditional_prior sets explicitly
-                sem_params = {k: v for k, v in sem_cfg.items()}
-                sem_prior = create_class_conditional_prior(
-                    K=K,
-                    C=sem_count, H=H, W=W,
-                    prior_type=prior_cfg.prior_type,
-                    rank=tuple(prior_cfg.rank),
-                    **sem_params
-                ).to(device)
-                level_params.append(sem_prior)
-                
-            level_priors.append([noise_prior, struct_prior, sem_prior])
-            level_priors_params.append(level_params)
-            splits.append(split)
-            
     # Initialize model
     model = hydra.utils.instantiate(
         cfg.model,
@@ -168,97 +66,31 @@ def train(cfg: DictConfig):
         _convert_="partial"
     ).to(device)
 
-    lr_prior_levels = list(cfg.training.lr_prior)
-    lr_prior_channel = list(cfg.training.lr_prior_channel) if "lr_prior_channel" in cfg.training else lr_prior_levels
-    lr_prior_spatial = list(cfg.training.lr_prior_spatial) if "lr_prior_spatial" in cfg.training else lr_prior_levels
-
-    assert len(lr_prior_levels) == len(level_priors_params), "lr_prior length must match number of levels"
-    assert len(lr_prior_channel) == len(level_priors_params), "lr_prior_channel length must match number of levels"
-    assert len(lr_prior_spatial) == len(level_priors_params), "lr_prior_spatial length must match number of levels"
-
-    if cfg.training.lr == 0:
-        model.requires_grad_(False)
-    for lr_base, lr_ch, lr_sp, level_prior_params in zip(lr_prior_levels, lr_prior_channel, lr_prior_spatial, level_priors_params):
-        if lr_base == 0 and lr_ch == 0 and lr_sp == 0:
-            level_prior_params.requires_grad_(False)
-
-    optimizer_model = optim.AdamW(
-        model.parameters(),
-        lr=cfg.training.lr,
-        weight_decay=cfg.training.weight_decay
+    # Setup optimizers
+    optimizer_model, optimizer_prior, trainable_prior_params = setup_optimizers(
+        model=model,
+        level_priors_params=level_priors_params,
+        cfg=cfg
     )
-
-    prior_param_groups = []
-    for prior_param, lr_base, lr_ch, lr_sp in zip(level_priors_params, lr_prior_levels, lr_prior_channel, lr_prior_spatial):
-        ch_params, sp_params, other_params = split_prior_params_by_type(prior_param)
-
-        if lr_ch == 0:
-            for p in ch_params:
-                p.requires_grad_(False)
-        if lr_sp == 0:
-            for p in sp_params:
-                p.requires_grad_(False)
-        if lr_base == 0:
-            for p in other_params:
-                p.requires_grad_(False)
-
-        if ch_params and lr_ch > 0:
-            prior_param_groups.append({
-                'params': ch_params,
-                'lr': lr_ch,
-                'weight_decay': 0
-            })
-        if sp_params and lr_sp > 0:
-            prior_param_groups.append({
-                'params': sp_params,
-                'lr': lr_sp,
-                'weight_decay': 0
-            })
-        if other_params and lr_base > 0:
-            prior_param_groups.append({
-                'params': other_params,
-                'lr': lr_base,
-                'weight_decay': 0
-            })
-
-    optimizer_prior = optim.AdamW(prior_param_groups) if len(prior_param_groups) > 0 else None
-    trainable_prior_params = [p for p in level_priors_params.parameters() if p.requires_grad]
     
-    # Initialize EMA model (before checkpoint loading)
-    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
-    ema_model.output_shapes = model.output_shapes
+    # Setup EMA model
+    ema_model = setup_ema_model(model, decay=cfg.training.get('ema_decay', 0.999))
     
     # Load from checkpoint if specified
     start_epoch = 0
     if cfg.training.ckpt is not None:
-        print(f"Resuming training from {cfg.training.ckpt}")
-        checkpoint = torch.load(cfg.training.ckpt, map_location=device)
-        
-        if cfg.training.load_model:
-            model.load_state_dict(checkpoint['model_state_dict'])
-            # Also update EMA to match loaded model
-            if 'ema_model_state_dict' in checkpoint:
-                ema_model.load_state_dict(checkpoint['ema_model_state_dict'])
-            else:
-                # Fallback: load model state into the wrapped module
-                ema_model.module.load_state_dict(checkpoint['model_state_dict'])
-            ema_model.output_shapes = model.output_shapes
-        if cfg.training.load_prior:
-            level_priors_params.load_state_dict(checkpoint['prior_state_dict'])
-        
-        if not cfg.training.reset_optimizer:
-            if 'optimizer_model_state_dict' in checkpoint:
-                optimizer_model.load_state_dict(checkpoint['optimizer_model_state_dict'])
-                if optimizer_prior is not None and 'optimizer_prior_state_dict' in checkpoint and checkpoint['optimizer_prior_state_dict'] is not None:
-                    optimizer_prior.load_state_dict(checkpoint['optimizer_prior_state_dict'])
-                elif optimizer_prior is None and 'optimizer_prior_state_dict' in checkpoint:
-                    print("Warning: Prior optimizer not constructed; skipping optimizer_prior_state_dict.")
-                elif optimizer_prior is not None:
-                    print("Warning: optimizer_prior_state_dict missing in checkpoint.")
-            else:
-                print("Warning: Old checkpoint format detected. Optimizer state might not load correctly.")
-        
-        start_epoch = checkpoint['epoch'] + 1
+        start_epoch = load_checkpoint(
+            checkpoint_path=cfg.training.ckpt,
+            model=model,
+            level_priors_params=level_priors_params,
+            ema_model=ema_model,
+            optimizer_model=optimizer_model,
+            optimizer_prior=optimizer_prior,
+            device=device,
+            load_model=cfg.training.load_model,
+            load_prior=cfg.training.load_prior,
+            reset_optimizer=cfg.training.reset_optimizer
+        )
     else:
         # For new training: Initialize EMA with current model state
         # This ensures ActNorm and other stateful layers are properly initialized
@@ -376,9 +208,6 @@ def train(cfg: DictConfig):
                 print(f"  Prior logits stats: min={prior_logits_acc.min().item():.2e}, max={prior_logits_acc.max().item():.2e}")
                 continue
             
-            print("done")
-            return
-            
             task_loss.backward()
             
             # Check for NaN/Inf in gradients
@@ -488,15 +317,16 @@ def train(cfg: DictConfig):
         # Checkpointing
         if (epoch + 1) % cfg.training.checkpoint_interval == 0:
             checkpoint_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir # type: ignore
-            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch + 1}.pth")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'prior_state_dict': level_priors_params.state_dict(),
-                'ema_model_state_dict': ema_model.state_dict(),
-                'optimizer_model_state_dict': optimizer_model.state_dict(),
-                'optimizer_prior_state_dict': optimizer_prior.state_dict() if optimizer_prior is not None else None,
-            }, checkpoint_path)
+            checkpoint_path = save_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                epoch=epoch,
+                model=model,
+                level_priors_params=level_priors_params,
+                ema_model=ema_model,
+                optimizer_model=optimizer_model,
+                optimizer_prior=optimizer_prior
+            )
+            print(f"Saved checkpoint to {checkpoint_path}")
             
         scheduler.step()
         
