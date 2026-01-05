@@ -8,18 +8,30 @@ priors:
     split: [0, 6, 0]
     rank: [4, 8]
     struct:
+      type: conditional
+      use_mean_shift: true
+      num_modes: 4
+      init_strategy: simplex
+      simplex_scale: 0.5
       df: 6.0
-      dropout: 0.1
+      tau: -0.405  # log((df-2)/df) to match ActNorm variance=1
       backbone_features: 128
+      dropout: 0.1
       eps: 1e-4
       jitter: 1e-4
   l1:
     split: [0, 12, 0]
     rank: [8, 8]
     struct:
+      type: conditional
+      use_mean_shift: true
+      num_modes: 4
+      init_strategy: simplex
+      simplex_scale: 0.5
       df: 12.0
-      dropout: 0.0
+      tau: -0.182  # log((df-2)/df) to match ActNorm variance=1
       backbone_features: 256
+      dropout: 0.0
       eps: 1e-4
       jitter: 1e-4
   l2:

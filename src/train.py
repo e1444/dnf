@@ -374,6 +374,9 @@ def train(cfg: DictConfig):
                 print(f"  Prior logits stats: min={prior_logits_acc.min().item():.2e}, max={prior_logits_acc.max().item():.2e}")
                 continue
             
+            print("done")
+            return
+            
             task_loss.backward()
             
             # Check for NaN/Inf in gradients

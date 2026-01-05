@@ -1,25 +1,42 @@
 split: [0, 0, 16] # noise, struct, sem
 rank: [8, 8]      # rank_ch, rank_sp
+prior_type: kpmvn # Prior type: "lrmvn", "kpmvn", or "kpmvt"
 
-cls:
-  _target_: src.models.priors.KPMVNPrior
+# Noise prior settings (unconditional, single component)
+noise:
+  init_strategy: zero
+  noise: 0.01
+  tau: 0.0  # Gaussian has natural variance=1, matches ActNorm
+  jitter: 1e-6
+  eps: 1e-6
 
-conditional_cls:
-  _target_: src.models.priors.ConditionalKPMVNPrior
+# Structural prior settings (conditional or mixture)
+struct:
+  type: conditional  # "conditional" or "mixture"
+  # For conditional type:
+  tau: 0.0  # Gaussian has natural variance=1, matches ActNorm
   dropout: 0.0
   backbone_features: 256
+  jitter: 1e-6
+  eps: 1e-6
+  # For mixture type (uncomment to use):
+  # type: mixture
+  # num_modes: 4
+  # mixture_tau: 0.0
+  # backbone_features: 256
+  # dropout: 0.1
+  # components:
+  #   init_strategy: simplex_scaled
+  #   simplex_scale: 0.5
+  #   tau: 0.0
+  #   jitter: 1e-6
+  #   eps: 1e-6
 
-# conditional_cls:
-#   _target_: src.models.priors.ConditionalMixturePrior
-#   dropout: 0.0
-#   backbone_features: 256
-#   num_components: 4
-
-zero_init:
-  _target_: src.utils.prior_init.kpmvn_zero_init
-  noise: 0.01
-  
-class_conditional_init:
-  _target_: src.utils.prior_init.kpmvn_simplex_init
+# Semantic prior settings (class-conditional)
+sem:
+  init_strategy: simplex_scaled
   simplex_scale: 0.6
   noise: 0.01
+  tau: 0.0  # Gaussian has natural variance=1, matches ActNorm
+  jitter: 1e-6
+  eps: 1e-6

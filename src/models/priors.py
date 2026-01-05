@@ -635,6 +635,9 @@ def create_conditional_prior(
     backbone_features: int = 256,
     use_mean_shift: bool = False,
     num_modes: int = 4,
+    init_strategy: str = "zero",
+    simplex_scale: float = 1.0,
+    noise: float = 0.0,
 ) -> nn.Module:
     """
     Factory to create a conditional prior.
@@ -654,6 +657,9 @@ def create_conditional_prior(
         backbone_features: Number of features in backbone
         use_mean_shift: Use mixture of means (for kpmvt only)
         num_modes: Number of modes for mean shift
+        init_strategy: "zero" or "simplex" for initializing mode vectors
+        simplex_scale: Scale of simplex vertices (used if init_strategy="simplex")
+        noise: Standard deviation of initialization noise
     
     Returns:
         Conditional prior module
@@ -672,7 +678,7 @@ def create_conditional_prior(
         )
     
     elif prior_type == "kpmvt":
-        return ConditionalKPMVTPrior(
+        prior = ConditionalKPMVTPrior(
             h_channels=h_channels,
             z_channels=z_channels,
             H=H, W=W,
@@ -686,6 +692,31 @@ def create_conditional_prior(
             use_mean_shift=use_mean_shift,
             num_modes=num_modes
         )
+        
+        # Initialize mode vectors if using mean shift
+        if use_mean_shift:
+            if init_strategy == "zero":
+                for param in prior.mean_vectors:
+                    nn.init.zeros_(param)
+                    if noise > 0:
+                        param.data.add_(torch.randn_like(param) * noise)
+            
+            elif init_strategy == "simplex":
+                from src.utils.prior_init import generate_simplex_means
+                # Generate simplex means
+                simplex_means = generate_simplex_means(
+                    num_modes, h_channels, H, W, 
+                    simplex_scale=simplex_scale, 
+                    noise=noise
+                )
+                # Assign to parameters
+                for i, param in enumerate(prior.mean_vectors):
+                    param.data = simplex_means[i].view(h_channels, H, W)
+            
+            else:
+                raise ValueError(f"Unknown init_strategy: {init_strategy}")
+        
+        return prior
     
     else:
         raise ValueError(f"Unknown prior_type: {prior_type}")
@@ -721,7 +752,8 @@ def create_conditional_mixture_prior(
     mixture_tau: float = 1.0,
     backbone_features: int = 256,
     dropout: float = 0.0,
-    **component_kwargs
+    components: dict = None,
+    **legacy_kwargs
 ) -> ConditionalMixturePrior:
     """
     Factory to create a conditional mixture prior (K components with mixing network).
@@ -735,14 +767,26 @@ def create_conditional_mixture_prior(
         mixture_tau: Global scale for mixture
         backbone_features: Number of features in mixing network
         dropout: Dropout rate for mixing network
-        **component_kwargs: Arguments passed to create_unconditional_priors
+        components: Dict of parameters for unconditional component priors
+        **legacy_kwargs: Fallback for old flat structure (deprecated)
     
     Returns:
         ConditionalMixturePrior module
     """
-    components = create_unconditional_priors(K, C, H, W, **component_kwargs)
+    # Use nested components dict if provided, otherwise fall back to flat structure
+    if components is not None:
+        component_kwargs = components
+    else:
+        # Legacy fallback: filter valid unconditional keys from flat structure
+        valid_unconditional_keys = {
+            'prior_type', 'rank', 'df', 'init_strategy', 'simplex_scale', 
+            'noise', 'tau', 'jitter', 'eps'
+        }
+        component_kwargs = {k: v for k, v in legacy_kwargs.items() if k in valid_unconditional_keys}
+    
+    component_priors = create_unconditional_priors(K, C, H, W, **component_kwargs)
     return ConditionalMixturePrior(
-        components=components,
+        components=component_priors,
         h_channels=h_channels,
         tau=mixture_tau,
         backbone_features=backbone_features,

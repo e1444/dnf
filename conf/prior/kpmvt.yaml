@@ -6,7 +6,7 @@ prior_type: kpmvt # Prior type: "lrmvn", "kpmvn", or "kpmvt"
 noise:
   init_strategy: zero
   noise: 0.01
-  tau: 1.0
+  tau: -0.693  # log((df-2)/df) to match ActNorm var=1 for df=4
   df: 4.0
   jitter: 1e-6
   eps: 1e-6
@@ -16,7 +16,7 @@ struct:
   type: conditional  # "conditional" or "mixture"
   # For conditional type:
   df: 4.0
-  tau: 1.0
+  tau: -0.693  # log((df-2)/df) to match ActNorm var=1 for df=4
   dropout: 0.0
   backbone_features: 256
   use_mean_shift: false
@@ -26,18 +26,23 @@ struct:
   # For mixture type (uncomment to use):
   # type: mixture
   # num_modes: 4
-  # init_strategy: simplex_scaled
-  # simplex_scale: 0.5
   # mixture_tau: 1.0
   # backbone_features: 256
   # dropout: 0.1
+  # components:
+  #   init_strategy: simplex_scaled
+  #   simplex_scale: 0.5
+  #   df: 4.0
+  #   tau: 1.0
+  #   jitter: 1e-6
+  #   eps: 1e-6
 
 # Semantic prior settings (class-conditional)
 sem:
   init_strategy: simplex_scaled
   simplex_scale: 0.6
   noise: 0.01
-  tau: 1.0
+  tau: -0.693  # log((df-2)/df) to match ActNorm var=1 for df=4
   df: 4.0
   jitter: 1e-6
   eps: 1e-6
