@@ -21,9 +21,6 @@ em_steps: 0
 # Enable EMA
 use_ema: true
 
-# Disable dimension reweighting (Strict MLE objective)
-nll_dim_reweight: false
-
 ckpt: null
 load_model: true
 load_prior: true

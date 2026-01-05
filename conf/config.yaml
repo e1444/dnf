@@ -1,9 +1,9 @@
 defaults:
   - _self_
-  - data: mnist
+  - data: cifar10
   - model: glow
-  - level_priors: mnist
-  - training: default
+  - level_priors: cifar10_mixed
+  - training: warmup
 
 project:
   name: Discriminative Normalizing Flow

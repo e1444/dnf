@@ -7,7 +7,7 @@ priors:
   l0:
     split: [0, 6, 0]
     rank: [4, 8]
-    conditional_cls:
+    struct:
       df: 6.0
       dropout: 0.1
       backbone_features: 128
@@ -16,7 +16,7 @@ priors:
   l1:
     split: [0, 12, 0]
     rank: [8, 8]
-    conditional_cls:
+    struct:
       df: 12.0
       dropout: 0.0
       backbone_features: 256
@@ -25,10 +25,12 @@ priors:
   l2:
     split: [24, 0, 24]
     rank: [8, 8]
-    cls:
+    noise:
       df: 24.0
       eps: 1e-4
       jitter: 1e-4
-    class_conditional_init:
+    sem:
       df: 48.0
       simplex_scale: 0.7        # Controls separation of sem mixture components
+      eps: 1e-4
+      jitter: 1e-4

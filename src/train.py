@@ -10,7 +10,14 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import load_dataset
-from src.models.priors import ClassConditionalPrior
+from src.models.priors import (
+    ClassConditionalPrior,
+    create_unconditional_priors,
+    create_conditional_prior,
+    create_class_conditional_prior,
+    create_conditional_mixture_prior,
+    create_conditional_mixture_of_modes_prior
+)
 from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 from src.utils.evaluation import evaluate, print_train_stats
 
@@ -84,63 +91,68 @@ def train(cfg: DictConfig):
             noise_prior, struct_prior, sem_prior = None, None, None
             level_params = nn.ModuleList()
             
+            # Noise prior (unconditional, single component)
             if noise_count > 0:
-                theta_list = hydra.utils.instantiate(
-                    prior_cfg.zero_init, 
+                noise_cfg = prior_cfg.get('noise', {})
+                init_strategy = noise_cfg.get('init_strategy', 'zero')
+                # Filter out params we're setting explicitly
+                noise_params = {k: v for k, v in noise_cfg.items() if k not in ['init_strategy']}
+                noise_prior = create_unconditional_priors(
                     K=1,
                     C=noise_count, H=H, W=W,
-                    rank=prior_cfg.rank
-                )
-                noise_prior = hydra.utils.instantiate(
-                    prior_cfg.cls,
-                    **theta_list[0]
-                ).to(device)
+                    prior_type=prior_cfg.prior_type,
+                    rank=tuple(prior_cfg.rank),
+                    init_strategy=init_strategy,
+                    **noise_params
+                )[0].to(device)
                 level_params.append(noise_prior)
             
+            # Structural prior (conditional)
             if struct_count > 0:
-                if prior_cfg.conditional_cls._target_ == "src.models.priors.ConditionalMixturePrior":
-                    num_components = prior_cfg.conditional_cls.num_components
-                    del prior_cfg.conditional_cls.num_components
-                    theta_list = hydra.utils.instantiate(
-                        prior_cfg.class_conditional_init,
-                        K=num_components,
+                struct_cfg = prior_cfg.get('struct', {})
+                struct_type = struct_cfg.get('type', 'conditional')
+                
+                # Filter out 'type' key which is used for control flow
+                struct_params = {k: v for k, v in struct_cfg.items() if k != 'type'}
+                
+                if struct_type == 'mixture':
+                    # Conditional mixture prior
+                    num_modes = struct_params.get('num_modes', 4)
+                    struct_prior = create_conditional_mixture_prior(
+                        K=num_modes,
                         C=struct_count, H=H, W=W,
-                        rank=prior_cfg.rank
-                    )
-                    components = [
-                        hydra.utils.instantiate(prior_cfg.cls, **theta) for theta in theta_list
-                    ]
-                    struct_prior = hydra.utils.instantiate(
-                        prior_cfg.conditional_cls,
-                        components=components,
-                        h_channels=C
+                        h_channels=C,
+                        prior_type=prior_cfg.prior_type,
+                        rank=tuple(prior_cfg.rank),
+                        **struct_params
                     ).to(device)
-                    level_params.append(struct_prior)
-                elif prior_cfg.conditional_cls._target_ in [
-                    "src.models.priors.ConditionalKPMVNPrior",
-                    "src.models.priors.ConditionalKPMVTPrior"
-                ]:
-                    struct_prior = hydra.utils.instantiate(
-                        prior_cfg.conditional_cls,
+                elif struct_type == 'conditional':
+                    # Standard conditional prior
+                    struct_prior = create_conditional_prior(
                         h_channels=struct_count,
                         z_channels=C,
                         H=H, W=W,
-                        rank=prior_cfg.rank
+                        prior_type=prior_cfg.prior_type,
+                        rank=tuple(prior_cfg.rank),
+                        **struct_params
                     ).to(device)
-                    level_params.append(struct_prior)
                 else:
-                    raise NotImplementedError(f"Conditional prior {prior_cfg.conditional_cls._target_} not supported.")
+                    raise ValueError(f"Unknown struct type: {struct_type}")
+                
+                level_params.append(struct_prior)
             
+            # Semantic prior (class-conditional)
             if sem_count > 0:
-                theta_list = hydra.utils.instantiate(
-                    prior_cfg.class_conditional_init,
+                sem_cfg = prior_cfg.get('sem', {})
+                # Filter out params that create_class_conditional_prior sets explicitly
+                sem_params = {k: v for k, v in sem_cfg.items()}
+                sem_prior = create_class_conditional_prior(
                     K=K,
                     C=sem_count, H=H, W=W,
-                    rank=prior_cfg.rank
-                )
-                sem_prior = ClassConditionalPrior([
-                    hydra.utils.instantiate(prior_cfg.cls, **theta) for theta in theta_list
-                ]).to(device)
+                    prior_type=prior_cfg.prior_type,
+                    rank=tuple(prior_cfg.rank),
+                    **sem_params
+                ).to(device)
                 level_params.append(sem_prior)
                 
             level_priors.append([noise_prior, struct_prior, sem_prior])
@@ -258,39 +270,6 @@ def train(cfg: DictConfig):
     
     r_logdet = cfg.training.r_logdet
     
-    # Compute dimension-aware NLL reweighting factors
-    nll_dim_weights = [1.0] * cfg.model.num_levels  # Default: no reweighting
-    if cfg.training.get('nll_dim_reweight', False):
-        strategy = cfg.training.get('nll_dim_strategy', 'sqrt')
-        print(f"Using dimension-aware NLL reweighting: {strategy}")
-        
-        dims = [C * H * W for C, H, W in output_shapes]
-        dim_top = dims[-1]
-        
-        for i, dim in enumerate(dims):
-            if strategy == "full":
-                # Full normalization: 1/dim (all levels equal magnitude)
-                nll_dim_weights[i] = dim_top / dim
-            elif strategy == "sqrt":
-                # Partial normalization: 1/sqrt(dim)
-                nll_dim_weights[i] = (dim_top / dim) ** 0.5
-            elif strategy == "inverse":
-                # Inverse: dim_top / dim
-                nll_dim_weights[i] = dim_top / dim
-            # else: strategy == "none", keep weights at 1.0
-        
-        print(f"NLL dimension weights per level: {[f'{w:.4f}' for w in nll_dim_weights]}")
-    
-    # Apply per-level NLL weighting (multiplies with dimension weights)
-    level_weights = cfg.training.get('nll_level_weights', None)
-    if level_weights is not None:
-        assert len(level_weights) == cfg.model.num_levels, f"nll_level_weights must have {cfg.model.num_levels} elements"
-        print(f"Applying per-level NLL weights: {level_weights}")
-        for i in range(cfg.model.num_levels):
-            nll_dim_weights[i] *= level_weights[i]
-    
-    print(f"Final NLL weights per level: {[f'{w:.4f}' for w in nll_dim_weights]}")
-    
     # Training loop
     print("Starting training...")
     total_epochs = start_epoch + cfg.training.epochs
@@ -301,10 +280,6 @@ def train(cfg: DictConfig):
         total_loss = 0.0
         total_nll = 0.0
         total_ce = 0.0
-        total_raw_nll = 0.0  # Unweighted NLL
-        total_effective_nll = 0.0  # Weighted NLL used in loss
-        level_raw_nlls = [0.0] * cfg.model.num_levels  # Per-level unweighted NLL
-        level_effective_nlls = [0.0] * cfg.model.num_levels  # Per-level weighted NLL
 
         for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
@@ -327,25 +302,9 @@ def train(cfg: DictConfig):
 
             # Forward pass
             outs, log_dets = model(x_batch)
-            
-            # Calculate unweighted log_det sum for logging
-            log_det_unweighted = torch.sum(log_dets, dim=0)
-            
-            # Apply dimension-aware reweighting to log_dets if enabled
-            if cfg.training.get('nll_dim_reweight', False):
-                # Weight LogitTransform (idx 0) with Level 0 weight
-                ld_weights = [nll_dim_weights[0]] + nll_dim_weights
-                ld_weights_t = torch.tensor(ld_weights, device=device, dtype=log_dets.dtype)
-                log_dets_weighted = log_dets * ld_weights_t.unsqueeze(1)
-                log_det = torch.sum(log_dets_weighted, dim=0)
-            else:
-                log_det = log_det_unweighted
-            
+            log_det = torch.sum(log_dets, dim=0)
             model_logits = log_det.unsqueeze(1)
-            model_logits_unweighted = log_det_unweighted.unsqueeze(1)
-
             prior_logits_acc = torch.zeros_like(model_logits)
-            prior_logits_unweighted = torch.zeros_like(model_logits)  # Track unweighted version
             
             anisotropy_losses = []
             for k, (h, z) in enumerate(outs):
@@ -369,36 +328,7 @@ def train(cfg: DictConfig):
                         anisotropy_losses.append(K * prior.anisotropy_loss().mean())
                         
                 level_logits = compute_level_logits(h, z, priors, splits[k], K)
-                
-                # Debug: Check for NaN/Inf in prior logits before reweighting
-                if epoch == start_epoch and batch_idx == 0:
-                    if torch.isnan(level_logits).any() or torch.isinf(level_logits).any():
-                        print(f"WARNING: NaN/Inf in level {k} prior logits BEFORE reweighting")
-                        print(f"  Stats: min={level_logits.min().item():.2e}, max={level_logits.max().item():.2e}")
-                
-                # Apply dimension-aware reweighting if enabled
-                weighted_level_logits = level_logits * nll_dim_weights[k]
-                
-                # Debug: Check after reweighting
-                if epoch == start_epoch and batch_idx == 0:
-                    if torch.isnan(weighted_level_logits).any() or torch.isinf(weighted_level_logits).any():
-                        print(f"WARNING: NaN/Inf in level {k} prior logits AFTER reweighting (weight={nll_dim_weights[k]:.4f})")
-                        print(f"  Stats: min={weighted_level_logits.min().item():.2e}, max={weighted_level_logits.max().item():.2e}")
-                
-                prior_logits_acc = prior_logits_acc + weighted_level_logits
-                prior_logits_unweighted = prior_logits_unweighted + level_logits
-                
-                # Track per-level NLL contributions
-                with torch.no_grad():
-                    C, H, W = output_shapes[k]
-                    dim = C * H * W
-                    level_nll_raw = -level_logits[torch.arange(x_batch.size(0)), y_batch].mean()
-                    level_nll_raw_bpd = level_nll_raw / (dim * torch.log(torch.tensor(2.0)))
-                    level_raw_nlls[k] += level_nll_raw_bpd.item()
-                    
-                    level_nll_eff = -weighted_level_logits[torch.arange(x_batch.size(0)), y_batch].mean()
-                    level_nll_eff_bpd = level_nll_eff / (dim * torch.log(torch.tensor(2.0)))
-                    level_effective_nlls[k] += level_nll_eff_bpd.item()
+                prior_logits_acc = prior_logits_acc + level_logits
             
             # Detach priors for CE (Option A)
             # logits_ce = model_logits + prior_logits_acc.detach()
@@ -408,19 +338,11 @@ def train(cfg: DictConfig):
             
             # Full logits for NLL
             logits = model_logits + prior_logits_acc
-            logits_unweighted = model_logits_unweighted + prior_logits_unweighted
             
-            # 2. NLL Loss (this is the effective/weighted version used in optimization)
+            # 2. NLL Loss
             nll_loss = nll_loss_fn(logits, y_batch)
             total_dim = input_shape[0] * input_shape[1] * input_shape[2]
             nll_loss = nll_loss / (total_dim * torch.log(torch.tensor(2.0)))
-            
-            # Track raw NLL (unweighted) for comparison
-            with torch.no_grad():
-                nll_loss_raw = nll_loss_fn(logits_unweighted, y_batch)
-                nll_loss_raw_bpd = nll_loss_raw / (total_dim * torch.log(torch.tensor(2.0)))
-                total_raw_nll += nll_loss_raw_bpd.item()
-                total_effective_nll += nll_loss.item()
             
             task_loss = (1 - cfg.training.l_lambda) * ce_loss + cfg.training.l_lambda * nll_loss
             
@@ -503,9 +425,7 @@ def train(cfg: DictConfig):
                         ]
                         
                         level_logits = compute_level_logits(h, z, priors, splits[k], K)
-                        # Apply dimension-aware reweighting if enabled
-                        weighted_level_logits = level_logits * nll_dim_weights[k]
-                        prior_logits_acc = prior_logits_acc + weighted_level_logits
+                        prior_logits_acc = prior_logits_acc + level_logits
                     
                     logits = model_logits + prior_logits_acc
                 
@@ -523,8 +443,6 @@ def train(cfg: DictConfig):
         avg_train_loss = total_loss / len(train_loader)
         avg_nll = total_nll / len(train_loader)
         avg_ce = total_ce / len(train_loader)
-        avg_raw_nll = total_raw_nll / len(train_loader)
-        avg_effective_nll = total_effective_nll / len(train_loader)
         
         # Debug: Check for NaN in model and prior parameters
         if cfg.training.ckpt is None and epoch == start_epoch:
@@ -546,23 +464,16 @@ def train(cfg: DictConfig):
             "train_loss": avg_train_loss,
             "train_nll": avg_nll,
             "train_ce": avg_ce,
-            "train_nll_raw_bpd": avg_raw_nll,  # Unweighted NLL in bits per dimension
-            "train_nll_effective_bpd": avg_effective_nll,  # Weighted NLL used in loss
         }
-        
-        # Add per-level NLL statistics
-        for k in range(cfg.model.num_levels):
-            log_dict[f"train_nll_raw_bpd_level_{k}"] = level_raw_nlls[k] / len(train_loader)
-            log_dict[f"train_nll_effective_bpd_level_{k}"] = level_effective_nlls[k] / len(train_loader)
 
         # Evaluation
         if (epoch + 1) % cfg.training.eval_interval == 0:
-            train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="train_eval")
+            train_stats = evaluate(model, train_loader, device, cfg, level_priors, splits, output_shapes, prefix="train_eval")
             log_dict.update(train_stats)
             
             # Use EMA model if enabled, otherwise use regular model
             eval_model = ema_model if cfg.training.use_ema else model
-            test_stats = evaluate(eval_model, test_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=nll_dim_weights, prefix="test")
+            test_stats = evaluate(eval_model, test_loader, device, cfg, level_priors, splits, output_shapes, prefix="test")
             log_dict.update(test_stats)
             
             print_train_stats(epoch, train_stats, test_stats)

@@ -8,12 +8,9 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_curve, 
 from src.utils.losses import nll_loss_fn, ce_loss_fn, compute_level_logits
 
 
-def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shapes, nll_dim_weights=None, prefix=None):
+def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shapes, prefix=None):
     """
     Evaluate the model on a given dataset.
-    
-    Args:
-        nll_dim_weights: Optional list of per-level NLL weights for dimension-aware reweighting
     """
     model.eval()
     for prior_level in level_priors:
@@ -27,16 +24,6 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
     total_log_det = 0.0
     correct = 0
     total = 0
-    
-    # NLL statistics tracking
-    total_raw_nll = 0.0  # Unweighted NLL
-    total_effective_nll = 0.0  # Weighted NLL
-    level_raw_nlls = [0.0] * cfg.model.num_levels  # Per-level unweighted NLL
-    level_effective_nlls = [0.0] * cfg.model.num_levels  # Per-level weighted NLL
-    
-    # Default to no reweighting if not provided
-    if nll_dim_weights is None:
-        nll_dim_weights = [1.0] * cfg.model.num_levels
     
     K = cfg.data.dataset.num_classes
     input_shape = None
@@ -54,7 +41,6 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             
             # Compute logits using the shared utility
             logits = log_det.unsqueeze(1)   # (B, 1)
-            logits_unweighted = log_det.unsqueeze(1)  # Track unweighted version
             all_level_logits = []
             anisotropy_losses = []
             for k, (h, z) in enumerate(outs):
@@ -81,39 +67,10 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
                 all_level_logits.append(level_logits)
                 level_logits_sum = torch.sum(level_logits, dim=2)  # (B, K)
                 
-                # Check for NaN/Inf before applying weights
-                if torch.isnan(level_logits_sum).any() or torch.isinf(level_logits_sum).any():
-                    print(f"WARNING: NaN/Inf detected in level {k} logits before weighting")
-                    print(f"  Level logits stats: min={level_logits_sum.min().item():.2e}, max={level_logits_sum.max().item():.2e}")
-                
-                # Apply dimension-aware reweighting
-                weighted_level_logits = level_logits_sum * nll_dim_weights[k]
-                logits = logits + weighted_level_logits
-                logits_unweighted = logits_unweighted + level_logits_sum
-                
-                # Track per-level NLL contributions (safe computation)
-                C, H, W = output_shapes[k]
-                dim = C * H * W
-                
-                if not (torch.isnan(level_logits_sum).any() or torch.isinf(level_logits_sum).any()):
-                    level_nll_raw = -level_logits_sum[torch.arange(x_batch.size(0)), y_batch].mean()
-                    level_nll_raw_bpd = level_nll_raw / (dim * np.log(2.0))
-                    level_raw_nlls[k] += level_nll_raw_bpd.item() * x_batch.size(0)
-                    
-                    level_nll_eff = -weighted_level_logits[torch.arange(x_batch.size(0)), y_batch].mean()
-                    level_nll_eff_bpd = level_nll_eff / (dim * np.log(2.0))
-                    level_effective_nlls[k] += level_nll_eff_bpd.item() * x_batch.size(0)
+                logits = logits + level_logits_sum
                 
             all_level_logits = torch.stack(all_level_logits, dim=3)                             # (B, K, 3, L)
             total_logit_split = total_logit_split + torch.sum(all_level_logits, dim=(0, 1))     # Sum over B and K -> (3, L)
-            
-            # Check for NaN/Inf in final logits before computing loss
-            if torch.isnan(logits).any() or torch.isinf(logits).any():
-                print(f"WARNING: NaN/Inf detected in final logits")
-                print(f"  Log det: {log_det.mean().item():.2e}")
-                print(f"  Logits stats: min={logits.min().item():.2e}, max={logits.max().item():.2e}")
-                print(f"  NLL weights: {nll_dim_weights}")
-                continue
             
             ce_loss = ce_loss_fn(logits, y_batch, label_smoothing=cfg.training.label_smoothing)
             loss = ce_loss
@@ -141,18 +98,12 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             
             total_loss += loss.item()
             
-            # Calculate NLL for a clean evaluation metric (effective/weighted version)
+            # Calculate NLL for a clean evaluation metric
             nll_loss = nll_loss_fn(logits, y_batch)
             total_dim = input_shape[0] * input_shape[1] * input_shape[2]
             nll_loss = nll_loss / (total_dim * np.log(2.0))
             
             total_nll += nll_loss.item() * y_batch.size(0)
-            total_effective_nll += nll_loss.item() * y_batch.size(0)
-            
-            # Calculate raw NLL (unweighted)
-            nll_loss_raw = nll_loss_fn(logits_unweighted, y_batch)
-            nll_loss_raw_bpd = nll_loss_raw / (total_dim * np.log(2.0))
-            total_raw_nll += nll_loss_raw_bpd.item() * y_batch.size(0)
             
             # Calculate accuracy
             _, predicted = torch.max(logits.data, 1)
@@ -170,8 +121,6 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             f"{prefix}loss": float('nan'),
             f"{prefix}accuracy": 0.0,
             f"{prefix}nll": float('nan'),
-            f"{prefix}nll_raw_bpd": float('nan'),
-            f"{prefix}nll_effective_bpd": float('nan'),
             f"{prefix}logit_split": float('nan'),
             f"{prefix}log_det": float('nan'),
         }
@@ -181,30 +130,19 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
     avg_logit_split = total_logit_split / total
     avg_log_det = total_log_det / total
     accuracy = 100 * correct / total
-    avg_raw_nll = total_raw_nll / total
-    avg_effective_nll = total_effective_nll / total
     
     if prefix is not None:
         prefix = prefix + '_'
     else:
         prefix = ''
     
-    result = {
+    return {
         f"{prefix}loss": avg_loss,
         f"{prefix}accuracy": accuracy,
         f"{prefix}nll": avg_nll,
-        f"{prefix}nll_raw_bpd": avg_raw_nll,
-        f"{prefix}nll_effective_bpd": avg_effective_nll,
         f"{prefix}logit_split": avg_logit_split,
         f"{prefix}log_det": avg_log_det,
     }
-    
-    # Add per-level NLL statistics
-    for k in range(cfg.model.num_levels):
-        result[f"{prefix}nll_raw_bpd_level_{k}"] = level_raw_nlls[k] / total
-        result[f"{prefix}nll_effective_bpd_level_{k}"] = level_effective_nlls[k] / total
-    
-    return result
     
 
 def print_split_table(title, split_tensor):
