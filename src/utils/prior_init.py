@@ -1,5 +1,8 @@
 import torch
-from copy import deepcopy
+from typing import List, TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from src.models.priors import LowRankMVNPrior, KPMVNPrior, KPMVTPrior
 
 
 def generate_simplex_means(K: int, C: int, H: int, W: int, simplex_scale: float = 1.0, noise: float = 0.0) -> torch.Tensor:
@@ -55,27 +58,6 @@ def generate_simplex_means(K: int, C: int, H: int, W: int, simplex_scale: float 
     return loc
 
 
-def lrmvn_template(C: int, H: int, W: int, *, rank: int) -> dict:
-    """
-    Create a single LRMVN component template with zero mean.
-    
-    Args:
-        C: Number of channels
-        H: Height
-        W: Width
-        rank: Rank of low-rank covariance
-    
-    Returns:
-        Parameter dict with loc, diag, and U
-    """
-    D = C * H * W
-    return {
-        "loc": torch.zeros(D),
-        "diag": torch.ones(D),
-        "U": torch.zeros(D, rank)
-    }
-
-
 def create_lrmvn_priors(
     K: int, 
     C: int, H: int, W: int, 
@@ -83,10 +65,12 @@ def create_lrmvn_priors(
     rank: int, 
     init_strategy: str = "zero",
     simplex_scale: float = 1.0, 
-    noise: float = 0.0
-) -> list[dict]:
+    noise: float = 0.0,
+    tau: float = 0.0,
+    eps: float = 1e-6
+) -> List['LowRankMVNPrior']:
     """
-    Factory function to create K LRMVN prior components.
+    Factory function to create K LRMVN prior modules.
     
     Args:
         K: Number of components
@@ -97,11 +81,15 @@ def create_lrmvn_priors(
         init_strategy: "zero" or "simplex"
         simplex_scale: Scale of simplex vertices (used if init_strategy="simplex")
         noise: Standard deviation of Gaussian noise
+        tau: Global scale parameter
+        eps: Small constant for numerical stability
     
     Returns:
-        List of K parameter dicts
+        List of K LowRankMVNPrior modules
     """
-    template = lrmvn_template(C, H, W, rank=rank)
+    from src.models.priors import LowRankMVNPrior
+    
+    D = C * H * W
     
     if init_strategy == "zero":
         means = generate_simplex_means(K, C, H, W, simplex_scale=0.0, noise=noise)
@@ -110,34 +98,16 @@ def create_lrmvn_priors(
     else:
         raise ValueError(f"Unknown init_strategy: {init_strategy}")
     
-    return [{**deepcopy(template), "loc": means[k]} for k in range(K)]
-
-
-def kpmvn_template(C: int, H: int, W: int, *, rank: tuple[int, int]) -> dict:
-    """
-    Create a single KPMVN component template with zero mean.
-    
-    Args:
-        C: Number of channels
-        H: Height
-        W: Width
-        rank: tuple (rank_ch, rank_sp)
-    
-    Returns:
-        Parameter dict with loc, cov_ch, cov_sp
-    """
-    S = H * W
-    D = C * S
-    rank_ch, rank_sp = rank
-    
-    return {
-        "loc": torch.zeros(D),
-        "cov_ch": (torch.zeros(C, rank_ch), torch.ones(C)),
-        "cov_sp": (torch.zeros(S, rank_sp), torch.ones(S)),
-        "C": C,
-        "H": H,
-        "W": W
-    }
+    priors = []
+    for k in range(K):
+        priors.append(LowRankMVNPrior(
+            loc=means[k],
+            diag=torch.ones(D),
+            U=torch.zeros(D, rank),
+            tau=torch.tensor(tau) if not isinstance(tau, torch.Tensor) else tau,
+            eps=eps
+        ))
+    return priors
 
 
 def create_kpmvn_priors(
@@ -148,9 +118,12 @@ def create_kpmvn_priors(
     init_strategy: str = "zero",
     simplex_scale: float = 1.0,
     noise: float = 0.0,
-) -> list[dict]:
+    tau: float = 0.0,
+    jitter: float = 1e-6,
+    eps: float = 1e-6,
+) -> List['KPMVNPrior']:
     """
-    Factory function to create K KPMVN prior components.
+    Factory function to create K KPMVN prior modules.
     
     Args:
         K: Number of components
@@ -161,59 +134,49 @@ def create_kpmvn_priors(
         init_strategy: "zero" or "simplex" or "simplex_scaled"
         simplex_scale: Scale of simplex vertices (used if init_strategy contains "simplex")
         noise: Standard deviation of Gaussian noise
+        tau: Global scale parameter (will be overridden in simplex_scaled)
+        jitter: Numerical stability jitter
+        eps: Small constant for positivity
     
     Returns:
-        List of K parameter dicts
+        List of K KPMVNPrior modules
     """
+    from src.models.priors import KPMVNPrior
+    
     D = C * H * W
-    template = kpmvn_template(C, H, W, rank=rank)
+    S = H * W
+    rank_ch, rank_sp = rank
     
     if init_strategy == "zero":
         means = generate_simplex_means(K, C, H, W, simplex_scale=0.0, noise=noise)
-        return [{**deepcopy(template), "loc": means[k]} for k in range(K)]
-    
+        tau_values = [tau] * K
     elif init_strategy == "simplex":
         means = generate_simplex_means(K, C, H, W, simplex_scale=simplex_scale, noise=noise)
-        return [{**deepcopy(template), "loc": means[k]} for k in range(K)]
-    
+        tau_values = [tau] * K
     elif init_strategy == "simplex_scaled":
         # Simplex with variance adjustment to maintain unit marginal variance
+        # For Gaussian: marginal_var = component_var + mean_var
+        # Want: component_var + (simplex_scale^2/D) = 1.0
+        # Therefore: component_var = 1.0 - simplex_scale^2/D
         means = generate_simplex_means(K, C, H, W, simplex_scale=simplex_scale, noise=noise)
-        comp_var = torch.tensor(1.0) - (simplex_scale**2 / D)
+        comp_var = torch.tensor(1.0 - (simplex_scale**2 / D))
         comp_var = torch.clamp(comp_var, min=1e-6)
-        return [{**deepcopy(template), "loc": means[k], "tau": torch.log(comp_var)} for k in range(K)]
-    
+        tau_values = [torch.log(comp_var).item()] * K
     else:
         raise ValueError(f"Unknown init_strategy: {init_strategy}")
-
-
-def kpmvt_template(C: int, H: int, W: int, *, rank: tuple[int, int], df: float) -> dict:
-    """
-    Create a single KPMVT component template with zero mean.
     
-    Args:
-        C: Number of channels
-        H: Height
-        W: Width
-        rank: tuple (rank_ch, rank_sp)
-        df: Degrees of freedom
-    
-    Returns:
-        Parameter dict with loc, cov_ch, cov_sp, df
-    """
-    S = H * W
-    D = C * S
-    rank_ch, rank_sp = rank
-    
-    return {
-        "loc": torch.zeros(D),
-        "cov_ch": (torch.zeros(C, rank_ch), torch.ones(C)),
-        "cov_sp": (torch.zeros(S, rank_sp), torch.ones(S)),
-        "df": df,
-        "C": C,
-        "H": H,
-        "W": W
-    }
+    priors = []
+    for k in range(K):
+        priors.append(KPMVNPrior(
+            C=C, H=H, W=W,
+            loc=means[k],
+            cov_ch=(torch.zeros(C, rank_ch), torch.ones(C)),
+            cov_sp=(torch.zeros(S, rank_sp), torch.ones(S)),
+            tau=tau_values[k],
+            jitter=jitter,
+            eps=eps
+        ))
+    return priors
 
 
 def create_kpmvt_priors(
@@ -225,9 +188,12 @@ def create_kpmvt_priors(
     init_strategy: str = "zero",
     simplex_scale: float = 1.0,
     noise: float = 0.0,
-) -> list[dict]:
+    tau: Optional[float] = None,
+    jitter: float = 1e-6,
+    eps: float = 1e-6,
+) -> List['KPMVTPrior']:
     """
-    Factory function to create K KPMVT prior components.
+    Factory function to create K KPMVT prior modules.
     
     Args:
         K: Number of components
@@ -239,31 +205,57 @@ def create_kpmvt_priors(
         init_strategy: "zero" or "simplex" or "simplex_scaled"
         simplex_scale: Scale of simplex vertices (used if init_strategy contains "simplex")
         noise: Standard deviation of Gaussian noise
+        tau: Global scale parameter (will be overridden in simplex_scaled, auto-computed if None)
+        jitter: Numerical stability jitter
+        eps: Small constant for positivity
     
     Returns:
-        List of K parameter dicts
+        List of K KPMVTPrior modules
     """
+    from src.models.priors import KPMVTPrior
+    
+    # Validate df
+    assert df > 2.0, f"Student-T requires df > 2 for finite variance (got df={df})"
+    
     D = C * H * W
-    template = kpmvt_template(C, H, W, rank=rank, df=df)
+    S = H * W
+    rank_ch, rank_sp = rank
+    
+    # Compute default tau if not provided
+    if tau is None:
+        tau = torch.log(torch.tensor((df - 2.0) / df)).item()
     
     if init_strategy == "zero":
         means = generate_simplex_means(K, C, H, W, simplex_scale=0.0, noise=noise)
-        return [{**deepcopy(template), "loc": means[k]} for k in range(K)]
-    
+        tau_values = [tau] * K
     elif init_strategy == "simplex":
         means = generate_simplex_means(K, C, H, W, simplex_scale=simplex_scale, noise=noise)
-        return [{**deepcopy(template), "loc": means[k]} for k in range(K)]
-    
+        tau_values = [tau] * K
     elif init_strategy == "simplex_scaled":
-        # Simplex with variance adjustment for Student-T
+        # Simplex with variance adjustment to maintain unit marginal variance
+        # For Student-T: marginal_var = inflation * component_var + mean_var
+        # Want: inflation * component_var + (simplex_scale^2/D) = 1.0
+        # Therefore: component_var = (1.0 - simplex_scale^2/D) / inflation
         means = generate_simplex_means(K, C, H, W, simplex_scale=simplex_scale, noise=noise)
         nu = df
         inflation = nu / (nu - 2)
-        marg_var = torch.tensor(1.0) / inflation
-        comp_var = marg_var - (simplex_scale**2 / D)
+        comp_var = torch.tensor((1.0 - simplex_scale**2 / D) / inflation)
         comp_var = torch.clamp(comp_var, min=1e-6)
-        return [{**deepcopy(template), "loc": means[k], "tau": torch.log(comp_var)} for k in range(K)]
-    
+        tau_values = [torch.log(comp_var).item()] * K
     else:
         raise ValueError(f"Unknown init_strategy: {init_strategy}")
+    
+    priors = []
+    for k in range(K):
+        priors.append(KPMVTPrior(
+            C=C, H=H, W=W,
+            loc=means[k],
+            cov_ch=(torch.zeros(C, rank_ch), torch.ones(C)),
+            cov_sp=(torch.zeros(S, rank_sp), torch.ones(S)),
+            tau=tau_values[k],
+            df=df,
+            jitter=jitter,
+            eps=eps
+        ))
+    return priors
     

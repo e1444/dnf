@@ -12,7 +12,7 @@ from src.utils.prior_init import (
     create_kpmvt_priors
 )
 
-from typing import List, Union
+from typing import List, Union, Optional
 
 
 class LowRankMVNPrior(nn.Module):
@@ -63,6 +63,15 @@ class LowRankMVNPrior(nn.Module):
 
     def __str__(self):
         return f"LowRankMVNPrior(dim={self.loc.shape[0]}, rank={self.U.shape[1]}, tau={self.tau.item():.2f})"
+    
+    def to_dict(self) -> dict:
+        """Export prior parameters as a dict for backward compatibility."""
+        return {
+            "loc": self.loc.detach().clone(),
+            "diag": torch.exp(self.log_diag.detach().clone()),
+            "U": self.U.detach().clone(),
+            "tau": self.tau.detach().clone()
+        }
         
 
 class KPMVNPrior(nn.Module):
@@ -133,6 +142,18 @@ class KPMVNPrior(nn.Module):
 
     def __str__(self):
         return f"KPMVNPrior(C={self.C}, H={self.H}, W={self.W}, tau={self.tau.item():.2f})"
+    
+    def to_dict(self) -> dict:
+        """Export prior parameters as a dict for backward compatibility."""
+        return {
+            "loc": self._loc.detach().clone(),
+            "cov_ch": (self.cov_ch_factor.detach().clone(), torch.exp(self.log_cov_ch_diag.detach().clone())),
+            "cov_sp": (self.cov_sp_factor.detach().clone(), torch.exp(self.log_cov_sp_diag.detach().clone())),
+            "tau": self.tau.detach().clone(),
+            "C": self.C,
+            "H": self.H,
+            "W": self.W
+        }
 
 
 class KPMVTPrior(nn.Module):
@@ -213,6 +234,20 @@ class KPMVTPrior(nn.Module):
     def __str__(self):
         df = torch.exp(self.log_df) + 2.0
         return f"KPMVTPrior(C={self.C}, H={self.H}, W={self.W}, tau={self.tau.item():.2f}, df={df.item():.2f})"
+    
+    def to_dict(self) -> dict:
+        """Export prior parameters as a dict for backward compatibility."""
+        df = torch.exp(self.log_df.detach().clone()) + 2.0
+        return {
+            "loc": self._loc.detach().clone(),
+            "cov_ch": (self.cov_ch_factor.detach().clone(), torch.exp(self.log_cov_ch_diag.detach().clone())),
+            "cov_sp": (self.cov_sp_factor.detach().clone(), torch.exp(self.log_cov_sp_diag.detach().clone())),
+            "tau": self.tau.detach().clone(),
+            "df": df,
+            "C": self.C,
+            "H": self.H,
+            "W": self.W
+        }
 
 
 class ConditionalKPMVNPrior(nn.Module):
@@ -309,8 +344,14 @@ class ConditionalKPMVNPrior(nn.Module):
     
              
 class ConditionalKPMVTPrior(nn.Module):
+    """
+    Conditional Kronecker Product Multivariate Student-T Prior.
+    
+    Models p(z | h) where z is the latent being modeled and h is the conditioning variable.
+    In VS-Flow: p(z_struct^(i) | h^(i+1)) - structural latent conditioned on next level.
+    """
     tau: torch.Tensor
-        
+    
     def __init__(
         self,
         h_channels: int,
@@ -523,7 +564,7 @@ def create_unconditional_priors(
     init_strategy: str = "simplex_scaled",
     simplex_scale: float = 1.0,
     noise: float = 0.0,
-    tau: float = 1.0,
+    tau: Optional[float] = None,
     jitter: float = 1e-6,
     eps: float = 1e-6,
 ) -> List[nn.Module]:
@@ -541,80 +582,62 @@ def create_unconditional_priors(
         init_strategy: "zero", "simplex", or "simplex_scaled"
         simplex_scale: Scale of simplex vertices
         noise: Initialization noise
-        tau: Global scale parameter
+        tau: Global scale parameter (if None, computed based on prior_type and df)
         jitter: Numerical stability jitter
         eps: Small constant for positivity
     
     Returns:
         List of K prior modules
     """
+    # Validate parameters
+    if prior_type == "kpmvt" and df <= 2.0:
+        raise ValueError(f"Student-T requires df > 2 for finite variance (got df={df})")
+    
+    # Compute default tau if not provided
+    if tau is None:
+        if prior_type == "kpmvt":
+            # Student-T: tau = log((df-2)/df) to match ActNorm variance=1
+            tau = torch.log(torch.tensor((df - 2.0) / df)).item()
+        else:
+            # Gaussian: natural variance=1, so tau=0
+            tau = 0.0
+    
     if prior_type == "lrmvn":
-        if isinstance(rank, tuple):
-            rank = rank[0]  # Extract single rank value
-        params_list = create_lrmvn_priors(
+        rank_val = rank[0] if isinstance(rank, tuple) else rank
+        return create_lrmvn_priors(
             K, C, H, W, 
-            rank=rank, 
+            rank=rank_val, 
             init_strategy=init_strategy,
             simplex_scale=simplex_scale, 
-            noise=noise
+            noise=noise,
+            tau=tau,
+            eps=eps
         )
-        priors = []
-        for params in params_list:
-            tau_val = params.get("tau", tau)
-            priors.append(LowRankMVNPrior(
-                loc=params["loc"],
-                diag=params["diag"],
-                U=params["U"],
-                tau=tau_val,
-                eps=eps
-            ))
-        return priors
     
     elif prior_type == "kpmvn":
-        params_list = create_kpmvn_priors(
+        return create_kpmvn_priors(
             K, C, H, W,
             rank=rank,
             init_strategy=init_strategy,
             simplex_scale=simplex_scale,
-            noise=noise
+            noise=noise,
+            tau=tau,
+            jitter=jitter,
+            eps=eps
         )
-        priors = []
-        for params in params_list:
-            tau_val = params.get("tau", tau)
-            priors.append(KPMVNPrior(
-                C=params["C"], H=params["H"], W=params["W"],
-                loc=params["loc"],
-                cov_ch=params["cov_ch"],
-                cov_sp=params["cov_sp"],
-                tau=tau_val,
-                jitter=jitter,
-                eps=eps
-            ))
-        return priors
     
     elif prior_type == "kpmvt":
-        params_list = create_kpmvt_priors(
+        return create_kpmvt_priors(
             K, C, H, W,
             rank=rank,
             df=df,
             init_strategy=init_strategy,
             simplex_scale=simplex_scale,
-            noise=noise
+            noise=noise,
+            tau=tau,
+            jitter=jitter,
+            eps=eps
         )
-        priors = []
-        for params in params_list:
-            tau_val = params.get("tau", tau)
-            priors.append(KPMVTPrior(
-                C=params["C"], H=params["H"], W=params["W"],
-                loc=params["loc"],
-                cov_ch=params["cov_ch"],
-                cov_sp=params["cov_sp"],
-                tau=tau_val,
-                df=params["df"],
-                jitter=jitter,
-                eps=eps
-            ))
-        return priors
     
     else:
         raise ValueError(f"Unknown prior_type: {prior_type}")
@@ -640,11 +663,13 @@ def create_conditional_prior(
     noise: float = 0.0,
 ) -> nn.Module:
     """
-    Factory to create a conditional prior.
+    Factory to create a conditional prior p(z | h).
+    
+    In the VS-Flow hierarchy: p(z_struct^(i) | h^(i+1))
     
     Args:
-        h_channels: Number of channels in conditioning variable h
-        z_channels: Number of channels in latent variable z
+        h_channels: Number of channels in conditioning variable h^(i+1) (from next level)
+        z_channels: Number of channels in latent variable z_struct^(i) being modeled
         H: Height
         W: Width
         prior_type: "kpmvn" or "kpmvt"
@@ -695,26 +720,16 @@ def create_conditional_prior(
         
         # Initialize mode vectors if using mean shift
         if use_mean_shift:
-            if init_strategy == "zero":
-                for param in prior.mean_vectors:
-                    nn.init.zeros_(param)
-                    if noise > 0:
-                        param.data.add_(torch.randn_like(param) * noise)
-            
-            elif init_strategy == "simplex":
-                from src.utils.prior_init import generate_simplex_means
-                # Generate simplex means
-                simplex_means = generate_simplex_means(
-                    num_modes, h_channels, H, W, 
-                    simplex_scale=simplex_scale, 
-                    noise=noise
-                )
-                # Assign to parameters
-                for i, param in enumerate(prior.mean_vectors):
-                    param.data = simplex_means[i].view(h_channels, H, W)
-            
-            else:
-                raise ValueError(f"Unknown init_strategy: {init_strategy}")
+            from src.utils.prior_init import generate_simplex_means
+            # Generate simplex means using shared utility
+            simplex_means = generate_simplex_means(
+                num_modes, h_channels, H, W, 
+                simplex_scale=simplex_scale if init_strategy == "simplex" else 0.0, 
+                noise=noise
+            )
+            # Assign to parameters
+            for i, param in enumerate(prior.mean_vectors):
+                param.data = simplex_means[i].view(h_channels, H, W)
         
         return prior
     
@@ -752,7 +767,7 @@ def create_conditional_mixture_prior(
     mixture_tau: float = 1.0,
     backbone_features: int = 256,
     dropout: float = 0.0,
-    components: dict = None,
+    components: Optional[dict] = None,
     **legacy_kwargs
 ) -> ConditionalMixturePrior:
     """

@@ -128,9 +128,11 @@ def train(cfg: DictConfig):
                     ).to(device)
                 elif struct_type == 'conditional':
                     # Standard conditional prior
+                    # h_channels: conditioning from lower level (C channels)
+                    # z_channels: latent being modeled (struct_count channels)
                     struct_prior = create_conditional_prior(
-                        h_channels=struct_count,
-                        z_channels=C,
+                        h_channels=C,
+                        z_channels=struct_count,
                         H=H, W=W,
                         prior_type=prior_cfg.prior_type,
                         rank=tuple(prior_cfg.rank),
