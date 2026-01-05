@@ -5,8 +5,8 @@ defaults:
 
 epochs: 10
 lr: 1e-3
-lr_prior: [0, 0, 0]
-lr_prior_channel: [0, 0, 0]
+lr_prior: [1e-5, 1e-5, 1e-5]
+lr_prior_channel: [1e-5, 1e-5, 1e-5]
 lr_prior_spatial: [0, 0, 0]
 
 # High Regularization
