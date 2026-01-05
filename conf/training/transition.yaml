@@ -3,8 +3,8 @@ defaults:
   - _self_
   - override /scheduler@scheduler: cosine
 
-epochs: 50
-lr: 2e-4
+epochs: 20
+lr: 3e-4
 lr_prior: [5e-5, 5e-5, 5e-5]
 lr_prior_channel: [1e-6, 1e-6, 1e-6]
 lr_prior_spatial: [0, 0, 0]
@@ -15,8 +15,8 @@ r_aniso: 1e-1
 label_smoothing: 0.05
 
 # Loss Weights (Transitioning to NLL)
-l_lambda: 0.9
-em_steps: 2
+l_lambda: 0.8
+em_steps: 0
 
 # Enable EMA
 use_ema: true

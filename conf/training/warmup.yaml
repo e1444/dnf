@@ -3,10 +3,10 @@ defaults:
   - _self_
   - override /scheduler@scheduler: cosine
 
-epochs: 30
-lr: 3e-4
-lr_prior: [1e-4, 1e-4, 1e-4]
-lr_prior_channel: [1e-6, 1e-6, 1e-6]
+epochs: 10
+lr: 1e-3
+lr_prior: [0, 0, 0]
+lr_prior_channel: [0, 0, 0]
 lr_prior_spatial: [0, 0, 0]
 
 # High Regularization
@@ -15,8 +15,8 @@ r_aniso: 5e0
 label_smoothing: 0.1
 
 # Loss Weights
-l_lambda: 0.8     # NLL weight (1.0 - lambda = CE weight)
-em_steps: 3
+l_lambda: 0.7     # NLL weight (1.0 - lambda = CE weight)
+em_steps: 0
 
 # Disable EMA for warmup (phase 1)
 use_ema: false
