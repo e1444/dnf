@@ -13,17 +13,13 @@ r_logdet: 0.0
 r_aniso: 0.0
 label_smoothing: 0.0
 
-# Disable dimension reweighting for clean MLE
+# Strict MLE
+l_lambda: 1.0
+em_steps: 1
+
 nll_dim_reweight: false
 
-# Use EMA for stable evaluation in finetuning
 use_ema: true
-
-use_al: True
-log_alpha: 1.0
-lr_log_alpha: 1e-3
-nll_constraint: 0.0   # Specify based on warmup results
-aug_rho: 1.0
 
 ckpt: null
 load_model: true
