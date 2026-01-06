@@ -142,7 +142,7 @@ def train(cfg: DictConfig):
             
             anisotropy_losses = []
             for k, (h, z) in enumerate(outs):
-                args = [{}, {"h": h}, {}]
+                args = [{}, {"h": h}, {"h": h}]
                 split = splits[k]
                 
                 priors = [
@@ -250,7 +250,7 @@ def train(cfg: DictConfig):
                     
                     prior_logits_acc = torch.zeros_like(model_logits)
                     for k, (h, z) in enumerate(outs):
-                        args = [{}, {"h": h}, {}]
+                        args = [{}, {"h": h}, {"h": h}]
                         split = splits[k]
                         
                         priors = [

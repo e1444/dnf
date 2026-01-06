@@ -44,7 +44,7 @@ def evaluate(model, data_loader, device, cfg, level_priors, splits, output_shape
             all_level_logits = []
             anisotropy_losses = []
             for k, (h, z) in enumerate(outs):
-                args = [{}, {"h": h}, {}]
+                args = [{}, {"h": h}, {"h": h}]
                 split = splits[k]
                 
                 priors = [

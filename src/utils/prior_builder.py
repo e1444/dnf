@@ -104,6 +104,7 @@ def build_level_priors_from_config(
                     prior_cfg=prior_cfg,
                     sem_count=sem_count,
                     num_classes=num_classes,
+                    C=C,
                     H=H, W=W,
                     device=device
                 )
@@ -129,10 +130,11 @@ def _build_noise_prior(
     # Filter out control-flow keys
     noise_params = {k: v for k, v in noise_cfg.items() if k not in ['init_strategy']}
     
+    prior_type = prior_cfg.get('prior_type', 'kpmvt')
     noise_prior = create_unconditional_priors(
         K=1,
         C=noise_count, H=H, W=W,
-        prior_type=prior_cfg.prior_type,
+        prior_type=prior_type,
         rank=tuple(prior_cfg.rank),
         init_strategy=init_strategy,
         **noise_params
@@ -149,6 +151,7 @@ def _build_struct_prior(
     device: torch.device
 ) -> nn.Module:
     """Build conditional structural prior p(z_struct^(i) | h^(i+1))."""
+    prior_type = prior_cfg.get('prior_type', 'kpmvt')
     struct_cfg = prior_cfg.get('struct', {})
     struct_type = struct_cfg.get('type', 'conditional')
     
@@ -162,20 +165,20 @@ def _build_struct_prior(
             K=num_modes,
             C=struct_count, H=H, W=W,
             h_channels=C,  # Conditioning from h^(i+1)
-            prior_type=prior_cfg.prior_type,
+            prior_type=prior_type,
             rank=tuple(prior_cfg.rank),
             **struct_params
         ).to(device)
         
     elif struct_type == 'conditional':
         # Standard conditional: p(z_struct | h^(i+1))
-        # h_channels: conditioning from h^(i+1) (C channels from next level)
-        # z_channels: latent being modeled (struct_count channels)
+        # h_channels: latent being modeled (struct_count channels)
+        # z_channels: conditioning from h^(i+1) (C channels from next level)
         struct_prior = create_conditional_prior(
-            h_channels=C,
-            z_channels=struct_count,
+            h_channels=struct_count,
+            z_channels=C,
             H=H, W=W,
-            prior_type=prior_cfg.prior_type,
+            prior_type=prior_type,
             rank=tuple(prior_cfg.rank),
             **struct_params
         ).to(device)
@@ -190,19 +193,42 @@ def _build_sem_prior(
     prior_cfg: DictConfig,
     sem_count: int,
     num_classes: int,
+    C: int,
     H: int, W: int,
     device: torch.device
 ) -> nn.Module:
     """Build class-conditional semantic prior p(z_sem | y)."""
+    prior_type = prior_cfg.get('prior_type', 'kpmvt')
     sem_cfg = prior_cfg.get('sem', {})
-    sem_params = {k: v for k, v in sem_cfg.items()}
-    
+    sem_type = sem_cfg.get('type', 'unconditional')
+
+    # Filter out control-flow keys
+    sem_params = {k: v for k, v in sem_cfg.items() if k not in ['type']}
+
+    if sem_type == 'conditional_mean_shift':
+        # Build a conditional semantic prior that returns a list of K distributions.
+        # This enables class-dependent scoring while keeping compute_level_logits unchanged.
+        sem_prior = create_conditional_prior(
+            h_channels=sem_count,
+            z_channels=C,
+            H=H, W=W,
+            prior_type=prior_type,
+            rank=tuple(prior_cfg.rank),
+            use_mean_shift=True,
+            class_conditional_mean_shift=True,
+            num_classes=num_classes,
+            **sem_params,
+        ).to(device)
+        return sem_prior
+
+    if sem_type != 'unconditional':
+        raise ValueError(f"Unknown sem type: {sem_type}. Must be 'unconditional' or 'conditional_mean_shift'")
+
     sem_prior = create_class_conditional_prior(
         K=num_classes,
         C=sem_count, H=H, W=W,
-        prior_type=prior_cfg.prior_type,
+        prior_type=prior_type,
         rank=tuple(prior_cfg.rank),
         **sem_params
     ).to(device)
-    
     return sem_prior

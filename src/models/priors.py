@@ -25,7 +25,7 @@ class LowRankMVNPrior(nn.Module):
         self.tau = nn.Parameter(tau)
         self.eps = eps
 
-    def forward(self) -> FlattenedDistribution:
+    def forward(self, **kwargs) -> FlattenedDistribution:
         base_dist = LowRankMultivariateNormal(
             loc=self.loc,
             cov_factor=self.U,
@@ -107,7 +107,7 @@ class KPMVNPrior(nn.Module):
         self.jitter = jitter
         self.eps = eps
         
-    def forward(self) -> torch.distributions.Distribution:
+    def forward(self, **kwargs) -> torch.distributions.Distribution:
         loc_shaped = self._loc.view(self.C, self.H, self.W)
             
         base_dist = KroneckerProductMVN(
@@ -194,7 +194,7 @@ class KPMVTPrior(nn.Module):
         self.jitter = jitter
         self.eps = eps
         
-    def forward(self) -> torch.distributions.Distribution:
+    def forward(self, **kwargs) -> torch.distributions.Distribution:
         loc_shaped = self._loc.view(self.C, self.H, self.W)
         
         # Ensure df > 2.0 for finite variance
@@ -303,7 +303,7 @@ class ConditionalKPMVNPrior(nn.Module):
         nn.init.normal_(self.ch_U_head.weight, std=1e-4)
         nn.init.zeros_(self.ch_U_head.bias)
 
-    def forward(self, h: torch.Tensor) -> torch.distributions.Distribution:
+    def forward(self, h: torch.Tensor, **kwargs) -> torch.distributions.Distribution:
         B = h.shape[0]
         
         shared_features = self.backbone(h)
@@ -361,6 +361,8 @@ class ConditionalKPMVTPrior(nn.Module):
         backbone_features: int = 256,
         use_mean_shift: bool = False,
         num_modes: int = 4,
+        class_conditional_mean_shift: bool = False,
+        num_classes: Optional[int] = None,
     ):
         super().__init__()
         self.h_C, self.H, self.W = h_channels, H, W
@@ -371,6 +373,16 @@ class ConditionalKPMVTPrior(nn.Module):
         self.eps = eps
         self.use_mean_shift = use_mean_shift
         self.num_modes = num_modes
+
+        self.class_conditional_mean_shift = class_conditional_mean_shift
+        if self.class_conditional_mean_shift and not self.use_mean_shift:
+            raise ValueError("class_conditional_mean_shift requires use_mean_shift=True")
+        if self.class_conditional_mean_shift:
+            if num_classes is None or num_classes <= 0:
+                raise ValueError(f"num_classes must be provided and > 0 when class_conditional_mean_shift=True (got {num_classes})")
+            self.num_classes: int = int(num_classes)
+        else:
+            self.num_classes = 0
         
         if not isinstance(tau, torch.Tensor):
             tau = torch.tensor(tau, dtype=torch.float32)
@@ -404,6 +416,10 @@ class ConditionalKPMVTPrior(nn.Module):
             self.mixing_head = nn.Linear(backbone_features, self.num_modes)
             nn.init.zeros_(self.mixing_head.weight)
             nn.init.zeros_(self.mixing_head.bias)
+
+            if self.class_conditional_mean_shift:
+                # Per-class bias over modes: (K, M)
+                self.class_mode_bias = nn.Parameter(torch.zeros(self.num_classes, self.num_modes))
         else:
             # Standard conditional mean prediction
             self.loc_head = nn.Conv2d(backbone_features * 2, self.h_C, 1)
@@ -430,7 +446,7 @@ class ConditionalKPMVTPrior(nn.Module):
         nn.init.normal_(self.ch_U_head.weight, std=1e-4)
         nn.init.zeros_(self.ch_U_head.bias)
 
-    def forward(self, h: torch.Tensor) -> torch.distributions.Distribution:
+    def forward(self, h: torch.Tensor, **kwargs) -> Union[torch.distributions.Distribution, List[torch.distributions.Distribution]]:
         B = h.shape[0]
         
         shared_features = self.backbone(h)
@@ -444,12 +460,19 @@ class ConditionalKPMVTPrior(nn.Module):
         
         if self.use_mean_shift:
             # Predict mixing weights
-            logits = self.mixing_head(pooled_features)
-            weights = torch.softmax(logits, dim=-1) # [B, M]
-            
-            # Compute weighted mean: sum(w_k * mu_k)
-            means_stack = torch.stack(list(self.mean_vectors), dim=0) # [M, C, H, W]
-            loc_shaped = torch.einsum('bm,mchw->bchw', weights, means_stack)
+            logits = self.mixing_head(pooled_features)  # [B, M]
+            means_stack = torch.stack(list(self.mean_vectors), dim=0)  # [M, C, H, W]
+
+            if self.class_conditional_mean_shift:
+                loc_shaped = []
+                for k in range(self.num_classes):
+                    class_logits = logits + self.class_mode_bias[k].unsqueeze(0)  # [B, M]
+                    weights = torch.softmax(class_logits, dim=-1)  # [B, M]
+                    loc_shaped_k = torch.einsum('bm,mchw->bchw', weights, means_stack)
+                    loc_shaped.append(loc_shaped_k)
+            else:
+                weights = torch.softmax(logits, dim=-1)  # [B, M]
+                loc_shaped = torch.einsum('bm,mchw->bchw', weights, means_stack)
         else:
             # Predict mean from spatial input
             loc = self.loc_head(spatial_input).view(B, -1)
@@ -471,9 +494,10 @@ class ConditionalKPMVTPrior(nn.Module):
 
         log_s = torch.clamp(self.tau, min=-15.0, max=15.0)
         global_scale = torch.exp(0.5 * log_s)
-        scaled_dist = ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
-        
-        return scaled_dist
+        if self.class_conditional_mean_shift:
+            return [ScaledDistribution(base_dist, loc=loc_k, scale=global_scale) for loc_k in loc_shaped]
+
+        return ScaledDistribution(base_dist, loc=loc_shaped, scale=global_scale)
         
     def __str__(self):
         df = torch.exp(self.log_df) + 2.0
@@ -490,8 +514,8 @@ class ClassConditionalPrior(nn.Module):
         
         assert all(isinstance(prior, priors[0].__class__) for prior in priors), "All priors must be of the same type"
 
-    def forward(self) -> List[torch.distributions.Distribution]:
-        return [prior() for prior in self.priors]
+    def forward(self, **kwargs) -> List[torch.distributions.Distribution]:
+        return [prior(**kwargs) for prior in self.priors]
 
     def __str__(self):
         return f"ClassConditionalPrior(K={self.K}, prior_cls={self.prior_cls.__name__})"

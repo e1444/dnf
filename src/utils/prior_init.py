@@ -368,6 +368,8 @@ def create_conditional_prior(
     backbone_features: int = 256,
     use_mean_shift: bool = False,
     num_modes: int = 4,
+    class_conditional_mean_shift: bool = False,
+    num_classes: Optional[int] = None,
     init_strategy: str = "zero",
     simplex_scale: float = 1.0,
     noise: float = 0.0,
@@ -415,6 +417,8 @@ def create_conditional_prior(
         )
     
     elif prior_type == "kpmvt":
+        if class_conditional_mean_shift and not use_mean_shift:
+            raise ValueError("class_conditional_mean_shift requires use_mean_shift=True")
         prior = ConditionalKPMVTPrior(
             h_channels=h_channels,
             z_channels=z_channels,
@@ -427,7 +431,9 @@ def create_conditional_prior(
             dropout=dropout,
             backbone_features=backbone_features,
             use_mean_shift=use_mean_shift,
-            num_modes=num_modes
+            num_modes=num_modes,
+            class_conditional_mean_shift=class_conditional_mean_shift,
+            num_classes=num_classes,
         )
         
         # Initialize mode vectors if using mean shift
