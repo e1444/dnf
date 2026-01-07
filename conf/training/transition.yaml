@@ -6,8 +6,8 @@ defaults:
 epochs: 20
 lr: 3e-4
 lr_prior: [5e-5, 5e-5, 5e-5]
-lr_prior_channel: [1e-6, 1e-6, 1e-6]
-lr_prior_spatial: [0, 0, 0]
+lr_prior_channel: [1e-4, 1e-4, 1e-4]
+lr_prior_spatial: [1e-4, 1e-4, 1e-4]
 
 # Medium Regularization (Annealing)
 r_logdet: 0
